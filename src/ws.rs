@@ -634,12 +634,13 @@ fn build_upgrade_request(host: &str, path: &str, token: &str, ws_key: &str) -> S
 
 /// Minimal percent-encoding for the token query-parameter value.
 ///
-/// Encodes bytes that are not in the RFC 3986 unreserved set.
-fn url_encode(s: &str) -> String {
+/// Encodes bytes that are not in the RFC 3986 unreserved set (ALPHA / DIGIT / "-" / "." / "_" / "~").
+/// Note: `%` itself is NOT unreserved and is encoded as `%25`.
+pub(crate) fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 16);
     for &b in s.as_bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'%' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 out.push(b as char)
             }
             _ => {

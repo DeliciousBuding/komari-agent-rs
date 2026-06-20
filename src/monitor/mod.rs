@@ -114,7 +114,7 @@ pub fn generate_report<'a>(monitor: &mut Monitor, arena: &'a mut ScratchArena) -
     // No heap allocation — both `scratch` and the arena buffer live on the stack
     // (the arena is 64 KB, owned by the caller).
     let mut scratch = [0u8; 4096];
-    let written = match encode_report(monitor, &mut scratch) {
+    let mut written = match encode_report(monitor, &mut scratch) {
         Ok(n) => n,
         Err(_) => {
             // On encode failure, return a minimal valid JSON object.
@@ -125,11 +125,17 @@ pub fn generate_report<'a>(monitor: &mut Monitor, arena: &'a mut ScratchArena) -
         }
     };
 
-    if written <= arena.remaining() {
-        arena
-            .alloc_bytes(written)
-            .copy_from_slice(&scratch[..written]);
+    // Defensive: if arena cannot hold the report (should never happen — scratch
+    // is 4 KB, arena is 64 KB), fall back to a minimal `{}`.
+    if written > arena.remaining() {
+        let fallback = b"{}";
+        written = fallback.len();
+        scratch[..written].copy_from_slice(fallback);
     }
+
+    arena
+        .alloc_bytes(written)
+        .copy_from_slice(&scratch[..written]);
     arena.as_bytes()
 }
 

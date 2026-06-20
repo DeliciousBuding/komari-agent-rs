@@ -195,23 +195,22 @@ fn connect_ws(config: &Config, tls_cfg: &Arc<rustls::ClientConfig>) -> Result<Ws
 /// The `http(s)://` prefix is replaced with `ws(s)://`.
 fn build_ws_url(config: &Config) -> String {
     let base = config.endpoint.trim_end_matches('/');
+    let encoded_token = crate::ws::url_encode(&config.token);
 
     let path = if config.protocol_version >= 2 {
-        format!("/api/clients/v2/rpc?token={}", config.token)
+        format!("/api/clients/v2/rpc?token={}", encoded_token)
     } else {
-        format!("/api/clients/report?token={}", config.token)
+        format!("/api/clients/report?token={}", encoded_token)
     };
 
-    let http_url = format!("{}{}", base, path);
-
     // Replace http:// → ws://, https:// → wss://
-    if let Some(rest) = http_url.strip_prefix("https://") {
-        format!("wss://{}", rest)
-    } else if let Some(rest) = http_url.strip_prefix("http://") {
-        format!("ws://{}", rest)
+    if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{}{}", rest, path)
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{}{}", rest, path)
     } else {
-        // No recognised scheme — assume wss://
-        format!("wss://{}", http_url)
+        // No recognised scheme — assume wss:// and prepend to host-only base
+        format!("wss://{}{}", base, path)
     }
 }
 
@@ -456,15 +455,16 @@ fn handle_terminal_stub(data: &[u8], _config: &Config) {
 /// configured (via `crate::http::http_post` cf_headers parameter).
 fn upload_basic_info(config: &Config, tls_cfg: &Arc<rustls::ClientConfig>) -> Result<(), String> {
     let base = config.endpoint.trim_end_matches('/');
+    let encoded_token = crate::ws::url_encode(&config.token);
 
     let (url, body) = if config.protocol_version >= 2 {
-        let url = format!("{}/api/clients/v2/rpc?token={}", base, config.token);
+        let url = format!("{}/api/clients/v2/rpc?token={}", base, encoded_token);
         let body = build_basic_info_v2();
         (url, body)
     } else {
         let url = format!(
             "{}/api/clients/uploadBasicInfo?token={}",
-            base, config.token
+            base, encoded_token
         );
         let body = build_basic_info_v1();
         (url, body)
