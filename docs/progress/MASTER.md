@@ -62,8 +62,7 @@ gh milestone list --repo DeliciousBuding/komari-agent-rs
 |------|------|:--:|
 | 共享指令 | `AGENTS.md` | ✅ 已创建 |
 | Claude Code 指令 | `CLAUDE.md` | ✅ 已创建 |
-| 全局治理 | `C:\Users\Ding\AGENTS.md` | ✅ 已存在 |
-| 记忆表面 | Claude Code 原生 memory | 待记录 |
+| 记忆表面 | 由编码 agent 原生管理 | ✅ |
 
 ## 下一步
 

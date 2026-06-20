@@ -16,3 +16,11 @@ Thumbs.db
 
 # Old Go reference (not part of this repo)
 komari-agent-go/
+
+# Local dev state — never commit
+.grill/
+*.log
+tmp/
+*.local
+*.backup-*
+/CLAUDE.md

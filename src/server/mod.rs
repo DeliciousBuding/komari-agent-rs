@@ -17,6 +17,8 @@
 //! - Go `server/basicInfo.go` (`uploadBasicInfo`) — startup info upload
 //! - Architecture reference §2.2 (server/ tree, ~135 lines target)
 
+pub mod backoff;
+
 use crate::config::Config;
 use crate::protocol::v2;
 use std::sync::Arc;
@@ -42,6 +44,8 @@ macro_rules! debug {
         }
     };
 }
+
+mod task;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Placeholder: WebSocket types (→ crate::ws, currently a stub)
