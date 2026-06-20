@@ -126,12 +126,12 @@ fn mode_2() -> Option<MemInfo> {
 }
 
 /// Collect memory + swap. Priority (mirrors Go komari-agent):
-/// 1. `memory_include_cache` → used = total - free
+/// 1. `memory_include_cache` → used = total - free (cache/buffer counted as used)
 /// 2. `memory_report_raw_used` → mode 0 (htop-like)
-/// 3. Default Linux → mode 0
-/// 4. Fallback → mode 1 (gopsutil-like)
-/// 5. Last resort → mode 2 (`free -b`)
+/// 3. Default (both false) → mode 1 (gopsutil-like: total - MemAvailable)
+/// 4. Fallback when /proc/meminfo unavailable → mode 2 (`free -b`)
 pub fn collect(config: &Config) -> MemInfo {
+    // 1. memory_include_cache: used = total - free (includes cache/buffer)
     if config.memory_include_cache {
         if let Some(m) = read_proc_meminfo() {
             return MemInfo {
@@ -142,20 +142,17 @@ pub fn collect(config: &Config) -> MemInfo {
             };
         }
     }
+    // 2. memory_report_raw_used: htop-like (total - free - buffers - cached - sreclaimable)
     if config.memory_report_raw_used {
         if let Some(m) = read_proc_meminfo() {
             return mode_0(&m);
         }
     }
-    // Default: mode 0
-    if let Some(m) = read_proc_meminfo() {
-        return mode_0(&m);
-    }
-    // Fallback: mode 1
+    // 3. Default: gopsutil-like (total - MemAvailable)
     if let Some(m) = read_proc_meminfo() {
         return mode_1(&m);
     }
-    // Last resort: mode 2
+    // 4. Last resort: `free -b` subprocess
     if let Some(mi) = mode_2() {
         return mi;
     }

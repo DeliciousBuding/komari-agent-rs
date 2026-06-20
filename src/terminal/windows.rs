@@ -115,6 +115,8 @@ unsafe extern "system" {
 
     fn ClosePseudoConsole(hPC: HPCON);
 
+    fn ResizePseudoConsole(hPC: HPCON, size: COORD) -> HRESULT;
+
     fn CreateProcessW(
         lpApplicationName: LPCWSTR,
         lpCommandLine: LPWSTR,
@@ -152,6 +154,15 @@ unsafe extern "system" {
     ) -> BOOL;
 
     fn CloseHandle(hObject: HANDLE) -> BOOL;
+
+    fn PeekNamedPipe(
+        hNamedPipe: HANDLE,
+        lpBuffer: LPVOID,
+        nBufferSize: DWORD,
+        lpBytesRead: *mut DWORD,
+        lpTotalBytesAvail: *mut DWORD,
+        lpBytesLeftThisMessage: *mut DWORD,
+    ) -> BOOL;
 
     fn InitializeProcThreadAttributeList(
         lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST,
@@ -350,12 +361,45 @@ impl Terminal for WindowsTerminal {
                 "ConPTY pipe already closed",
             )));
         }
+
+        // Peek first so a single-threaded agent doesn't block here when the
+        // ConPTY has no output ready (which is the common idle case).  This
+        // keeps the WS poll loop responsive to keystrokes.
+        let mut avail: DWORD = 0;
+        let peek_ok = unsafe {
+            PeekNamedPipe(
+                self.output_read,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                &mut avail,
+                ptr::null_mut(),
+            )
+        };
+        if peek_ok == FALSE {
+            // Pipe closed / broken — treat as EOF so the session ends cleanly.
+            return Err(TerminalErr::Io(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "PeekNamedPipe failed",
+            )));
+        }
+        if avail == 0 {
+            // Nothing ready this poll — signal non-blocking to the copy loop.
+            return Err(TerminalErr::Io(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "ConPTY read would block",
+            )));
+        }
+
+        // Clamp the read to the minimum of buffer size and available bytes so
+        // ReadFile returns promptly with exactly what's buffered.
+        let to_read = (buf.len() as DWORD).min(avail);
         let mut nread: DWORD = 0;
         let ok = unsafe {
             ReadFile(
                 self.output_read,
                 buf.as_mut_ptr() as LPVOID,
-                buf.len() as DWORD,
+                to_read,
                 &mut nread,
                 ptr::null_mut(),
             )
@@ -391,12 +435,24 @@ impl Terminal for WindowsTerminal {
         }
     }
 
-    fn resize(&mut self, _cols: u16, _rows: u16) -> Result<(), TerminalErr> {
-        // TODO: ResizePseudoConsole (Windows 10 1903+).
-        // Add to extern block: fn ResizePseudoConsole(hPC: HPCON, size: COORD) -> HRESULT;
-        Err(TerminalErr::Resize(
-            "ConPTY resize not yet implemented (requires Win10 1903+ ResizePseudoConsole)",
-        ))
+    fn resize(&mut self, cols: u16, rows: u16) -> Result<(), TerminalErr> {
+        if self.hpc.is_null() {
+            return Err(TerminalErr::Resize("ConPTY already closed"));
+        }
+        // Clamp to a non-zero size; a 0 dimension is invalid for ResizePseudoConsole
+        // and the Windows console treats negatives as 0 (COORD is signed SHORT).
+        let size = COORD {
+            X: cols.max(1) as SHORT,
+            Y: rows.max(1) as SHORT,
+        };
+        // ResizePseudoConsole is available on Windows 10 1903+ (kernel32).
+        // Returns S_OK (0) on success; an HRESULT error otherwise.
+        let hr = unsafe { ResizePseudoConsole(self.hpc, size) };
+        if hr == S_OK {
+            Ok(())
+        } else {
+            Err(TerminalErr::Resize("ResizePseudoConsole failed"))
+        }
     }
 
     fn close(&mut self) -> Result<(), TerminalErr> {

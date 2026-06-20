@@ -26,6 +26,19 @@ const O_NOCTTY: c_int = 0o100;
 #[cfg(not(target_os = "linux"))]
 const O_NOCTTY: c_int = 0x20000; // macOS / FreeBSD
 
+/// `fcntl` command: get file status flags.
+const F_GETFL: c_int = 3;
+/// `fcntl` command: set file status flags.
+#[cfg(target_os = "linux")]
+const F_SETFL: c_int = 4;
+#[cfg(not(target_os = "linux"))]
+const F_SETFL: c_int = 4;
+/// File status flag: non-blocking I/O.
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: c_int = 0o4000;
+#[cfg(not(target_os = "linux"))]
+const O_NONBLOCK: c_int = 0x0004; // macOS / FreeBSD
+
 #[repr(C)]
 struct Winsize {
     ws_row: u16,
@@ -48,6 +61,7 @@ unsafe extern "C" {
     fn fork() -> c_int;
     fn setsid() -> c_int;
     fn ioctl(fd: c_int, request: c_ulong, arg: *mut Winsize) -> c_int;
+    fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn execvp(file: *const c_char, argv: *const *const c_char) -> c_int;
     fn dup2(oldfd: c_int, newfd: c_int) -> c_int;
     fn _exit(status: c_int) -> !;
@@ -78,6 +92,19 @@ pub struct UnixTerminal {
 }
 
 impl UnixTerminal {
+    /// `EAGAIN` errno value (resource temporarily unavailable).
+    #[cfg(target_os = "linux")]
+    const EAGAIN: c_int = 11;
+    #[cfg(not(target_os = "linux"))]
+    const EAGAIN: c_int = 35; // macOS / FreeBSD
+
+    /// `EWOULDBLOCK` errno value.  On Linux it equals `EAGAIN`; on BSDs it
+    /// is a distinct value (same as EAGAIN in practice on macOS).
+    #[cfg(target_os = "linux")]
+    const EWOULDBLOCK: c_int = 11;
+    #[cfg(not(target_os = "linux"))]
+    const EWOULDBLOCK: c_int = 35;
+
     /// Spawn a new Unix PTY with the given shell.
     ///
     /// On success returns a fully-initialised `UnixTerminal` ready for
@@ -87,6 +114,16 @@ impl UnixTerminal {
         let pty_fd = unsafe { posix_openpt(O_RDWR | O_NOCTTY) };
         if pty_fd < 0 {
             return Err(TerminalErr::PtyOpen("posix_openpt"));
+        }
+
+        // Set the master fd non-blocking so a single-threaded agent can poll
+        // both the WebSocket and the PTY without one blocking the other.
+        // Failure to set non-blocking is non-fatal (degrades to blocking).
+        unsafe {
+            let flags = fcntl(pty_fd, F_GETFL, 0);
+            if flags >= 0 {
+                fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
+            }
         }
 
         // ── 2. Grant / unlock the slave ─────────────────────────────────
@@ -167,7 +204,18 @@ impl Terminal for UnixTerminal {
         }
         let n = unsafe { sys_read(self.pty_fd, buf.as_mut_ptr(), buf.len()) };
         if n < 0 {
-            Err(TerminalErr::Io(io::Error::last_os_error()))
+            let err = io::Error::last_os_error();
+            // EAGAIN / EWOULDBLOCK on a non-blocking PTY → no output this poll.
+            if matches!(
+                err.raw_os_error(),
+                Some(libc_eagain) if libc_eagain == Self::EAGAIN || libc_eagain == Self::EWOULDBLOCK
+            ) {
+                return Err(TerminalErr::Io(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "PTY read would block",
+                )));
+            }
+            Err(TerminalErr::Io(err))
         } else {
             Ok(n as usize)
         }
