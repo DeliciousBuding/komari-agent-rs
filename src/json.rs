@@ -74,6 +74,19 @@ pub enum Field {
     AverageUsage, // "average_usage"
     DetailedInfo, // "detailed_info"
     Models,       // "models"
+
+    // --- BasicInfo (static system identification, uploaded once + periodically) ---
+    CpuName,          // "cpu_name"
+    CpuCores,         // "cpu_cores"
+    CpuPhysicalCores, // "cpu_physical_cores"
+    KernelVersion,    // "kernel_version"
+    Ipv4,             // "ipv4"
+    Ipv6,             // "ipv6"
+    MemTotal,         // "mem_total"
+    SwapTotal,        // "swap_total"
+    DiskTotal,        // "disk_total"
+    GpuName,          // "gpu_name"
+    Virtualization,   // "virtualization"
 }
 
 impl Field {
@@ -127,6 +140,18 @@ impl Field {
             Field::AverageUsage => b"average_usage",
             Field::DetailedInfo => b"detailed_info",
             Field::Models => b"models",
+            // --- BasicInfo ---
+            Field::CpuName => b"cpu_name",
+            Field::CpuCores => b"cpu_cores",
+            Field::CpuPhysicalCores => b"cpu_physical_cores",
+            Field::KernelVersion => b"kernel_version",
+            Field::Ipv4 => b"ipv4",
+            Field::Ipv6 => b"ipv6",
+            Field::MemTotal => b"mem_total",
+            Field::SwapTotal => b"swap_total",
+            Field::DiskTotal => b"disk_total",
+            Field::GpuName => b"gpu_name",
+            Field::Virtualization => b"virtualization",
         }
     }
 }

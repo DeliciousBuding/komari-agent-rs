@@ -98,14 +98,14 @@ pub(super) fn update_basic_info(
 
     let (url, body) = if config.protocol_version >= 2 {
         let url = format!("{}/api/clients/v2/rpc?token={}", base, encoded_token);
-        let body = build_basic_info_v2();
+        let body = build_basic_info_v2(config);
         (url, body)
     } else {
         let url = format!(
             "{}/api/clients/uploadBasicInfo?token={}",
             base, encoded_token
         );
-        let body = build_basic_info_v1();
+        let body = build_basic_info_v1(config);
         (url, body)
     };
 
@@ -140,18 +140,93 @@ pub(super) fn update_basic_info(
     }
 }
 
-fn build_basic_info_v2() -> Vec<u8> {
-    let info = br#"{"cpu_name":"","cpu_cores":0,"cpu_physical_cores":0,"arch":"","os":"","kernel_version":"","ipv4":"","ipv6":"","mem_total":0,"swap_total":0,"disk_total":0,"gpu_name":"","virtualization":"","version":"0.1.0"}"#;
-    let params = {
-        let mut v = Vec::with_capacity(info.len() + 20);
-        v.extend_from_slice(b"{\"info\":");
-        v.extend_from_slice(info);
-        v.push(b'}');
-        v
+/// Collect static system identification from every collector and encode as
+/// flat JSON (the inner `info` object shared by v1 and v2 uploads).
+///
+/// Field set matches Go `uploadBasicInfo` exactly:
+/// cpu_name, cpu_cores, cpu_physical_cores, arch, os, kernel_version, ipv4,
+/// ipv6, mem_total, swap_total, disk_total, gpu_name, virtualization, version.
+fn collect_basic_info(config: &Config) -> Vec<u8> {
+    let mut arena = crate::arena::ScratchArena::new();
+    let mut prev_cpu = crate::monitor::cpu::PrevCpu::default();
+    let mut buf = vec![0u8; 2048];
+    let len = {
+        let mut j = crate::json::JsonBuf::new(&mut buf);
+        let _ = encode_basic_info(&mut j, &mut arena, &mut prev_cpu, config);
+        j.finish().len()
     };
+    buf.truncate(len);
+    buf
+}
+
+/// Encode the basic-info JSON into `j`.  Each collector is best-effort: a
+/// failure yields a sensible default rather than aborting the whole payload.
+fn encode_basic_info(
+    j: &mut crate::json::JsonBuf,
+    arena: &mut crate::arena::ScratchArena,
+    prev_cpu: &mut crate::monitor::cpu::PrevCpu,
+    config: &Config,
+) -> Result<(), crate::json::JsonErr> {
+    use crate::json::Field;
+
+    // CPU (name/cores/arch — usage is ignored here, it lives in the report).
+    let cpu = match crate::monitor::cpu::collect_cpu(arena, prev_cpu) {
+        Ok(info) => info,
+        Err(_) => {
+            let fb = arena.alloc_bytes(7);
+            fb.copy_from_slice(b"Unknown");
+            let fb_str = unsafe { std::str::from_utf8_unchecked(fb) };
+            crate::monitor::cpu::CpuInfo {
+                name: fb_str,
+                cores: 0,
+                physical_cores: 0,
+                arch: fb_str,
+                usage: 0.0,
+            }
+        }
+    };
+
+    let os = crate::monitor::os::collect();
+    let mem = crate::monitor::mem::collect(config);
+    let disks = crate::monitor::disk::collect(config);
+    let (disk_total, _) = crate::monitor::disk::aggregate(&disks);
+    let (ipv4, ipv6) = crate::monitor::ip::collect_ip(config).unwrap_or((None, None));
+    let gpu_name = crate::monitor::gpu::detect_gpus()
+        .ok()
+        .and_then(|(_, gpus)| gpus.as_slice().first().map(|g| g.name.clone()))
+        .unwrap_or_default();
+    let virt = crate::monitor::virtualization::detect();
+
+    j.begin_obj()?;
+    j.str_field(Field::CpuName, cpu.name)?;
+    j.u64_field(Field::CpuCores, cpu.cores as u64)?;
+    j.u64_field(Field::CpuPhysicalCores, cpu.physical_cores as u64)?;
+    j.str_field(Field::Arch, cpu.arch)?;
+    j.str_field(Field::Os, &os.name)?;
+    j.str_field(Field::KernelVersion, &os.kernel_version)?;
+    j.str_field(Field::Ipv4, ipv4.as_deref().unwrap_or(""))?;
+    j.str_field(Field::Ipv6, ipv6.as_deref().unwrap_or(""))?;
+    j.u64_field(Field::MemTotal, mem.total)?;
+    j.u64_field(Field::SwapTotal, mem.swap_total)?;
+    j.u64_field(Field::DiskTotal, disk_total)?;
+    j.str_field(Field::GpuName, &gpu_name)?;
+    j.str_field(Field::Virtualization, virt)?;
+    j.str_field(Field::Version, env!("CARGO_PKG_VERSION"))?;
+    j.end_obj()?;
+    Ok(())
+}
+
+fn build_basic_info_v2(config: &Config) -> Vec<u8> {
+    let info = collect_basic_info(config);
+    // Wrap as JSON-RPC notification: {"jsonrpc":"2.0","method":"agent.basicInfo","params":{"info":<info>}}
+    let mut params = Vec::with_capacity(info.len() + 20);
+    params.extend_from_slice(b"{\"info\":");
+    params.extend_from_slice(&info);
+    params.push(b'}');
     v2::new_notification(v2::METHOD_AGENT_BASIC_INFO, &params)
 }
 
-fn build_basic_info_v1() -> Vec<u8> {
-    br#"{"cpu_name":"","cpu_cores":0,"cpu_physical_cores":0,"arch":"","os":"","kernel_version":"","ipv4":"","ipv6":"","mem_total":0,"swap_total":0,"disk_total":0,"gpu_name":"","virtualization":"","version":"0.1.0"}"#.to_vec()
+fn build_basic_info_v1(config: &Config) -> Vec<u8> {
+    // V1: flat JSON, no JSON-RPC wrapper.
+    collect_basic_info(config)
 }
