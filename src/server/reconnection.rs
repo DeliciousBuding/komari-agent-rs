@@ -486,7 +486,7 @@ fn upload_task_result(
 /// When no WS is available (HTTP fallback transport), the result is logged
 /// and dropped — Go behaves the same (ping results travel over WS).
 fn handle_ping_task(
-    mut ws: Option<&mut WsConnection>,
+    ws: Option<&mut WsConnection>,
     mode: ProtocolMode,
     task_id: i64,
     ping_type: &str,
@@ -496,7 +496,7 @@ fn handle_ping_task(
     let result = super::task::handle_ping(ping_type, target, None);
     let is_v2 = matches!(mode, ProtocolMode::WsV2 | ProtocolMode::HttpV2);
     let payload = result.build_payload(task_id as u64, if is_v2 { 2 } else { 1 });
-    if let Some(ws) = ws.as_mut() {
+    if let Some(ws) = ws {
         if let Err(e) = ws.send_text(&payload) {
             eprintln!("[komari] WARN: failed to send ping result: {e:?}");
         }

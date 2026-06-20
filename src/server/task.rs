@@ -411,7 +411,7 @@ fn exec_windows_powershell(command: &str) -> ExecResult {
 
     // Write the command to a temp .ps1 file. Prefix with a UTF-8 BOM and an
     // encoding shim so non-ASCII output round-trips correctly.
-    let mut tmp = match tempfile_path("komari-exec", ".ps1") {
+    let tmp = match tempfile_path("komari-exec", ".ps1") {
         Ok(p) => p,
         Err(e) => return ExecResult::new(format!("failed to create temp script: {e}"), -1),
     };
