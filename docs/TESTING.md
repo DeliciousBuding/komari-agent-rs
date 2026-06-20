@@ -119,9 +119,9 @@ opt-level = "z"        # 依赖也最小体积
 
 ## 5. 已知局限
 
-- **basicInfo 500**：`status.vectorcontrol.tech`（Komari v1.1.9 fork）的 `/api/clients/uploadBasicInfo` 返回 HTTP 500（服务端 Code:1）。Go agent 用相同 payload/endpoint 也 500，确认是 **fork 服务端 bug**。agent 非致命处理（warn），report 路径正常。
+- **basicInfo fork 兼容（已解决）**：v1.1.9 fork 拒绝 `kernel_version`/`cpu_physical_cores` 字段（HTTP 500）。agent 用 Go 兼容回退（先完整 payload，500 则删字段重试）→ us3 验证 200 成功。
 - **v2 API 不支持**：fork 的 `/api/clients/v2/rpc` 返回 SPA HTML。FSM 正确回退 v1。
-- **WS permessage-deflate 未实现**：HTTP POST gzip 已实现；WS 压缩（RFC 7692）需扩展协商，复杂度高，当前 WS 路径不压缩。
+- **WS permessage-deflate 未实现**：HTTP POST gzip 已实现；WS 压缩（RFC 7692）需扩展协商 + raw deflate/inflate，复杂度高。当前 fork 用 v1 WS（不协商 deflate），report 仅 ~356B，不压缩可接受。标记为后续优化。
 
 ---
 
