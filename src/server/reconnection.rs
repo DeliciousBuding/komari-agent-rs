@@ -393,6 +393,10 @@ fn classify_tick_failure(e: &TickErr) -> FailureKind {
 }
 
 fn is_timeout(e: &WsErr) -> bool {
-    matches!(e, WsErr::Io(s) if s.to_lowercase().contains("timed out")
-        || s.to_lowercase().contains("would block"))
+    matches!(e, WsErr::Io(s) if {
+        let s = s.to_lowercase();
+        s.contains("timed out")
+            || s.contains("would block")
+            || s.contains("temporarily unavailable") // EAGAIN/EWOULDBLOCK on Linux
+    })
 }
