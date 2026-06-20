@@ -186,10 +186,13 @@ pub fn generate_report<'a>(
         scratch[..written].copy_from_slice(fallback);
     }
 
-    arena
-        .alloc_bytes(written)
-        .copy_from_slice(&scratch[..written]);
-    arena.as_bytes()
+    let report = arena.alloc_bytes(written);
+    report.copy_from_slice(&scratch[..written]);
+    // Return ONLY the report slice. During encode_report, collect_cpu and
+    // collect_ip allocate CPU name / IP strings into this same arena BEFORE
+    // the report bytes; arena.as_bytes() would prepend those strings and
+    // corrupt the JSON (observed as server "Invalid JSON" on us3).
+    &report[..]
 }
 
 // ── encode_report (internal) ─────────────────────────────────────────────────
@@ -358,10 +361,12 @@ fn encode_report(
     j.u64_field(Field::Used, disk_used)?;
     j.end_obj()?;
 
-    // Network
+    // Network — up/down are bytes/s as uint64 (matches Go wire format),
+    // NOT float. Emitting "0.0" here made the server reject "Invalid report
+    // format".
     j.begin_obj_field(Field::Net)?;
-    j.f64_field(Field::Up, net_up as f64)?;
-    j.f64_field(Field::Down, net_down as f64)?;
+    j.u64_field(Field::Up, net_up)?;
+    j.u64_field(Field::Down, net_down)?;
     j.u64_field(Field::TotalUp, net_total_up)?;
     j.u64_field(Field::TotalDown, net_total_down)?;
     j.end_obj()?;
