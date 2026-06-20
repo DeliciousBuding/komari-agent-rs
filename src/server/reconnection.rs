@@ -271,6 +271,13 @@ fn run_tick_loop(
             }
             (Connection::Ws(ws), ProtocolMode::WsV1) => {
                 // v1: flat JSON report, no JSON-RPC wrapper.
+                if config.debug_log {
+                    eprintln!(
+                        "[komari] DEBUG v1 report ({}B): {}",
+                        report.len(),
+                        std::str::from_utf8(report).unwrap_or("<non-utf8>")
+                    );
+                }
                 ws.send_text(report)?;
             }
             (Connection::Http, ProtocolMode::HttpV2) => {
