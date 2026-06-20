@@ -84,7 +84,8 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
     };
 
     // Step 2: Upload basic system info at startup (non-fatal).
-    if let Err(e) = super::update_basic_info(config, &tls_cfg) {
+    let dial = crate::proxy::Dialer::from_config(config);
+    if let Err(e) = super::update_basic_info(config, &tls_cfg, &dial) {
         eprintln!("[komari] WARN: initial basic info upload failed: {}", e);
     }
 
@@ -98,7 +99,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
     loop {
         // Periodic basic info refresh.
         if last_info_refresh.elapsed() >= info_interval {
-            if let Err(e) = super::update_basic_info(config, &tls_cfg) {
+            if let Err(e) = super::update_basic_info(config, &tls_cfg, &dial) {
                 eprintln!("[komari] WARN: periodic basic info refresh failed: {}", e);
             }
             last_info_refresh = Instant::now();
@@ -106,7 +107,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
 
         // Do NOT on_reconnect() here — connect failures must accumulate to
         // trigger the 3-strike downgrade (WsV2 → WsV1 → HttpV2 → HttpV1).
-        let conn = match connect_with_fsm(&fsm, config, &tls_cfg) {
+        let conn = match connect_with_fsm(&fsm, config, &tls_cfg, &dial) {
             Ok(conn) => {
                 fsm.on_success();
                 backoff.reset();
@@ -134,7 +135,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
             }
         };
 
-        if let Err(e) = run_tick_loop(conn, &mut fsm, &mut monitor, &mut arena, config, &tls_cfg) {
+        if let Err(e) = run_tick_loop(conn, &mut fsm, &mut monitor, &mut arena, config, &tls_cfg, &dial) {
             let kind = classify_tick_failure(&e);
             let downgraded = fsm.on_failure(kind);
             eprintln!(
@@ -165,6 +166,7 @@ fn connect_with_fsm(
     fsm: &ProtocolFsm,
     config: &Config,
     tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
 ) -> Result<Connection, WsErr> {
     let cf_access = CfAccess::from_config(config);
 
@@ -186,6 +188,7 @@ fn connect_with_fsm(
                 Arc::clone(tls_cfg),
                 Duration::from_secs(30),
                 &ws_headers,
+                dial,
             )?;
             Ok(Connection::Ws(Box::new(conn)))
         }
@@ -202,6 +205,7 @@ fn connect_with_fsm(
                 None,
                 &http_headers,
                 tls_cfg,
+                dial,
             )
             .map_err(|e| WsErr::Io(format!("HTTP probe failed: {}", e)))?;
             Ok(Connection::Http)
@@ -245,6 +249,7 @@ fn run_tick_loop(
     arena: &mut ScratchArena,
     config: &Config,
     tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
 ) -> Result<(), TickErr> {
     let mut last_heartbeat = Instant::now();
 
@@ -271,6 +276,7 @@ fn run_tick_loop(
                     None,
                     &build_http_cf_headers(config),
                     tls_cfg,
+                    dial,
                 )?;
                 if !resp.body.is_empty() {
                     dispatch_server_message(&resp.body, config);
@@ -284,6 +290,7 @@ fn run_tick_loop(
                     None,
                     &build_http_cf_headers(config),
                     tls_cfg,
+                    dial,
                 )?;
                 if !resp.body.is_empty() {
                     dispatch_server_message(&resp.body, config);
