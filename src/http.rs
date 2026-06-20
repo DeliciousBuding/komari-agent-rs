@@ -62,14 +62,30 @@ pub fn http_post(
     // 1. Parse URL → host, port, path, query
     let (host, port, path, query) = parse_https_url(url)?;
 
-    // 2. DNS resolve + TCP connect with 30 s timeout
-    let addr = format!("{host}:{port}");
-    let mut addrs = addr.to_socket_addrs()?;
-    let sock_addr = addrs
-        .next()
-        .ok_or_else(|| HttpErr::Parse("DNS returned no addresses".into()))?;
+    // 2. TCP connect — direct, or via HTTP CONNECT proxy if one is configured.
+    //
+    // When HTTPS_PROXY / ALL_PROXY / HTTP_PROXY is set, CONNECT-tunnel to
+    // (host, port) through the proxy; the returned stream is a transparent TCP
+    // tunnel that we TLS-wrap exactly as before. The no-proxy path is unchanged.
+    let tcp = if let Some(proxy_url) = crate::proxy::get_proxy_for(&host) {
+        let (proxy_host, proxy_port) = crate::proxy::parse_proxy_url(&proxy_url)
+            .map_err(|e| HttpErr::Io(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
+        crate::proxy::connect_via_proxy(
+            &proxy_host,
+            proxy_port,
+            &host,
+            port,
+            Duration::from_secs(30),
+        )?
+    } else {
+        let addr = format!("{host}:{port}");
+        let mut addrs = addr.to_socket_addrs()?;
+        let sock_addr = addrs
+            .next()
+            .ok_or_else(|| HttpErr::Parse("DNS returned no addresses".into()))?;
+        TcpStream::connect_timeout(&sock_addr, Duration::from_secs(30))?
+    };
 
-    let tcp = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(30))?;
     tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
     tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
 

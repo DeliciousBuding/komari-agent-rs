@@ -6,6 +6,7 @@ mod gzip;
 mod http;
 mod json;
 mod monitor;
+mod proxy;
 mod protocol;
 mod server;
 mod tls;

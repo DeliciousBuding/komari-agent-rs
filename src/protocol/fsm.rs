@@ -22,8 +22,10 @@
 /// Which protocol version and transport is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolMode {
-    /// WebSocket with v2 JSON-RPC 2.0 protocol.
+    /// WebSocket with v2 JSON-RPC 2.0 protocol (/api/clients/v2/rpc).
     WsV2,
+    /// WebSocket with v1 flat-report protocol (/api/clients/report).
+    WsV1,
     /// HTTP POST fallback with v2 JSON-RPC 2.0 protocol.
     HttpV2,
     /// HTTP POST with v1 flat-report protocol (terminal fallback).
@@ -49,6 +51,7 @@ pub enum FailureKind {
 #[derive(Debug, Clone, Copy)]
 pub struct ProtocolFsm {
     mode: ProtocolMode,
+    initial_mode: ProtocolMode,
     consecutive_v2_failures: u8,
     ws_v2_failures: u8,
     http_v2_failures: u8,
@@ -57,10 +60,16 @@ pub struct ProtocolFsm {
 impl ProtocolFsm {
     pub const FALLBACK_THRESHOLD: u8 = 3;
 
-    /// Create a new FSM starting at `WsV2`.
-    pub fn new() -> Self {
+    /// Create a new FSM. Starts at WsV2 if `protocol_version >= 2`, else WsV1.
+    pub fn new(protocol_version: u8) -> Self {
+        let initial = if protocol_version >= 2 {
+            ProtocolMode::WsV2
+        } else {
+            ProtocolMode::WsV1
+        };
         Self {
-            mode: ProtocolMode::WsV2,
+            mode: initial,
+            initial_mode: initial,
             consecutive_v2_failures: 0,
             ws_v2_failures: 0,
             http_v2_failures: 0,
@@ -113,7 +122,8 @@ impl ProtocolFsm {
         if self.consecutive_v2_failures >= Self::FALLBACK_THRESHOLD {
             let old = self.mode;
             self.mode = match self.mode {
-                ProtocolMode::WsV2 => ProtocolMode::HttpV2,
+                ProtocolMode::WsV2 => ProtocolMode::WsV1,
+                ProtocolMode::WsV1 => ProtocolMode::HttpV2,
                 ProtocolMode::HttpV2 => ProtocolMode::HttpV1,
                 ProtocolMode::HttpV1 => unreachable!(),
             };
@@ -126,9 +136,9 @@ impl ProtocolFsm {
         false
     }
 
-    /// Reset mode to WsV2 and clear all counters (called on reconnect).
+    /// Reset mode to the initial protocol and clear all counters (called on reconnect).
     pub fn on_reconnect(&mut self) {
-        self.mode = ProtocolMode::WsV2;
+        self.mode = self.initial_mode;
         self.consecutive_v2_failures = 0;
         self.ws_v2_failures = 0;
         self.http_v2_failures = 0;
@@ -137,7 +147,7 @@ impl ProtocolFsm {
 
 impl Default for ProtocolFsm {
     fn default() -> Self {
-        Self::new()
+        Self::new(2)
     }
 }
 
@@ -238,13 +248,13 @@ mod tests {
 
     #[test]
     fn starts_at_ws_v2() {
-        let fsm = ProtocolFsm::new();
+        let fsm = ProtocolFsm::new(2);
         assert_eq!(fsm.mode(), ProtocolMode::WsV2);
     }
 
     #[test]
     fn three_strikes_ws_to_http_v2() {
-        let mut fsm = ProtocolFsm::new();
+        let mut fsm = ProtocolFsm::new(2);
         assert!(!fsm.on_failure(FailureKind::WsConnect));
         assert!(!fsm.on_failure(FailureKind::WsConnect));
         assert!(fsm.on_failure(FailureKind::WsConnect));
@@ -253,7 +263,7 @@ mod tests {
 
     #[test]
     fn reconnect_resets_to_ws_v2() {
-        let mut fsm = ProtocolFsm::new();
+        let mut fsm = ProtocolFsm::new(2);
         for _ in 0..6 {
             fsm.on_failure(FailureKind::HttpPost);
         }
