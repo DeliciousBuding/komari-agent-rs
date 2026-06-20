@@ -12,16 +12,13 @@ use std::io::Read;
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const BASE64_TABLE: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// WebSocket magic GUID per RFC 6455 §4.2.2.
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// SHA-1 initial hash values (H0..H4), per RFC 3174 §6.1.
-const SHA1_INIT: [u32; 5] = [
-    0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0,
-];
+const SHA1_INIT: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
 
 // ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -145,7 +142,10 @@ fn fill_random(buf: &mut [u8]) {
                 BCRYPT_USE_SYSTEM_PREFERRED_RNG,
             )
         };
-        assert_eq!(status, 0, "BCryptGenRandom failed with status 0x{status:08X}");
+        assert_eq!(
+            status, 0,
+            "BCryptGenRandom failed with status 0x{status:08X}"
+        );
     }
 
     #[cfg(not(any(unix, windows)))]
