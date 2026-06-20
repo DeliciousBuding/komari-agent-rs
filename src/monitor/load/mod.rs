@@ -9,7 +9,12 @@ pub struct LoadInfo {
     pub load15: f64,
 }
 
+#[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(windows)]
+pub mod windows;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 /// Collect system load average. Returns zeros on unsupported platforms.
 pub fn collect() -> Result<LoadInfo, io::Error> {
@@ -17,7 +22,15 @@ pub fn collect() -> Result<LoadInfo, io::Error> {
     {
         return linux::collect();
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        return windows::collect();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos::collect();
+    }
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
         Ok(LoadInfo::default())
     }
