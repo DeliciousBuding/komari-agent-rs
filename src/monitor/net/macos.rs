@@ -201,7 +201,8 @@ pub fn collect(
             cur = ifa.ifa_next;
             continue;
         }
-        let family = unsafe { *(ifa.ifa_addr as *const u8) } as u16;
+        // macOS/BSD sockaddr has sa_len at offset 0, sa_family at offset 1
+        let family = unsafe { *(ifa.ifa_addr.add(1)) } as u16;
         if family != AF_LINK {
             cur = ifa.ifa_next;
             continue;
