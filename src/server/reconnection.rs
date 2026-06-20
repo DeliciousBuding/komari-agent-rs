@@ -92,7 +92,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
 
     let mut fsm = ProtocolFsm::new(config.protocol_version);
     let mut backoff = Backoff::new(config.max_retries, config.reconnect_interval);
-    let mut monitor = Monitor::new();
+    let mut monitor = Monitor::new_with_config(config);
     let mut arena = ScratchArena::new();
     let mut last_info_refresh = Instant::now();
     let info_interval = Duration::from_secs(config.info_report_interval * 60);

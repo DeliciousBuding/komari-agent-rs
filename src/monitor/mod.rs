@@ -64,15 +64,49 @@ pub struct Monitor {
     pub prev_cpu: cpu::PrevCpu,
     /// Previous network per-interface counters for bytes/sec delta.
     pub prev_net: net::PrevNetSnapshot,
+    /// Optional monthly traffic persistence, enabled when
+    /// [`Config::month_rotate`] != 0.  When present, the report's `totalUp` /
+    /// `totalDown` come from these persisted month-to-date totals instead of
+    /// the raw process-lifetime interface counters.
+    pub netstatic: Option<netstatic::NetStatic>,
+    /// Previous aggregate raw TX counter (sum across interfaces) — used to
+    /// derive per-tick byte deltas fed into [`netstatic`].
+    prev_total_up: u64,
+    /// Previous aggregate raw RX counter (sum across interfaces).
+    prev_total_down: u64,
+    /// False until the first tick seeds [`prev_total_up`] / [`prev_total_down`].
+    net_total_ready: bool,
 }
 
 impl Monitor {
-    /// Create a fresh `Monitor` with no previous samples.
+    /// Create a fresh `Monitor` with no previous samples and netstatic
+    /// disabled (equivalent to `month_rotate == 0`).
     pub fn new() -> Self {
         Self {
             prev_cpu: cpu::PrevCpu::default(),
             prev_net: net::PrevNetSnapshot::new(),
+            netstatic: None,
+            prev_total_up: 0,
+            prev_total_down: 0,
+            net_total_ready: false,
         }
+    }
+
+    /// Create a `Monitor`, enabling monthly traffic persistence when
+    /// [`Config::month_rotate`] != 0.
+    ///
+    /// When enabled, the netstatic database is loaded from the persistence
+    /// file (creating a fresh one if absent), and the report's `totalUp` /
+    /// `totalDown` will reflect the month-to-date persisted totals.  When
+    /// disabled (`month_rotate == 0`) the monitor behaves exactly like
+    /// [`new`](Self::new) — process-lifetime interface counters are reported
+    /// and no file I/O occurs.
+    pub fn new_with_config(config: &Config) -> Self {
+        let mut mon = Self::new();
+        if config.month_rotate != 0 {
+            mon.netstatic = Some(load_or_create_netstatic(config));
+        }
+        mon
     }
 
     /// Execute one monitoring tick.
@@ -87,6 +121,34 @@ impl Monitor {
         config: &Config,
     ) -> Result<&'a [u8], MonitorErr> {
         Ok(generate_report(self, arena, config))
+    }
+}
+
+/// Default persistence path for the monthly netstatic database.
+///
+/// Lives in the OS temp dir as a single-file JSON store; matches the task
+/// spec's `<temp>/komari-netstatic.json` design.  Kept here so both the
+/// initial load and every [`NetStatic::save`] use the same path derivation.
+fn netstatic_default_path() -> String {
+    let mut path = std::env::temp_dir();
+    path.push("komari-netstatic.json");
+    path.to_string_lossy().into_owned()
+}
+
+/// Load the monthly netstatic database, or create a fresh one on miss.
+///
+/// On any read/parse failure we fall back to a new empty instance rather than
+/// failing the whole agent — a corrupt store should never block monitoring.
+fn load_or_create_netstatic(config: &Config) -> netstatic::NetStatic {
+    let path = netstatic_default_path();
+    match netstatic::NetStatic::load(&path) {
+        Ok(mut ns) => {
+            // Apply rotation on startup so a stale month is cleared before
+            // the first tick contributes to it.
+            ns.maybe_reset(config);
+            ns
+        }
+        Err(_) => netstatic::NetStatic::new(&path),
     }
 }
 
@@ -184,6 +246,52 @@ fn encode_report(
         net_total_up += ni.total_up;
         net_total_down += ni.total_down;
     }
+
+    // ── Monthly traffic persistence (Go `--month-rotate` parity) ──
+    //
+    // When month_rotate != 0 the report's `totalUp` / `totalDown` come from
+    // the netstatic month-to-date totals instead of the raw process-lifetime
+    // interface counters.  Per-tick byte deltas are accumulated and persisted
+    // every tick so a restart resumes the running monthly total.
+    //
+    // The previous aggregate counters are read into locals before taking the
+    // netstatic field borrow, then written back after — this keeps the field
+    // borrow disjoint from the other `monitor` field accesses.
+    let prev_up = monitor.prev_total_up;
+    let prev_down = monitor.prev_total_down;
+    let ready = monitor.net_total_ready;
+    // Snapshot the raw aggregate counters *before* they are overwritten by
+    // the netstatic month-to-date totals — these are the per-tick delta
+    // baseline for the next tick.
+    let raw_total_up = net_total_up;
+    let raw_total_down = net_total_down;
+    if let Some(ref mut ns) = monitor.netstatic {
+        // Derive this tick's byte delta from the raw aggregate counters.
+        // wrapping_sub mirrors the kernel counter-wrap handling used by the
+        // per-interface delta path; the first tick seeds the baseline without
+        // contributing a (huge) bogus delta.
+        if ready {
+            let up_delta = raw_total_up.wrapping_sub(prev_up);
+            let down_delta = raw_total_down.wrapping_sub(prev_down);
+            ns.update(up_delta, down_delta);
+        }
+
+        // Roll over to the current billing month if the day boundary passed.
+        ns.maybe_reset(config);
+
+        // Persist on every tick — the file is a single-line JSON (~100 B),
+        // so the I/O cost is negligible relative to a 1 s monitoring cadence.
+        let _ = ns.save();
+
+        // Replace the wire-format totals with the persisted month-to-date.
+        net_total_up = ns.tx_bytes;
+        net_total_down = ns.rx_bytes;
+    }
+    // Seed the next tick's delta baseline from the raw counters (NOT the
+    // persisted month-to-date totals, which reset on rotation).
+    monitor.prev_total_up = raw_total_up;
+    monitor.prev_total_down = raw_total_down;
+    monitor.net_total_ready = true;
 
     // ── Load: /proc/loadavg ──
     let load = load::collect().unwrap_or_else(|_| {
