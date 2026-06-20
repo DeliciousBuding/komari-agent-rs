@@ -83,11 +83,12 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
         }
     };
 
-    // Step 2: Upload basic system info at startup (non-fatal).
+    // Step 2: Build the network dialer.
+    //
+    // Basic info is uploaded AFTER the first successful connection — the
+    // server must register this client (via the WS handshake) before it can
+    // accept basicInfo updates, so uploading eagerly here yields HTTP 500.
     let dial = crate::proxy::Dialer::from_config(config);
-    if let Err(e) = super::update_basic_info(config, &tls_cfg, &dial) {
-        eprintln!("[komari] WARN: initial basic info upload failed: {}", e);
-    }
 
     let mut fsm = ProtocolFsm::new(config.protocol_version);
     let mut backoff = Backoff::new(config.max_retries, config.reconnect_interval);
@@ -111,6 +112,11 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
             Ok(conn) => {
                 fsm.on_success();
                 backoff.reset();
+                // Client is now registered server-side — upload basic info.
+                // Non-fatal: the periodic refresh retries on failure.
+                if let Err(e) = super::update_basic_info(config, &tls_cfg, &dial) {
+                    eprintln!("[komari] WARN: post-connect basic info upload failed: {}", e);
+                }
                 conn
             }
             Err(e) => {
@@ -269,17 +275,18 @@ fn run_tick_loop(
             }
             (Connection::Http, ProtocolMode::HttpV2) => {
                 let req = v2::new_request("0", v2::METHOD_AGENT_REPORT, report);
+                let (body, encoding) = gzip_if_enabled(&req, config);
                 let resp = http_post(
                     &build_http_url(config, ProtocolMode::HttpV2),
-                    &req,
+                    &body,
                     "application/json",
-                    None,
+                    encoding,
                     &build_http_cf_headers(config),
                     tls_cfg,
                     dial,
                 )?;
                 if !resp.body.is_empty() {
-                    dispatch_server_message(&resp.body, config);
+                    dispatch_server_message(&resp.body, config, dial, tls_cfg, None, fsm.mode());
                 }
             }
             (Connection::Http, ProtocolMode::HttpV1) => {
@@ -293,7 +300,7 @@ fn run_tick_loop(
                     dial,
                 )?;
                 if !resp.body.is_empty() {
-                    dispatch_server_message(&resp.body, config);
+                    dispatch_server_message(&resp.body, config, dial, tls_cfg, None, fsm.mode());
                 }
             }
             _ => return Err(TickErr::Other("mode/connection mismatch".into())),
@@ -305,7 +312,9 @@ fn run_tick_loop(
                 .get_ref()
                 .set_read_timeout(Some(Duration::from_millis(100)));
             match ws.read_message() {
-                Ok(Some(WsMessage::Text(data))) => dispatch_server_message(&data, config),
+                Ok(Some(WsMessage::Text(data))) => {
+                    dispatch_server_message(&data, config, dial, tls_cfg, Some(ws), fsm.mode())
+                }
                 Ok(Some(WsMessage::Ping(data))) => {
                     ws.send_pong(&data)?;
                 }
@@ -341,7 +350,14 @@ fn run_tick_loop(
 // Server message dispatch
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn dispatch_server_message(data: &[u8], config: &Config) {
+fn dispatch_server_message(
+    data: &[u8],
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    ws: Option<&mut WsConnection>,
+    mode: ProtocolMode,
+) {
     let text = match std::str::from_utf8(data) {
         Ok(s) => s,
         Err(_) => {
@@ -349,28 +365,173 @@ fn dispatch_server_message(data: &[u8], config: &Config) {
             return;
         }
     };
-    if text.contains("\"jsonrpc\":\"2.0\"") || text.contains("\"jsonrpc\": \"2.0\"") {
-        dispatch_v2_event(data, config);
-    } else if text.contains("\"message\":\"exec\"") || text.contains("\"task_id\"") {
-        eprintln!("[komari] [stub] exec request: {}", text);
-    } else if text.contains("\"message\":\"ping\"") || text.contains("\"ping_task_id\"") {
-        eprintln!("[komari] [stub] ping request: {}", text);
-    } else if text.contains("\"message\":\"terminal\"") || text.contains("\"request_id\"") {
-        eprintln!("[komari] [stub] terminal request: {}", text);
+
+    if text.contains("\"jsonrpc\"") {
+        // v2 JSON-RPC 2.0
+        let method = super::task::extract_json_method(data).unwrap_or_default();
+        match method.as_str() {
+            "agent.exec" => {
+                let task_id =
+                    super::task::extract_json_string(data, "task_id").unwrap_or_default();
+                let command =
+                    super::task::extract_json_string(data, "command").unwrap_or_default();
+                handle_exec_task(config, dial, tls_cfg, &task_id, &command);
+            }
+            "agent.ping" => {
+                if let Some((tid, pt, tgt)) = extract_ping_fields(data) {
+                    handle_ping_task(ws, mode, tid, &pt, &tgt);
+                }
+            }
+            "agent.terminal.request" => {
+                eprintln!(
+                    "[komari] terminal request received (enable 'terminal' feature to handle)"
+                );
+            }
+            "agent.message" | "agent.event" => {
+                eprintln!("[komari] server message/event: {}", abbreviate(text));
+            }
+            "" => {
+                eprintln!("[komari] v2 message with no method: {}", abbreviate(text));
+            }
+            other => {
+                eprintln!("[komari] unhandled v2 method '{other}'");
+            }
+        }
+    } else {
+        // v1 flat JSON: {"message":"exec", ...}
+        let msg = super::task::extract_json_string(data, "message").unwrap_or_default();
+        match msg.as_str() {
+            "exec" => {
+                let task_id =
+                    super::task::extract_json_string(data, "task_id").unwrap_or_default();
+                let command =
+                    super::task::extract_json_string(data, "command").unwrap_or_default();
+                handle_exec_task(config, dial, tls_cfg, &task_id, &command);
+            }
+            "ping" => {
+                if let Some((tid, pt, tgt)) = extract_ping_fields(data) {
+                    handle_ping_task(ws, mode, tid, &pt, &tgt);
+                }
+            }
+            "terminal" => {
+                eprintln!(
+                    "[komari] terminal request received (enable 'terminal' feature to handle)"
+                );
+            }
+            _ if !text.trim().is_empty() => {
+                eprintln!("[komari] unhandled v1 message: {}", abbreviate(text));
+            }
+            _ => {}
+        }
     }
 }
 
-fn dispatch_v2_event(data: &[u8], _config: &Config) {
-    let text = std::str::from_utf8(data).unwrap_or("");
-    if text.contains("\"agent.exec\"") {
-        eprintln!("[komari] [stub] v2 exec event received");
-    } else if text.contains("\"agent.ping\"") {
-        eprintln!("[komari] [stub] v2 ping event received");
-    } else if text.contains("\"agent.terminal") {
-        eprintln!("[komari] [stub] v2 terminal event received");
-    } else if text.contains("\"agent.message\"") || text.contains("\"agent.event\"") {
-        eprintln!("[komari] [stub] v2 message/event: {}", text);
+/// Extract `(task_id, ping_type, target)` from a ping task message, accepting
+/// both v1 (`ping_task_id`/`ping_type`/`ping_target`) and v2
+/// (`taskId`/`pingType`/`target`) field names.
+fn extract_ping_fields(data: &[u8]) -> Option<(i64, String, String)> {
+    let tid = super::task::extract_json_number(data, "taskId")
+        .or_else(|| super::task::extract_json_number(data, "task_id"))
+        .or_else(|| super::task::extract_json_number(data, "ping_task_id"))?;
+    let ping_type = super::task::extract_json_string(data, "pingType")
+        .or_else(|| super::task::extract_json_string(data, "ping_type"))?;
+    let target = super::task::extract_json_string(data, "target")
+        .or_else(|| super::task::extract_json_string(data, "ping_target"))?;
+    Some((tid, ping_type, target))
+}
+
+/// Execute a remote command and upload its result via HTTP POST to
+/// `/api/clients/task/result` (parity with Go `executeCommand` + result upload).
+fn handle_exec_task(
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    task_id: &str,
+    command: &str,
+) {
+    if task_id.is_empty() {
+        eprintln!("[komari] exec request without task_id, ignoring");
+        return;
     }
+    eprintln!("[komari] exec task {task_id}: {}", abbreviate(command));
+    let result = super::task::execute_exec(command, config.disable_web_ssh);
+    let body = super::task::build_task_result(task_id, &result.output, result.exit_code);
+    if let Err(e) = upload_task_result(config, dial, tls_cfg, &body) {
+        eprintln!("[komari] WARN: task/result upload failed: {e}");
+    }
+}
+
+/// POST a task result body to the task/result endpoint.
+fn upload_task_result(
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    body: &[u8],
+) -> Result<(), String> {
+    let base = config.endpoint.trim_end_matches('/');
+    let token = crate::ws::url_encode(&config.token);
+    let url = format!("{base}/api/clients/task/result?token={token}");
+    let mut headers: Vec<(String, String)> = Vec::new();
+    if let Some(ref cf) = CfAccess::from_config(config) {
+        cf.inject_http_headers(&mut headers);
+    }
+    match http_post(&url, body, "application/json", None, &headers, tls_cfg, dial) {
+        Ok(r) if r.status_code == 200 => Ok(()),
+        Ok(r) => Err(format!("task/result returned HTTP {}", r.status_code)),
+        Err(e) => Err(format!("task/result upload error: {e}")),
+    }
+}
+
+/// Run a server-requested ping and send the result back over the WebSocket.
+/// When no WS is available (HTTP fallback transport), the result is logged
+/// and dropped — Go behaves the same (ping results travel over WS).
+fn handle_ping_task(
+    mut ws: Option<&mut WsConnection>,
+    mode: ProtocolMode,
+    task_id: i64,
+    ping_type: &str,
+    target: &str,
+) {
+    eprintln!("[komari] ping task {task_id}: {ping_type} -> {target}");
+    let result = super::task::handle_ping(ping_type, target, None);
+    let is_v2 = matches!(mode, ProtocolMode::WsV2 | ProtocolMode::HttpV2);
+    let payload = result.build_payload(task_id as u64, if is_v2 { 2 } else { 1 });
+    if let Some(ws) = ws.as_mut() {
+        if let Err(e) = ws.send_text(&payload) {
+            eprintln!("[komari] WARN: failed to send ping result: {e:?}");
+        }
+    } else {
+        eprintln!("[komari] ping result produced but no WS available (HTTP mode)");
+    }
+}
+
+/// Optionally gzip-compress a payload for the v2 HTTP POST path.
+///
+/// Returns `(body, encoding)` where `encoding` is `Some("gzip")` when
+/// compression is enabled, the payload is large enough to be worth it, and
+/// compression succeeded. Small payloads (< 64 B) skip compression — the gzip
+/// overhead would exceed any savings.
+fn gzip_if_enabled(body: &[u8], config: &Config) -> (Vec<u8>, Option<&'static str>) {
+    if config.disable_compression || body.len() < 64 {
+        return (body.to_vec(), None);
+    }
+    match crate::gzip::gzip_compress(body) {
+        Ok(compressed) => (compressed, Some("gzip")),
+        Err(_) => (body.to_vec(), None),
+    }
+}
+
+/// Truncate a string for logging, never splitting a UTF-8 codepoint.
+fn abbreviate(s: &str) -> String {
+    const MAX: usize = 200;
+    if s.len() <= MAX {
+        return s.to_string();
+    }
+    let mut end = MAX;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

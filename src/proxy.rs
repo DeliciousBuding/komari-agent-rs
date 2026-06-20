@@ -82,7 +82,7 @@ impl From<crate::dns::DnsErr> for NetErr {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProxyScheme {
+pub enum ProxyScheme {
     /// HTTP CONNECT tunnel (RFC 7231 §5.3.3).
     Connect,
     /// SOCKS5 with local DNS resolution (RFC 1928).
@@ -92,11 +92,11 @@ enum ProxyScheme {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ProxySpec {
-    scheme: ProxyScheme,
-    host: String,
-    port: u16,
-    auth: Option<(String, String)>,
+pub struct ProxySpec {
+    pub scheme: ProxyScheme,
+    pub host: String,
+    pub port: u16,
+    pub auth: Option<(String, String)>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
