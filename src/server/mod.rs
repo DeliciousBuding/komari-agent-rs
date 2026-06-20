@@ -89,7 +89,10 @@ fn build_static_heartbeat() -> Vec<u8> {
 ///
 /// Called at startup and periodically thereafter.  POSTs a JSON-RPC v2
 /// `agent.basicInfo` notification or v1 raw JSON.
-pub(super) fn update_basic_info(config: &Config, tls_cfg: &Arc<rustls::ClientConfig>) -> Result<(), String> {
+pub(super) fn update_basic_info(
+    config: &Config,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+) -> Result<(), String> {
     let base = config.endpoint.trim_end_matches('/');
     let encoded_token = crate::ws::url_encode(&config.token);
 

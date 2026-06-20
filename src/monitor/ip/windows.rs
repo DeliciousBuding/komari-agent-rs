@@ -69,10 +69,10 @@ struct SockAddrIn6 {
 /// Fields used: Next, Address (lpSockaddr).
 #[repr(C)]
 struct IPAdapterUnicastAddress {
-    _pad0: [u8; 0x08],                          // Length + Flags (u64)
-    next: *mut IPAdapterUnicastAddress,          // offset 0x08
-    lp_sockaddr: *mut u8,                        // offset 0x10 (SOCKET_ADDRESS.lpSockaddr)
-    _pad1: [u8; 0x20 - 0x18],                   // iSockaddrLength + fields after
+    _pad0: [u8; 0x08],                  // Length + Flags (u64)
+    next: *mut IPAdapterUnicastAddress, // offset 0x08
+    lp_sockaddr: *mut u8,               // offset 0x10 (SOCKET_ADDRESS.lpSockaddr)
+    _pad1: [u8; 0x20 - 0x18],           // iSockaddrLength + fields after
 }
 
 /// Minimal `IP_ADAPTER_ADDRESSES` for x64 Windows 10/11.
@@ -80,14 +80,14 @@ struct IPAdapterUnicastAddress {
 #[repr(C)]
 struct IPAdapterAddresses {
     _pad0: [u8; 0x08],                           // Length + IfIndex (u64)
-    next: *mut IPAdapterAddresses,                // offset 0x08
+    next: *mut IPAdapterAddresses,               // offset 0x08
     _pad1: [u8; 0x18 - 0x10],                    // AdapterName (PSTR)
-    first_unicast: *mut IPAdapterUnicastAddress,  // offset 0x18
+    first_unicast: *mut IPAdapterUnicastAddress, // offset 0x18
     _pad2: [u8; 0x48 - 0x20],                    // several pointers + Description
-    friendly_name: *mut u16,                      // offset 0x48 (PWSTR)
+    friendly_name: *mut u16,                     // offset 0x48 (PWSTR)
     _pad3: [u8; 0x68 - 0x50],                    // PhysicalAddress..Mtu
-    if_type: u32,                                 // offset 0x68
-    oper_status: u32,                             // offset 0x6C
+    if_type: u32,                                // offset 0x68
+    oper_status: u32,                            // offset 0x6C
 }
 
 unsafe extern "system" {
@@ -134,11 +134,12 @@ pub fn collect_ip(config: &Config) -> Result<(Option<String>, Option<String>), M
     }
 
     // 4. Cloudflare trace fallback
-    if ipv4.is_none() && ipv6.is_none() {
-        if let Some((v4, v6)) = fetch_cf_trace() {
-            ipv4 = v4;
-            ipv6 = v6;
-        }
+    if ipv4.is_none()
+        && ipv6.is_none()
+        && let Some((v4, v6)) = fetch_cf_trace()
+    {
+        ipv4 = v4;
+        ipv6 = v6;
     }
 
     Ok((ipv4, ipv6))
@@ -188,7 +189,8 @@ fn ip_from_nic(include: &[String], exclude: &[String]) -> (Option<String>, Optio
         let adapter = unsafe { &*cur };
 
         // Skip down or loopback
-        if adapter.oper_status != IF_OPER_STATUS_UP || adapter.if_type == IF_TYPE_SOFTWARE_LOOPBACK {
+        if adapter.oper_status != IF_OPER_STATUS_UP || adapter.if_type == IF_TYPE_SOFTWARE_LOOPBACK
+        {
             cur = adapter.next;
             continue;
         }
@@ -247,17 +249,19 @@ fn ip_from_nic(include: &[String], exclude: &[String]) -> (Option<String>, Optio
     (ipv4, ipv6)
 }
 
-unsafe fn wide_ptr_to_string(ptr: *const u16) -> String { unsafe {
-    if ptr.is_null() {
-        return String::new();
+unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {
+    unsafe {
+        if ptr.is_null() {
+            return String::new();
+        }
+        let mut len = 0usize;
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        let wide = std::slice::from_raw_parts(ptr, len);
+        String::from_utf16(wide).unwrap_or_default()
     }
-    let mut len = 0usize;
-    while *ptr.add(len) != 0 {
-        len += 1;
-    }
-    let wide = std::slice::from_raw_parts(ptr, len);
-    String::from_utf16(wide).unwrap_or_default()
-}}
+}
 
 fn format_ipv6(addr: &[u8; 16]) -> String {
     let mut s = String::with_capacity(39);
@@ -335,10 +339,10 @@ fn fetch_ipv4_http() -> Option<String> {
         "http://ipv4.icanhazip.com",
     ];
     for url in &apis {
-        if let Some(body) = http_get(url) {
-            if let Some(ip) = extract_ipv4(&body) {
-                return Some(ip);
-            }
+        if let Some(body) = http_get(url)
+            && let Some(ip) = extract_ipv4(&body)
+        {
+            return Some(ip);
         }
     }
     None
@@ -351,10 +355,10 @@ fn fetch_ipv6_http() -> Option<String> {
         "http://ipv6.icanhazip.com",
     ];
     for url in &apis {
-        if let Some(body) = http_get(url) {
-            if let Some(ip) = extract_ipv6(&body) {
-                return Some(ip);
-            }
+        if let Some(body) = http_get(url)
+            && let Some(ip) = extract_ipv6(&body)
+        {
+            return Some(ip);
         }
     }
     None
@@ -411,7 +415,7 @@ fn extract_ipv4(s: &str) -> Option<String> {
                 let candidate = &s[start..i];
                 if candidate
                     .split('.')
-                    .all(|o| o.parse::<u16>().map_or(false, |n| n <= 255))
+                    .all(|o| o.parse::<u16>().is_ok_and(|n| n <= 255))
                 {
                     return Some(candidate.to_string());
                 }
@@ -460,7 +464,7 @@ fn extract_ipv6(s: &str) -> Option<String> {
                 }
                 i += 1;
             }
-            if ok && colons >= 2 && groups >= 1 && groups <= 8 {
+            if ok && colons >= 2 && (1..=8).contains(&groups) {
                 let candidate = &s[start..i];
                 let trimmed =
                     candidate.trim_end_matches(|c: char| !c.is_ascii_hexdigit() && c != ':');

@@ -1,7 +1,7 @@
 // komari-agent-rs: FreeBSD disk metrics — getmntinfo + statfs FFI.
 #![cfg(target_os = "freebsd")]
 
-use crate::arena::{SmallVec, MAX_DISKS};
+use crate::arena::{MAX_DISKS, SmallVec};
 use crate::config::Config;
 
 // ── getmntinfo FFI (libc) ──────────────────────────────────────────────────
@@ -13,26 +13,26 @@ const MNT_NOWAIT: i32 = 2;
 // Key fields: f_bsize, f_blocks, f_bavail, f_fstypename, f_mntonname.
 #[repr(C)]
 struct StatFs {
-    f_version: u32,         // offset 0  — statfs version (FreeBSD-specific)
-    f_type: u32,            // offset 4
-    f_flags: u64,           // offset 8
-    f_bsize: u64,           // offset 16
-    f_iosize: u64,          // offset 24
-    f_blocks: u64,          // offset 32
-    f_bfree: u64,           // offset 40
-    f_bavail: u64,          // offset 48
-    f_files: u64,           // offset 56
-    f_ffree: u64,           // offset 64
-    f_syncwrites: u64,      // offset 72
-    f_asyncwrites: u64,     // offset 80
-    f_syncreads: u64,       // offset 88
-    f_asyncreads: u64,      // offset 96
-    f_spare: [u64; 10],    // offset 104 — spare fields
-    f_namemax: u32,         // offset 184
-    f_owner: u32,           // offset 188
-    f_fsid: [i32; 2],      // offset 192
-    f_charspare: [i8; 80], // offset 200
-    f_fstypename: [u8; 16], // offset 280
+    f_version: u32,            // offset 0  — statfs version (FreeBSD-specific)
+    f_type: u32,               // offset 4
+    f_flags: u64,              // offset 8
+    f_bsize: u64,              // offset 16
+    f_iosize: u64,             // offset 24
+    f_blocks: u64,             // offset 32
+    f_bfree: u64,              // offset 40
+    f_bavail: u64,             // offset 48
+    f_files: u64,              // offset 56
+    f_ffree: u64,              // offset 64
+    f_syncwrites: u64,         // offset 72
+    f_asyncwrites: u64,        // offset 80
+    f_syncreads: u64,          // offset 88
+    f_asyncreads: u64,         // offset 96
+    f_spare: [u64; 10],        // offset 104 — spare fields
+    f_namemax: u32,            // offset 184
+    f_owner: u32,              // offset 188
+    f_fsid: [i32; 2],          // offset 192
+    f_charspare: [i8; 80],     // offset 200
+    f_fstypename: [u8; 16],    // offset 280
     f_mntfromname: [u8; 1024], // offset 296
     f_mntonname: [u8; 1024],   // offset 1320
 }
@@ -71,8 +71,19 @@ impl DiskInfo {
 
 /// Filesystem types excluded from disk accounting (virtual / synthetic).
 const EXCLUDED_FS: &[&str] = &[
-    "devfs", "tmpfs", "fdescfs", "nullfs", "linprocfs", "linsysfs",
-    "procfs", "fuse", "autofs", "ctfs", "mqueue", "nfs", "smbfs",
+    "devfs",
+    "tmpfs",
+    "fdescfs",
+    "nullfs",
+    "linprocfs",
+    "linsysfs",
+    "procfs",
+    "fuse",
+    "autofs",
+    "ctfs",
+    "mqueue",
+    "nfs",
+    "smbfs",
 ];
 
 fn is_excluded_fs(fstype: &str) -> bool {

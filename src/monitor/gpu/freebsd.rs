@@ -2,8 +2,8 @@
 // Filters for class=0x03 (display controller), parses vendor/device strings.
 // Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_freebsd.go
 
-use crate::arena::{SmallVec, MAX_GPUS};
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
+use crate::arena::{MAX_GPUS, SmallVec};
 use std::process::Command;
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -79,7 +79,9 @@ fn detect_pciconf() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     }
 
     if gpus.is_empty() {
-        Err(GpuDetectErr::Parse("pciconf: no display-class (0x03) devices found".into()))
+        Err(GpuDetectErr::Parse(
+            "pciconf: no display-class (0x03) devices found".into(),
+        ))
     } else {
         Ok(gpus)
     }

@@ -19,9 +19,9 @@ unsafe extern "C" {
 // struct timeval — Darwin 64-bit layout
 #[repr(C)]
 struct TimeVal {
-    tv_sec: i64,   // __darwin_time_t = i64 on 64-bit
-    tv_usec: i32,  // __darwin_suseconds_t = i32
-    // implicit 4-byte padding to 16 bytes total
+    tv_sec: i64, // __darwin_time_t = i64 on 64-bit
+    tv_usec: i32, // __darwin_suseconds_t = i32
+                 // implicit 4-byte padding to 16 bytes total
 }
 
 // ── collect_uptime ──────────────────────────────────────────────────────────
@@ -33,7 +33,10 @@ struct TimeVal {
 ///
 /// Falls back to 0 on any failure.
 pub fn collect_uptime() -> Result<u64, io::Error> {
-    let mut tv: TimeVal = TimeVal { tv_sec: 0, tv_usec: 0 };
+    let mut tv: TimeVal = TimeVal {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
     let mut len = std::mem::size_of::<TimeVal>();
 
     let ret = unsafe {

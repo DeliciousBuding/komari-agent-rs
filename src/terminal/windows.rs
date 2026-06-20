@@ -22,8 +22,8 @@ use super::{Terminal, TerminalErr};
 #[allow(non_camel_case_types)]
 mod types {
     pub type BOOL = i32;
-    pub type HANDLE = isize;                        // matches monitor/process/windows.rs
-    pub type HPCON = isize;                         // pseudoconsole handle
+    pub type HANDLE = *mut std::ffi::c_void;
+    pub type HPCON = *mut std::ffi::c_void;
     pub type HRESULT = i32;
     pub type LPCWSTR = *const u16;
     pub type LPWSTR = *mut u16;
@@ -97,7 +97,13 @@ struct PROCESS_INFORMATION {
 }
 
 // ── FFI (kernel32.dll) ──────────────────────────────────────────────────────
+//
+// Note: CloseHandle is already declared in monitor/process/windows.rs with
+// parameter type `isize`.  Our HANDLE alias is `*mut c_void`, so we suppress
+// the clashing-extern-declarations lint.  ABI-wise the signatures are
+// identical on 64-bit (both 8 bytes).
 
+#[allow(clashing_extern_declarations)]
 unsafe extern "system" {
     fn CreatePseudoConsole(
         size: COORD,
@@ -178,6 +184,8 @@ fn to_utf16(s: &str) -> Vec<u16> {
 ///
 /// Owns the pseudoconsole handle, I/O pipe handles, and the child process
 /// handle.  Created via [`WindowsTerminal::spawn`].
+///
+/// Requires Windows 10 1809+ (or equivalent Server 2019+).
 pub struct WindowsTerminal {
     hpc: HPCON,
     /// Our read-side pipe — ConPTY writes output here, we read from it.
@@ -188,11 +196,15 @@ pub struct WindowsTerminal {
     process: HANDLE,
 }
 
+// SAFETY: komari-agent-rs is sync single-threaded; raw handle pointers are
+// never shared across threads.  The `Terminal` trait bound `Send` is
+// satisfied de-facto but the raw pointers prevent auto-derivation.
+unsafe impl Send for WindowsTerminal {}
+
 impl WindowsTerminal {
     /// Spawn a new ConPTY session with the given shell command line.
     ///
     /// On success returns a `WindowsTerminal` ready for bidirectional I/O.
-    /// Requires Windows 10 1809+ (or equivalent Server 2019+).
     pub fn spawn(shell: &str) -> Result<Self, TerminalErr> {
         // ── 1. Create I/O pipes ─────────────────────────────────────────
         let sa = SECURITY_ATTRIBUTES {
@@ -217,11 +229,9 @@ impl WindowsTerminal {
         }
 
         // ── 2. Create pseudoconsole ─────────────────────────────────────
-        let size = COORD { X: 80, Y: 24 };
+        let coord = COORD { X: 80, Y: 24 };
         let mut hpc: HPCON = ptr::null_mut();
-        let hr = unsafe {
-            CreatePseudoConsole(size, input_read, output_write, 0, &mut hpc)
-        };
+        let hr = unsafe { CreatePseudoConsole(coord, input_read, output_write, 0, &mut hpc) };
         if hr != S_OK || hpc.is_null() {
             unsafe {
                 cleanup_pipes(input_read, input_write, output_read, output_write);
@@ -235,22 +245,41 @@ impl WindowsTerminal {
             InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut size_attr);
         }
 
+        // Allocate the attribute list buffer (freed on scope exit).
         let mut attr_buf: Vec<u8> = vec![0u8; size_attr];
         let attr_list = attr_buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
         unsafe {
             if InitializeProcThreadAttributeList(attr_list, 1, 0, &mut size_attr) == FALSE {
-                cleanup(hpc, input_read, input_write, output_read, output_write,
-                        ptr::null_mut(), ptr::null_mut());
+                cleanup_early(
+                    hpc,
+                    input_read,
+                    input_write,
+                    output_read,
+                    output_write,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                );
                 return Err(TerminalErr::PtyOpen("InitializeProcThreadAttributeList"));
             }
             if UpdateProcThreadAttribute(
-                attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                hpc, std::mem::size_of::<HPCON>(),
-                ptr::null_mut(), ptr::null_mut(),
+                attr_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                hpc as LPVOID,
+                std::mem::size_of::<HPCON>(),
+                ptr::null_mut(),
+                ptr::null_mut(),
             ) == FALSE
             {
-                cleanup(hpc, input_read, input_write, output_read, output_write,
-                        ptr::null_mut(), ptr::null_mut());
+                cleanup_early(
+                    hpc,
+                    input_read,
+                    input_write,
+                    output_read,
+                    output_write,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                );
                 return Err(TerminalErr::PtyOpen("UpdateProcThreadAttribute"));
             }
         }
@@ -265,35 +294,43 @@ impl WindowsTerminal {
 
         let ok = unsafe {
             CreateProcessW(
-                ptr::null(),                                     // lpApplicationName
-                cmd_wide.as_mut_ptr(),                           // lpCommandLine
-                ptr::null_mut(),                                 // lpProcessAttributes
-                ptr::null_mut(),                                 // lpThreadAttributes
-                FALSE,                                           // bInheritHandles
-                EXTENDED_STARTUPINFO_PRESENT,                    // dwCreationFlags
-                ptr::null_mut(),                                 // lpEnvironment
-                ptr::null(),                                     // lpCurrentDirectory
-                &mut startup.startup_info,                       // lpStartupInfo
-                &mut pi,                                         // lpProcessInformation
+                ptr::null(),                  // lpApplicationName
+                cmd_wide.as_mut_ptr(),        // lpCommandLine
+                ptr::null_mut(),              // lpProcessAttributes
+                ptr::null_mut(),              // lpThreadAttributes
+                FALSE,                        // bInheritHandles
+                EXTENDED_STARTUPINFO_PRESENT, // dwCreationFlags
+                ptr::null_mut(),              // lpEnvironment
+                ptr::null(),                  // lpCurrentDirectory
+                &mut startup.startup_info,    // lpStartupInfo
+                &mut pi,                      // lpProcessInformation
             )
         };
 
-        // attr_buf drops here — attribute list memory is freed.
-        // (We don't call DeleteProcThreadAttributeList to avoid double-free.)
+        // attr_buf drops here; we intentionally do NOT call
+        // DeleteProcThreadAttributeList to avoid double-free
+        // (the buffer was heap-allocated by Vec).
 
         if ok == FALSE {
             unsafe {
-                cleanup(hpc, input_read, input_write, output_read, output_write,
-                        ptr::null_mut(), ptr::null_mut());
+                cleanup_early(
+                    hpc,
+                    input_read,
+                    input_write,
+                    output_read,
+                    output_write,
+                    pi.hProcess,
+                    pi.hThread,
+                );
             }
             return Err(TerminalErr::Exec("CreateProcessW"));
         }
 
         // ── 5. Close handles we no longer need ──────────────────────────
         unsafe {
-            CloseHandle(input_read);   // ConPTY owns the read side of the input pipe
+            CloseHandle(input_read); // ConPTY owns the read side of the input pipe
             CloseHandle(output_write); // ConPTY owns the write side of the output pipe
-            CloseHandle(pi.hThread);   // Don't need the thread handle
+            CloseHandle(pi.hThread); // Don't need the thread handle
         }
 
         Ok(WindowsTerminal {
@@ -356,8 +393,7 @@ impl Terminal for WindowsTerminal {
 
     fn resize(&mut self, _cols: u16, _rows: u16) -> Result<(), TerminalErr> {
         // TODO: ResizePseudoConsole (Windows 10 1903+).
-        // Signature: HRESULT ResizePseudoConsole(HPCON hPC, COORD size);
-        // Not yet wired — add to the extern "system" block and call here.
+        // Add to extern block: fn ResizePseudoConsole(hPC: HPCON, size: COORD) -> HRESULT;
         Err(TerminalErr::Resize(
             "ConPTY resize not yet implemented (requires Win10 1903+ ResizePseudoConsole)",
         ))
@@ -394,32 +430,49 @@ impl Drop for WindowsTerminal {
 
 // ── Internal cleanup helpers ────────────────────────────────────────────────
 
-unsafe fn cleanup_pipes(
-    input_read: HANDLE, input_write: HANDLE,
-    output_read: HANDLE, output_write: HANDLE,
+/// Close a set of pipe handles on an error path (called from safe code).
+fn cleanup_pipes(
+    input_read: HANDLE,
+    input_write: HANDLE,
+    output_read: HANDLE,
+    output_write: HANDLE,
 ) {
     for h in [input_read, input_write, output_read, output_write] {
         if !h.is_null() {
-            // SAFETY: h is a valid, non-null pipe handle from a prior CreatePipe call.
             unsafe { CloseHandle(h) };
         }
     }
 }
 
-unsafe fn cleanup(
+/// Close all ConPTY resources on an error path (called from safe code).
+fn cleanup_early(
     hpc: HPCON,
-    input_read: HANDLE, input_write: HANDLE,
-    output_read: HANDLE, output_write: HANDLE,
-    process: HANDLE, thread: HANDLE,
+    input_read: HANDLE,
+    input_write: HANDLE,
+    output_read: HANDLE,
+    output_write: HANDLE,
+    process: HANDLE,
+    thread: HANDLE,
 ) {
     if !hpc.is_null() {
-        // SAFETY: hpc was created by CreatePseudoConsole and not yet closed.
         unsafe { ClosePseudoConsole(hpc) };
     }
-    if !input_read.is_null()  { unsafe { CloseHandle(input_read) }; }
-    if !input_write.is_null() { unsafe { CloseHandle(input_write) }; }
-    if !output_read.is_null() { unsafe { CloseHandle(output_read) }; }
-    if !output_write.is_null(){ unsafe { CloseHandle(output_write) }; }
-    if !process.is_null()     { unsafe { CloseHandle(process) }; }
-    if !thread.is_null()      { unsafe { CloseHandle(thread) }; }
+    if !input_read.is_null() {
+        unsafe { CloseHandle(input_read) };
+    }
+    if !input_write.is_null() {
+        unsafe { CloseHandle(input_write) };
+    }
+    if !output_read.is_null() {
+        unsafe { CloseHandle(output_read) };
+    }
+    if !output_write.is_null() {
+        unsafe { CloseHandle(output_write) };
+    }
+    if !process.is_null() {
+        unsafe { CloseHandle(process) };
+    }
+    if !thread.is_null() {
+        unsafe { CloseHandle(thread) };
+    }
 }

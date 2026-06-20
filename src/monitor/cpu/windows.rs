@@ -89,13 +89,9 @@ fn read_cpu_name_from_registry() -> Result<String, MetricErr> {
     let value_name = to_wide("ProcessorNameString");
 
     let mut hkey: isize = 0;
-    let ret = unsafe {
-        RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_READ, &mut hkey)
-    };
+    let ret = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_READ, &mut hkey) };
     if ret != ERROR_SUCCESS {
-        return Err(MetricErr::Parse(
-            "failed to open CPU registry key".into(),
-        ));
+        return Err(MetricErr::Parse("failed to open CPU registry key".into()));
     }
 
     let mut data_type: u32 = 0;

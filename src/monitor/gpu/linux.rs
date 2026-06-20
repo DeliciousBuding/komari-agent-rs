@@ -2,8 +2,8 @@
 // Priority order: 1) nvidia-smi CSV  2) rocm-smi --json  3) sysfs DRM  4) lspci
 // Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_linux.go
 
-use crate::arena::{SmallVec, MAX_GPUS};
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
+use crate::arena::{MAX_GPUS, SmallVec};
 use std::fs;
 use std::process::Command;
 
@@ -47,7 +47,9 @@ fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> 
         .map_err(|e| GpuDetectErr::Subprocess(format!("nvidia-smi: {}", e)))?;
 
     if !output.status.success() {
-        return Err(GpuDetectErr::Subprocess("nvidia-smi exited non-zero".into()));
+        return Err(GpuDetectErr::Subprocess(
+            "nvidia-smi exited non-zero".into(),
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -91,7 +93,9 @@ fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> 
     }
 
     if gpus.is_empty() {
-        Err(GpuDetectErr::Parse("nvidia-smi: no GPU lines parsed".into()))
+        Err(GpuDetectErr::Parse(
+            "nvidia-smi: no GPU lines parsed".into(),
+        ))
     } else {
         Ok(gpus)
     }
@@ -127,7 +131,11 @@ fn detect_rocm_smi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         let trimmed = line.trim();
 
         // Detect "cardN": { start
-        if !in_card && trimmed.starts_with('"') && trimmed.contains("card") && trimmed.contains(":{") {
+        if !in_card
+            && trimmed.starts_with('"')
+            && trimmed.contains("card")
+            && trimmed.contains(":{")
+        {
             in_card = true;
             current_name.clear();
             current_mem_total = 0;
@@ -167,7 +175,9 @@ fn detect_rocm_smi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
             current_mem_total = val.parse().unwrap_or(0);
         } else if let Some(val) = extract_json_string_value(trimmed, "VRAM Total Used Memory (B)") {
             current_mem_used = val.parse().unwrap_or(0);
-        } else if let Some(val) = extract_json_string_value(trimmed, "Temperature (Sensor junction) (C)") {
+        } else if let Some(val) =
+            extract_json_string_value(trimmed, "Temperature (Sensor junction) (C)")
+        {
             current_temp = val.trim_end_matches('C').trim().parse().unwrap_or(0);
         }
     }
@@ -234,7 +244,8 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         // Read device ID
         let device_path_file = format!("{}/device", device_path);
         let device_str = fs::read_to_string(&device_path_file).unwrap_or_default();
-        let device_id = u32::from_str_radix(device_str.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+        let device_id =
+            u32::from_str_radix(device_str.trim().trim_start_matches("0x"), 16).unwrap_or(0);
 
         // Read device name from uevent
         let uevent_path = format!("{}/uevent", device_path);
@@ -256,7 +267,9 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     }
 
     if gpus.is_empty() {
-        Err(GpuDetectErr::Parse("sysfs: no DRM GPU devices found".into()))
+        Err(GpuDetectErr::Parse(
+            "sysfs: no DRM GPU devices found".into(),
+        ))
     } else {
         Ok(gpus)
     }
@@ -306,7 +319,9 @@ fn detect_lspci() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     }
 
     if gpus.is_empty() {
-        Err(GpuDetectErr::Parse("lspci: no VGA/3D/Display devices".into()))
+        Err(GpuDetectErr::Parse(
+            "lspci: no VGA/3D/Display devices".into(),
+        ))
     } else {
         Ok(gpus)
     }

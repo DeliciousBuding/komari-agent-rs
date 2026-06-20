@@ -275,9 +275,7 @@ pub fn parse_args(config: &mut Config, args: &[String]) -> Result<(), ConfigErr>
         }
 
         // --flag (boolean or expects next arg)
-        if arg.starts_with("--") {
-            let flag = &arg[2..];
-
+        if let Some(flag) = arg.strip_prefix("--") {
             if is_bool_flag(flag) {
                 // Boolean: --flag without value → true
                 apply_long_flag(config, flag, None)?;
@@ -453,180 +451,180 @@ fn is_bool_flag(name: &str) -> bool {
 
 pub fn load_env(config: &mut Config) {
     // Required strings
-    if let Ok(v) = env::var("AGENT_ENDPOINT") {
-        if !v.is_empty() {
-            config.endpoint = v;
-        }
+    if let Ok(v) = env::var("AGENT_ENDPOINT")
+        && !v.is_empty()
+    {
+        config.endpoint = v;
     }
-    if let Ok(v) = env::var("AGENT_TOKEN") {
-        if !v.is_empty() {
-            config.token = v;
-        }
+    if let Ok(v) = env::var("AGENT_TOKEN")
+        && !v.is_empty()
+    {
+        config.token = v;
     }
 
     // f64
-    if let Ok(v) = env::var("AGENT_INTERVAL") {
-        if let Ok(n) = f64::from_str(&v) {
-            config.interval = n;
-        }
+    if let Ok(v) = env::var("AGENT_INTERVAL")
+        && let Ok(n) = f64::from_str(&v)
+    {
+        config.interval = n;
     }
 
     // u64
-    if let Ok(v) = env::var("AGENT_INFO_REPORT_INTERVAL") {
-        if let Ok(n) = u64::from_str(&v) {
-            config.info_report_interval = n;
-        }
+    if let Ok(v) = env::var("AGENT_INFO_REPORT_INTERVAL")
+        && let Ok(n) = u64::from_str(&v)
+    {
+        config.info_report_interval = n;
     }
-    if let Ok(v) = env::var("AGENT_RECONNECT_INTERVAL") {
-        if let Ok(n) = u64::from_str(&v) {
-            config.reconnect_interval = n;
-        }
+    if let Ok(v) = env::var("AGENT_RECONNECT_INTERVAL")
+        && let Ok(n) = u64::from_str(&v)
+    {
+        config.reconnect_interval = n;
     }
-    if let Ok(v) = env::var("AGENT_MAX_RETRIES") {
-        if let Ok(n) = u64::from_str(&v) {
-            config.max_retries = n;
-        }
+    if let Ok(v) = env::var("AGENT_MAX_RETRIES")
+        && let Ok(n) = u64::from_str(&v)
+    {
+        config.max_retries = n;
     }
 
     // u8
-    if let Ok(v) = env::var("AGENT_PROTOCOL_VERSION") {
-        if let Ok(n) = u8::from_str(&v) {
-            config.protocol_version = n;
-        }
+    if let Ok(v) = env::var("AGENT_PROTOCOL_VERSION")
+        && let Ok(n) = u8::from_str(&v)
+    {
+        config.protocol_version = n;
     }
-    if let Ok(v) = env::var("AGENT_MONTH_ROTATE") {
-        if let Ok(n) = u8::from_str(&v) {
-            config.month_rotate = n;
-        }
+    if let Ok(v) = env::var("AGENT_MONTH_ROTATE")
+        && let Ok(n) = u8::from_str(&v)
+    {
+        config.month_rotate = n;
     }
 
     // Booleans (accept true/false/1/0/yes/no/on/off)
-    if let Ok(v) = env::var("AGENT_DISABLE_WEB_SSH") {
-        if let Ok(b) = parse_bool("AGENT_DISABLE_WEB_SSH", &v) {
-            config.disable_web_ssh = b;
-        }
+    if let Ok(v) = env::var("AGENT_DISABLE_WEB_SSH")
+        && let Ok(b) = parse_bool("AGENT_DISABLE_WEB_SSH", &v)
+    {
+        config.disable_web_ssh = b;
     }
-    if let Ok(v) = env::var("AGENT_DISABLE_AUTO_UPDATE") {
-        if let Ok(b) = parse_bool("AGENT_DISABLE_AUTO_UPDATE", &v) {
-            config.disable_auto_update = b;
-        }
+    if let Ok(v) = env::var("AGENT_DISABLE_AUTO_UPDATE")
+        && let Ok(b) = parse_bool("AGENT_DISABLE_AUTO_UPDATE", &v)
+    {
+        config.disable_auto_update = b;
     }
-    if let Ok(v) = env::var("AGENT_DISABLE_COMPRESSION") {
-        if let Ok(b) = parse_bool("AGENT_DISABLE_COMPRESSION", &v) {
-            config.disable_compression = b;
-        }
+    if let Ok(v) = env::var("AGENT_DISABLE_COMPRESSION")
+        && let Ok(b) = parse_bool("AGENT_DISABLE_COMPRESSION", &v)
+    {
+        config.disable_compression = b;
     }
-    if let Ok(v) = env::var("AGENT_ENABLE_GPU") {
-        if let Ok(b) = parse_bool("AGENT_ENABLE_GPU", &v) {
-            config.enable_gpu = b;
-        }
+    if let Ok(v) = env::var("AGENT_ENABLE_GPU")
+        && let Ok(b) = parse_bool("AGENT_ENABLE_GPU", &v)
+    {
+        config.enable_gpu = b;
     }
-    if let Ok(v) = env::var("AGENT_IGNORE_UNSAFE_CERT") {
-        if let Ok(b) = parse_bool("AGENT_IGNORE_UNSAFE_CERT", &v) {
-            config.ignore_unsafe_cert = b;
-        }
+    if let Ok(v) = env::var("AGENT_IGNORE_UNSAFE_CERT")
+        && let Ok(b) = parse_bool("AGENT_IGNORE_UNSAFE_CERT", &v)
+    {
+        config.ignore_unsafe_cert = b;
     }
-    if let Ok(v) = env::var("AGENT_DEBUG_LOG") {
-        if let Ok(b) = parse_bool("AGENT_DEBUG_LOG", &v) {
-            config.debug_log = b;
-        }
+    if let Ok(v) = env::var("AGENT_DEBUG_LOG")
+        && let Ok(b) = parse_bool("AGENT_DEBUG_LOG", &v)
+    {
+        config.debug_log = b;
     }
-    if let Ok(v) = env::var("AGENT_SHOW_WARNING") {
-        if let Ok(b) = parse_bool("AGENT_SHOW_WARNING", &v) {
-            config.show_warning = b;
-        }
+    if let Ok(v) = env::var("AGENT_SHOW_WARNING")
+        && let Ok(b) = parse_bool("AGENT_SHOW_WARNING", &v)
+    {
+        config.show_warning = b;
     }
-    if let Ok(v) = env::var("AGENT_GET_IP_ADDR_FROM_NIC") {
-        if let Ok(b) = parse_bool("AGENT_GET_IP_ADDR_FROM_NIC", &v) {
-            config.get_ip_addr_from_nic = b;
-        }
+    if let Ok(v) = env::var("AGENT_GET_IP_ADDR_FROM_NIC")
+        && let Ok(b) = parse_bool("AGENT_GET_IP_ADDR_FROM_NIC", &v)
+    {
+        config.get_ip_addr_from_nic = b;
     }
-    if let Ok(v) = env::var("AGENT_MEMORY_INCLUDE_CACHE") {
-        if let Ok(b) = parse_bool("AGENT_MEMORY_INCLUDE_CACHE", &v) {
-            config.memory_include_cache = b;
-        }
+    if let Ok(v) = env::var("AGENT_MEMORY_INCLUDE_CACHE")
+        && let Ok(b) = parse_bool("AGENT_MEMORY_INCLUDE_CACHE", &v)
+    {
+        config.memory_include_cache = b;
     }
-    if let Ok(v) = env::var("AGENT_MEMORY_REPORT_RAW_USED") {
-        if let Ok(b) = parse_bool("AGENT_MEMORY_REPORT_RAW_USED", &v) {
-            config.memory_report_raw_used = b;
-        }
+    if let Ok(v) = env::var("AGENT_MEMORY_REPORT_RAW_USED")
+        && let Ok(b) = parse_bool("AGENT_MEMORY_REPORT_RAW_USED", &v)
+    {
+        config.memory_report_raw_used = b;
     }
     // Deprecated: AGENT_MEMORY_MODE_AVAILABLE
-    if let Ok(v) = env::var("AGENT_MEMORY_MODE_AVAILABLE") {
-        if let Ok(b) = parse_bool("AGENT_MEMORY_MODE_AVAILABLE", &v) {
-            config.memory_mode_available = b;
-        }
+    if let Ok(v) = env::var("AGENT_MEMORY_MODE_AVAILABLE")
+        && let Ok(b) = parse_bool("AGENT_MEMORY_MODE_AVAILABLE", &v)
+    {
+        config.memory_mode_available = b;
     }
 
     // Strings
-    if let Ok(v) = env::var("AGENT_PREFER_IP_VERSION") {
-        if !v.is_empty() {
-            config.prefer_ip_version = v;
-        }
+    if let Ok(v) = env::var("AGENT_PREFER_IP_VERSION")
+        && !v.is_empty()
+    {
+        config.prefer_ip_version = v;
     }
-    if let Ok(v) = env::var("AGENT_CUSTOM_IPV4") {
-        if !v.is_empty() {
-            config.custom_ipv4 = v;
-        }
+    if let Ok(v) = env::var("AGENT_CUSTOM_IPV4")
+        && !v.is_empty()
+    {
+        config.custom_ipv4 = v;
     }
-    if let Ok(v) = env::var("AGENT_CUSTOM_IPV6") {
-        if !v.is_empty() {
-            config.custom_ipv6 = v;
-        }
+    if let Ok(v) = env::var("AGENT_CUSTOM_IPV6")
+        && !v.is_empty()
+    {
+        config.custom_ipv6 = v;
     }
-    if let Ok(v) = env::var("AGENT_CF_ACCESS_CLIENT_ID") {
-        if !v.is_empty() {
-            config.cf_access_client_id = v;
-        }
+    if let Ok(v) = env::var("AGENT_CF_ACCESS_CLIENT_ID")
+        && !v.is_empty()
+    {
+        config.cf_access_client_id = v;
     }
-    if let Ok(v) = env::var("AGENT_CF_ACCESS_CLIENT_SECRET") {
-        if !v.is_empty() {
-            config.cf_access_client_secret = v;
-        }
+    if let Ok(v) = env::var("AGENT_CF_ACCESS_CLIENT_SECRET")
+        && !v.is_empty()
+    {
+        config.cf_access_client_secret = v;
     }
-    if let Ok(v) = env::var("AGENT_AUTO_DISCOVERY_KEY") {
-        if !v.is_empty() {
-            config.auto_discovery_key = v;
-        }
+    if let Ok(v) = env::var("AGENT_AUTO_DISCOVERY_KEY")
+        && !v.is_empty()
+    {
+        config.auto_discovery_key = v;
     }
-    if let Ok(v) = env::var("HOST_PROC") {
-        if !v.is_empty() {
-            config.host_proc = v;
-        }
+    if let Ok(v) = env::var("HOST_PROC")
+        && !v.is_empty()
+    {
+        config.host_proc = v;
     }
-    if let Ok(v) = env::var("AGENT_CONFIG_FILE") {
-        if !v.is_empty() {
-            config.config_file = v;
-        }
+    if let Ok(v) = env::var("AGENT_CONFIG_FILE")
+        && !v.is_empty()
+    {
+        config.config_file = v;
     }
 
     // Vec<String> — comma-separated
-    if let Ok(v) = env::var("AGENT_CUSTOM_DNS") {
-        if !v.is_empty() {
-            config.custom_dns = split_comma(&v);
-        }
+    if let Ok(v) = env::var("AGENT_CUSTOM_DNS")
+        && !v.is_empty()
+    {
+        config.custom_dns = split_comma(&v);
     }
-    if let Ok(v) = env::var("AGENT_INCLUDE_NICS") {
-        if !v.is_empty() {
-            config.include_nics = split_comma(&v);
-        }
+    if let Ok(v) = env::var("AGENT_INCLUDE_NICS")
+        && !v.is_empty()
+    {
+        config.include_nics = split_comma(&v);
     }
-    if let Ok(v) = env::var("AGENT_EXCLUDE_NICS") {
-        if !v.is_empty() {
-            config.exclude_nics = split_comma(&v);
-        }
+    if let Ok(v) = env::var("AGENT_EXCLUDE_NICS")
+        && !v.is_empty()
+    {
+        config.exclude_nics = split_comma(&v);
     }
 
     // Vec<String> — semicolon-separated
-    if let Ok(v) = env::var("AGENT_INCLUDE_MOUNTPOINTS") {
-        if !v.is_empty() {
-            config.include_mountpoints = split_semicolon(&v);
-        }
+    if let Ok(v) = env::var("AGENT_INCLUDE_MOUNTPOINTS")
+        && !v.is_empty()
+    {
+        config.include_mountpoints = split_semicolon(&v);
     }
-    if let Ok(v) = env::var("AGENT_EXCLUDE_MOUNTPOINTS") {
-        if !v.is_empty() {
-            config.exclude_mountpoints = split_semicolon(&v);
-        }
+    if let Ok(v) = env::var("AGENT_EXCLUDE_MOUNTPOINTS")
+        && !v.is_empty()
+    {
+        config.exclude_mountpoints = split_semicolon(&v);
     }
 }
 

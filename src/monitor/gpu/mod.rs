@@ -2,17 +2,17 @@
 // DD7 in spec.md: nvidia-smi CSV → rocm-smi key-scan → sysfs DRM → lspci → DXGI → system_profiler → pciconf.
 // Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_*.go
 
-use crate::arena::{ArenaErr, SmallVec, MAX_GPUS};
+use crate::arena::{ArenaErr, MAX_GPUS, SmallVec};
 use std::fmt;
 
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(windows)]
-mod windows;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "freebsd")]
 mod freebsd;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(windows)]
+mod windows;
 
 // ── GpuBackend ─────────────────────────────────────────────────────────────
 
@@ -126,7 +126,12 @@ pub use macos::detect as detect_gpus;
 #[allow(unused_imports)]
 pub use freebsd::detect as detect_gpus;
 
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    windows,
+    target_os = "macos",
+    target_os = "freebsd"
+)))]
 pub fn detect_gpus() -> Result<(GpuBackend, SmallVec<GpuInfo, MAX_GPUS>), GpuDetectErr> {
     Err(GpuDetectErr::NoBackend)
 }

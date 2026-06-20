@@ -1,7 +1,7 @@
 // komari-agent-rs: macOS disk metrics — getmntinfo FFI.
 #![cfg(target_os = "macos")]
 
-use crate::arena::{SmallVec, MAX_DISKS};
+use crate::arena::{MAX_DISKS, SmallVec};
 use crate::config::Config;
 
 // ── getmntinfo FFI (libSystem) ──────────────────────────────────────────────
@@ -11,25 +11,25 @@ const MNT_NOWAIT: i32 = 2;
 // struct statfs64 — Darwin 64-bit layout
 #[repr(C)]
 struct StatFs {
-    f_bsize: u32,       // offset 0
-    f_iosize: i32,      // offset 4
-    f_blocks: u64,      // offset 8
-    f_bfree: u64,       // offset 16
-    f_bavail: u64,      // offset 24
-    f_files: u64,       // offset 32
-    f_ffree: u64,       // offset 40
-    f_fsid: [i32; 2],  // offset 48
-    f_owner: u32,       // offset 56
-    f_type: u32,        // offset 60
-    f_flags: u32,       // offset 64
-    f_fssubtype: u32,   // offset 68
-    f_fstypename: [u8; 16], // offset 72
-    f_mntonname: [u8; 1024], // offset 88
+    f_bsize: u32,              // offset 0
+    f_iosize: i32,             // offset 4
+    f_blocks: u64,             // offset 8
+    f_bfree: u64,              // offset 16
+    f_bavail: u64,             // offset 24
+    f_files: u64,              // offset 32
+    f_ffree: u64,              // offset 40
+    f_fsid: [i32; 2],          // offset 48
+    f_owner: u32,              // offset 56
+    f_type: u32,               // offset 60
+    f_flags: u32,              // offset 64
+    f_fssubtype: u32,          // offset 68
+    f_fstypename: [u8; 16],    // offset 72
+    f_mntonname: [u8; 1024],   // offset 88
     f_mntfromname: [u8; 1024], // offset 1112
-    f_flags_ext: u32,   // offset 2136
-    f_owner_ext: u32,   // offset 2140
-    // total size = 2168 on macOS 14 x86_64
-    // On arm64 it's similar with some padding differences
+    f_flags_ext: u32,          // offset 2136
+    f_owner_ext: u32,          // offset 2140
+                               // total size = 2168 on macOS 14 x86_64
+                               // On arm64 it's similar with some padding differences
 }
 
 unsafe extern "C" {
@@ -66,8 +66,8 @@ impl DiskInfo {
 
 /// Filesystem types excluded from disk accounting (virtual / synthetic).
 const EXCLUDED_FS: &[&str] = &[
-    "devfs", "autofs", "tmpfs", "fdesc", "nullfs", "unionfs",
-    "ctfs", "deadfs", "specfs", "synthfs", "volfs", "lifs",
+    "devfs", "autofs", "tmpfs", "fdesc", "nullfs", "unionfs", "ctfs", "deadfs", "specfs",
+    "synthfs", "volfs", "lifs",
 ];
 
 fn is_excluded_fs(fstype: &str) -> bool {
@@ -98,7 +98,8 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
 
     for mnt in mounts {
         // Extract filesystem type as &str (null-terminated or 16-byte fixed)
-        let fs_end = mnt.f_fstypename
+        let fs_end = mnt
+            .f_fstypename
             .iter()
             .position(|&b| b == 0)
             .unwrap_or(mnt.f_fstypename.len());
@@ -112,7 +113,8 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
         }
 
         // Extract mountpoint
-        let mp_end = mnt.f_mntonname
+        let mp_end = mnt
+            .f_mntonname
             .iter()
             .position(|&b| b == 0)
             .unwrap_or(mnt.f_mntonname.len());

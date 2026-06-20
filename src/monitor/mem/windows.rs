@@ -64,8 +64,6 @@ pub fn collect(_config: &Config) -> MemInfo {
         total: msex.ullTotalPhys,
         used: msex.ullTotalPhys.saturating_sub(msex.ullAvailPhys),
         swap_total: msex.ullTotalPageFile,
-        swap_used: msex
-            .ullTotalPageFile
-            .saturating_sub(msex.ullAvailPageFile),
+        swap_used: msex.ullTotalPageFile.saturating_sub(msex.ullAvailPageFile),
     }
 }

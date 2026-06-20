@@ -131,7 +131,7 @@ pub fn make_tls_config(config: &Config) -> Result<rustls::ClientConfig, TlsErr> 
     // Install ring as the process-level default crypto provider.
     // This is idempotent — if already installed, returns `Err` which we ignore.
     let provider = rustls::crypto::ring::default_provider();
-    let _ = rustls::crypto::CryptoProvider::install_default(provider.into());
+    let _ = rustls::crypto::CryptoProvider::install_default(provider);
 
     // Unsafe cert mode: skip all verification.
     if config.ignore_unsafe_cert {

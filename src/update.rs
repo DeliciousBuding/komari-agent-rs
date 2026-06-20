@@ -49,10 +49,8 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
         return Ok(false);
     }
 
-    let tls = Arc::new(
-        crate::tls::make_tls_config(config)
-            .map_err(|e| UpdateErr::Other(e.to_string()))?,
-    );
+    let tls =
+        Arc::new(crate::tls::make_tls_config(config).map_err(|e| UpdateErr::Other(e.to_string()))?);
 
     // 1. GET https://api.github.com/repos/DeliciousBuding/komari-agent-rs/releases/latest
     let json = https_get(

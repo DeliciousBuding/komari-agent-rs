@@ -25,7 +25,7 @@ const SHA1_INIT: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC
 /// Left-rotate a 32-bit word by `n` bits.
 #[inline]
 const fn left_rotate(x: u32, n: u32) -> u32 {
-    (x << n) | (x >> (32 - n))
+    x.rotate_left(n)
 }
 
 /// Read a big-endian u32 from 4 bytes.  Panics (debug) if slice is too short.
@@ -63,7 +63,7 @@ fn process_block(h: &mut [u32; 5], block: &[u8]) {
     let mut e = h[4];
 
     // 4. 80 rounds.
-    for t in 0..80 {
+    for (t, &w_t) in w.iter().enumerate() {
         let (f, k) = match t {
             0..=19 => {
                 // Ch: (b & c) | ((~b) & d)
@@ -88,7 +88,7 @@ fn process_block(h: &mut [u32; 5], block: &[u8]) {
             .wrapping_add(f)
             .wrapping_add(e)
             .wrapping_add(k)
-            .wrapping_add(w[t]);
+            .wrapping_add(w_t);
         e = d;
         d = c;
         c = left_rotate(b, 30);
@@ -163,9 +163,9 @@ fn fill_random(buf: &mut [u8]) {
 /// is 24.
 fn base64_encode_fixed<const OUT: usize>(input: &[u8]) -> [u8; OUT] {
     debug_assert!(
-        (input.len() + 2) / 3 * 4 == OUT,
+        input.len().div_ceil(3) * 4 == OUT,
         "base64 output size mismatch: expected {}, got {OUT}",
-        (input.len() + 2) / 3 * 4,
+        input.len().div_ceil(3) * 4,
     );
 
     let mut out = [0u8; OUT];

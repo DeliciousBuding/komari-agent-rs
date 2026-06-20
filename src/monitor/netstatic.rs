@@ -58,13 +58,22 @@ impl NetStatic {
         let data = data.trim();
 
         let month = extract_json_str(data, "month").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "netstatic: missing 'month' field")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "netstatic: missing 'month' field",
+            )
         })?;
         let tx_bytes = extract_json_u64(data, "tx_bytes").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "netstatic: missing 'tx_bytes' field")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "netstatic: missing 'tx_bytes' field",
+            )
         })?;
         let rx_bytes = extract_json_u64(data, "rx_bytes").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "netstatic: missing 'rx_bytes' field")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "netstatic: missing 'rx_bytes' field",
+            )
         })?;
 
         Ok(Self {
@@ -445,7 +454,12 @@ mod tests {
         let now = unix_secs();
         let month = format_month(now);
         assert_eq!(month.len(), 7, "expected YYYY-MM, got '{}'", month);
-        assert_eq!(&month[4..5], "-", "expected dash at position 4, got '{}'", month);
+        assert_eq!(
+            &month[4..5],
+            "-",
+            "expected dash at position 4, got '{}'",
+            month
+        );
     }
 
     #[test]

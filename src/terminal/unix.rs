@@ -108,14 +108,19 @@ impl UnixTerminal {
         let slave_name = unsafe { CStr::from_ptr(slave_ptr) };
 
         // ── 4. Set initial window size (80×24) ──────────────────────────
-        let ws = Winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
+        let ws = Winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
         unsafe {
             ioctl(pty_fd, TIOCSWINSZ, &ws as *const Winsize as *mut Winsize);
         }
 
         // ── 5. Fork ─────────────────────────────────────────────────────
-        let shell_c = CString::new(shell)
-            .map_err(|_| TerminalErr::Exec("shell path contains NUL byte"))?;
+        let shell_c =
+            CString::new(shell).map_err(|_| TerminalErr::Exec("shell path contains NUL byte"))?;
         let shell_ptr = shell_c.as_ptr();
         let argv: [*const c_char; 2] = [shell_ptr, std::ptr::null()];
 
@@ -145,7 +150,10 @@ impl UnixTerminal {
         }
 
         // ── PARENT ──────────────────────────────────────────────────────
-        Ok(UnixTerminal { pty_fd, child_pid: pid })
+        Ok(UnixTerminal {
+            pty_fd,
+            child_pid: pid,
+        })
     }
 }
 
@@ -184,9 +192,18 @@ impl Terminal for UnixTerminal {
         if self.pty_fd < 0 {
             return Err(TerminalErr::Resize("PTY already closed"));
         }
-        let ws = Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+        let ws = Winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
         let ret = unsafe {
-            ioctl(self.pty_fd, TIOCSWINSZ, &ws as *const Winsize as *mut Winsize)
+            ioctl(
+                self.pty_fd,
+                TIOCSWINSZ,
+                &ws as *const Winsize as *mut Winsize,
+            )
         };
         if ret < 0 {
             Err(TerminalErr::Resize("ioctl TIOCSWINSZ failed"))

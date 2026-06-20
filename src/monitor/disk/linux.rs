@@ -9,7 +9,7 @@ use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use crate::arena::{SmallVec, MAX_DISKS};
+use crate::arena::{MAX_DISKS, SmallVec};
 use crate::config::Config;
 
 // ── statfs FFI (x86_64 Linux) ─────────────────────────────────────────────────
@@ -70,10 +70,31 @@ impl DiskInfo {
 
 /// Filesystem types excluded from disk accounting.
 const EXCLUDED_FS: &[&str] = &[
-    "tmpfs", "devtmpfs", "proc", "sysfs", "cgroup", "devpts", "debugfs",
-    "securityfs", "pstore", "efivarfs", "configfs", "fusectl", "hugetlbfs",
-    "mqueue", "binfmt_misc", "overlay", "squashfs", "autofs", "nfsd",
-    "rpc_pipefs", "tracefs", "nsfs", "bpf", "cgroup2", "selinuxfs",
+    "tmpfs",
+    "devtmpfs",
+    "proc",
+    "sysfs",
+    "cgroup",
+    "devpts",
+    "debugfs",
+    "securityfs",
+    "pstore",
+    "efivarfs",
+    "configfs",
+    "fusectl",
+    "hugetlbfs",
+    "mqueue",
+    "binfmt_misc",
+    "overlay",
+    "squashfs",
+    "autofs",
+    "nfsd",
+    "rpc_pipefs",
+    "tracefs",
+    "nsfs",
+    "bpf",
+    "cgroup2",
+    "selinuxfs",
 ];
 
 fn is_excluded_fs(fstype: &str) -> bool {

@@ -259,9 +259,18 @@ mod tests {
     #[test]
     fn connection_fsm_happy_path() {
         let mut fsm = ConnectionFsm::new();
-        assert_eq!(fsm.transition(ConnEvent::ResolveStarted), ConnState::Resolving);
-        assert_eq!(fsm.transition(ConnEvent::ResolveOk), ConnState::TcpConnecting);
-        assert_eq!(fsm.transition(ConnEvent::TcpConnected), ConnState::TlsHandshaking);
+        assert_eq!(
+            fsm.transition(ConnEvent::ResolveStarted),
+            ConnState::Resolving
+        );
+        assert_eq!(
+            fsm.transition(ConnEvent::ResolveOk),
+            ConnState::TcpConnecting
+        );
+        assert_eq!(
+            fsm.transition(ConnEvent::TcpConnected),
+            ConnState::TlsHandshaking
+        );
         assert_eq!(fsm.transition(ConnEvent::TlsOk), ConnState::WsHandshaking);
         assert_eq!(fsm.transition(ConnEvent::WsUpgradeOk), ConnState::Online);
         assert!(fsm.is_online());

@@ -129,9 +129,7 @@ fn extract_json_string(params: &[u8], key: &str) -> Option<String> {
                 }
                 _ => {
                     // number, true, false, null — skip until comma or closing brace
-                    while i < text.len()
-                        && text.as_bytes()[i] != b','
-                        && text.as_bytes()[i] != b'}'
+                    while i < text.len() && text.as_bytes()[i] != b',' && text.as_bytes()[i] != b'}'
                     {
                         i += 1;
                     }

@@ -23,17 +23,29 @@ pub struct MemInfo {
 
 /// Parsed `/proc/meminfo` fields (kB → bytes).
 struct ProcMem {
-    total: u64, free: u64, available: u64,
-    buffers: u64, cached: u64, s_reclaimable: u64,
-    shmem: u64, swap_total: u64, swap_free: u64,
+    total: u64,
+    free: u64,
+    available: u64,
+    buffers: u64,
+    cached: u64,
+    s_reclaimable: u64,
+    shmem: u64,
+    swap_total: u64,
+    swap_free: u64,
 }
 
 fn read_proc_meminfo() -> Option<ProcMem> {
     let file = File::open("/proc/meminfo").ok()?;
     let mut m = ProcMem {
-        total: 0, free: 0, available: 0,
-        buffers: 0, cached: 0, s_reclaimable: 0,
-        shmem: 0, swap_total: 0, swap_free: 0,
+        total: 0,
+        free: 0,
+        available: 0,
+        buffers: 0,
+        cached: 0,
+        s_reclaimable: 0,
+        shmem: 0,
+        swap_total: 0,
+        swap_free: 0,
     };
     for line in BufReader::new(file).lines() {
         let line = line.ok()?;
@@ -87,7 +99,9 @@ fn mode_1(m: &ProcMem) -> MemInfo {
 /// Mode 2: `free -b` subprocess. Swap from `/proc/meminfo`.
 fn mode_2() -> Option<MemInfo> {
     let out = Command::new("free").arg("-b").output().ok()?;
-    if !out.status.success() { return None; }
+    if !out.status.success() {
+        return None;
+    }
     let stdout = std::str::from_utf8(&out.stdout).ok()?;
     for line in stdout.lines().skip(1) {
         if let Some(rest) = line.strip_prefix("Mem:") {
@@ -98,7 +112,12 @@ fn mode_2() -> Option<MemInfo> {
                 let (st, su) = read_proc_meminfo()
                     .map(|m| (m.swap_total, swap_used(&m)))
                     .unwrap_or((0, 0));
-                return Some(MemInfo { total, used, swap_total: st, swap_used: su });
+                return Some(MemInfo {
+                    total,
+                    used,
+                    swap_total: st,
+                    swap_used: su,
+                });
             }
             break;
         }

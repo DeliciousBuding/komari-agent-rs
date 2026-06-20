@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use crate::arena::{SmallVec, MAX_NETWORKS};
+use crate::arena::{MAX_NETWORKS, SmallVec};
 use crate::config::Config;
 
 /// Per-interface network statistics for a single monitoring tick.
@@ -64,18 +64,18 @@ const IF_MAX_STRING_SIZE: usize = 256;
 
 #[repr(C)]
 struct MIB_IF_ROW2 {
-    _pad0: [u8; 0x222],                          // InterfaceGuid..Alias
-    description: [u16; IF_MAX_STRING_SIZE + 1],    // offset 0x222, size 514
-    _pad1: [u8; 0x474 - 0x424],                  // PhysicalAddressLength..MediaType
-    if_type: u32,                                  // offset 0x474 (IFTYPE)
-    _pad2: [u8; 0x490 - 0x478],                  // TunnelType..IfAndOperStatusFlags
-    oper_status: u32,                              // offset 0x490
-    admin_status: u32,                             // offset 0x494
-    media_connect_state: u32,                      // offset 0x498
-    _pad3: [u8; 0x4C0 - 0x49C],                  // NetworkGuid..ReceiveLinkSpeed
-    in_octets: u64,                                // offset 0x4C0
-    _pad4: [u8; 0x508 - 0x4C8],                  // InUcastPkts..InBroadcastOctets
-    out_octets: u64,                               // offset 0x508
+    _pad0: [u8; 0x222],                         // InterfaceGuid..Alias
+    description: [u16; IF_MAX_STRING_SIZE + 1], // offset 0x222, size 514
+    _pad1: [u8; 0x474 - 0x424],                 // PhysicalAddressLength..MediaType
+    if_type: u32,                               // offset 0x474 (IFTYPE)
+    _pad2: [u8; 0x490 - 0x478],                 // TunnelType..IfAndOperStatusFlags
+    oper_status: u32,                           // offset 0x490
+    admin_status: u32,                          // offset 0x494
+    media_connect_state: u32,                   // offset 0x498
+    _pad3: [u8; 0x4C0 - 0x49C],                 // NetworkGuid..ReceiveLinkSpeed
+    in_octets: u64,                             // offset 0x4C0
+    _pad4: [u8; 0x508 - 0x4C8],                 // InUcastPkts..InBroadcastOctets
+    out_octets: u64,                            // offset 0x508
 }
 
 #[repr(C)]
@@ -107,10 +107,7 @@ fn fit_name(name: &str) -> ([u8; 16], u8) {
     (buf, n as u8)
 }
 
-pub fn collect(
-    config: &Config,
-    prev: &mut PrevNetSnapshot,
-) -> SmallVec<NetInfo, MAX_NETWORKS> {
+pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo, MAX_NETWORKS> {
     let mut out = SmallVec::new();
     let now = Instant::now();
 
@@ -152,7 +149,10 @@ pub fn collect(
 
         let use_whitelist = !config.include_nics.is_empty();
         let included = if use_whitelist {
-            config.include_nics.iter().any(|p| desc.contains(p.as_str()))
+            config
+                .include_nics
+                .iter()
+                .any(|p| desc.contains(p.as_str()))
         } else {
             true
         };
