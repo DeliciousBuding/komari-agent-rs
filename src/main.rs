@@ -4,6 +4,7 @@ mod crypto;
 mod dns;
 mod gzip;
 mod http;
+mod inflate;
 mod json;
 mod monitor;
 mod protocol;
