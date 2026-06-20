@@ -115,7 +115,10 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
                 // Client is now registered server-side — upload basic info.
                 // Non-fatal: the periodic refresh retries on failure.
                 if let Err(e) = super::update_basic_info(config, &tls_cfg, &dial) {
-                    eprintln!("[komari] WARN: post-connect basic info upload failed: {}", e);
+                    eprintln!(
+                        "[komari] WARN: post-connect basic info upload failed: {}",
+                        e
+                    );
                 }
                 conn
             }
@@ -141,7 +144,15 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
             }
         };
 
-        if let Err(e) = run_tick_loop(conn, &mut fsm, &mut monitor, &mut arena, config, &tls_cfg, &dial) {
+        if let Err(e) = run_tick_loop(
+            conn,
+            &mut fsm,
+            &mut monitor,
+            &mut arena,
+            config,
+            &tls_cfg,
+            &dial,
+        ) {
             let kind = classify_tick_failure(&e);
             let downgraded = fsm.on_failure(kind);
             eprintln!(
@@ -378,10 +389,8 @@ fn dispatch_server_message(
         let method = super::task::extract_json_method(data).unwrap_or_default();
         match method.as_str() {
             "agent.exec" => {
-                let task_id =
-                    super::task::extract_json_string(data, "task_id").unwrap_or_default();
-                let command =
-                    super::task::extract_json_string(data, "command").unwrap_or_default();
+                let task_id = super::task::extract_json_string(data, "task_id").unwrap_or_default();
+                let command = super::task::extract_json_string(data, "command").unwrap_or_default();
                 handle_exec_task(config, dial, tls_cfg, &task_id, &command);
             }
             "agent.ping" => {
@@ -409,10 +418,8 @@ fn dispatch_server_message(
         let msg = super::task::extract_json_string(data, "message").unwrap_or_default();
         match msg.as_str() {
             "exec" => {
-                let task_id =
-                    super::task::extract_json_string(data, "task_id").unwrap_or_default();
-                let command =
-                    super::task::extract_json_string(data, "command").unwrap_or_default();
+                let task_id = super::task::extract_json_string(data, "task_id").unwrap_or_default();
+                let command = super::task::extract_json_string(data, "command").unwrap_or_default();
                 handle_exec_task(config, dial, tls_cfg, &task_id, &command);
             }
             "ping" => {
@@ -482,7 +489,15 @@ fn upload_task_result(
     if let Some(ref cf) = CfAccess::from_config(config) {
         cf.inject_http_headers(&mut headers);
     }
-    match http_post(&url, body, "application/json", None, &headers, tls_cfg, dial) {
+    match http_post(
+        &url,
+        body,
+        "application/json",
+        None,
+        &headers,
+        tls_cfg,
+        dial,
+    ) {
         Ok(r) if r.status_code == 200 => Ok(()),
         Ok(r) => Err(format!("task/result returned HTTP {}", r.status_code)),
         Err(e) => Err(format!("task/result upload error: {e}")),

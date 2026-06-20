@@ -220,9 +220,7 @@ fn copy_loop_inner(ws: &mut WsConnection, term: &mut dyn Terminal) -> Result<(),
             }
             // PTYs surface non-blocking as an I/O error on some platforms;
             // treat would-block as "no output this iteration" and continue.
-            Err(TerminalErr::Io(ref e))
-                if e.kind() == std::io::ErrorKind::WouldBlock =>
-            {
+            Err(TerminalErr::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // No PTY output ready; continue polling.
             }
             // A NotConnected / BrokenPipe means the child exited and the PTY
@@ -436,7 +434,10 @@ fn json_number_field(s: &str, key: &str) -> Option<u64> {
         }
         let value_start = after[1..].trim_start();
         // Read consecutive ASCII digits.
-        let digits: String = value_start.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let digits: String = value_start
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
         if digits.is_empty() {
             return None;
         }

@@ -327,9 +327,7 @@ impl WsConnection {
             // Preserve the DNS-specific error variant so callers (FSM) can
             // classify connection vs. DNS failures.
             match e {
-                crate::proxy::NetErr::Dns(d) => {
-                    WsErr::Dns(format!("{}: {}", host, d))
-                }
+                crate::proxy::NetErr::Dns(d) => WsErr::Dns(format!("{}: {}", host, d)),
                 other => WsErr::Io(format!("connect to {host}:{port}: {other}")),
             }
         })?;
@@ -360,7 +358,8 @@ impl WsConnection {
             WsErr::Handshake("generated WebSocket key is not valid UTF-8".to_string())
         })?;
 
-        let upgrade_request = build_upgrade_request(&host, ws_path, token, ws_key_str, extra_headers);
+        let upgrade_request =
+            build_upgrade_request(&host, ws_path, token, ws_key_str, extra_headers);
         stream
             .write_all(upgrade_request.as_bytes())
             .map_err(|e| WsErr::Io(format!("write upgrade request: {}", e)))?;

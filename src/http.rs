@@ -67,15 +67,15 @@ pub fn http_post(
     // The Dialer honors HTTPS_PROXY / SOCKS5 (with NO_PROXY bypass and auth)
     // when a proxy env var applies, otherwise resolves directly honoring
     // `--custom-dns` and `--prefer-ip-version`.
-    let tcp = dial.connect(&host, port, Duration::from_secs(30)).map_err(|e| match e {
-        crate::proxy::NetErr::Io(io_err) => HttpErr::Io(io_err),
-        crate::proxy::NetErr::Dns(d) => {
-            HttpErr::Parse(format!("DNS resolution failed for '{host}': {d}"))
-        }
-        crate::proxy::NetErr::Proxy(s) => {
-            HttpErr::Io(io::Error::new(io::ErrorKind::Other, s))
-        }
-    })?;
+    let tcp = dial
+        .connect(&host, port, Duration::from_secs(30))
+        .map_err(|e| match e {
+            crate::proxy::NetErr::Io(io_err) => HttpErr::Io(io_err),
+            crate::proxy::NetErr::Dns(d) => {
+                HttpErr::Parse(format!("DNS resolution failed for '{host}': {d}"))
+            }
+            crate::proxy::NetErr::Proxy(s) => HttpErr::Io(io::Error::new(io::ErrorKind::Other, s)),
+        })?;
 
     tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
     tcp.set_write_timeout(Some(Duration::from_secs(30)))?;

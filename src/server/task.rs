@@ -153,7 +153,9 @@ pub(crate) fn extract_json_number(params: &[u8], key: &str) -> Option<i64> {
     idx += needle.len();
     let bytes = text.as_bytes();
     // Skip whitespace + colon + whitespace.
-    while idx < bytes.len() && (bytes[idx] == b' ' || bytes[idx] == b':' || bytes[idx] == b'\t' || bytes[idx] == b'\n') {
+    while idx < bytes.len()
+        && (bytes[idx] == b' ' || bytes[idx] == b':' || bytes[idx] == b'\t' || bytes[idx] == b'\n')
+    {
         idx += 1;
     }
     let start = idx;
@@ -546,7 +548,6 @@ mod exec_tests {
     fn json_escape_newline() {
         assert_eq!(json_escape("a\nb"), r#"a\nb"#);
     }
-
 
     #[test]
     fn task_result_body_shape() {
