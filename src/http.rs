@@ -58,33 +58,25 @@ pub fn http_post(
     content_encoding: Option<&str>,
     extra_headers: &[(String, String)],
     tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
 ) -> Result<HttpResponse, HttpErr> {
     // 1. Parse URL → host, port, path, query
     let (host, port, path, query) = parse_https_url(url)?;
 
-    // 2. TCP connect — direct, or via HTTP CONNECT proxy if one is configured.
+    // 2. TCP connect via the unified Dialer.
     //
-    // When HTTPS_PROXY / ALL_PROXY / HTTP_PROXY is set, CONNECT-tunnel to
-    // (host, port) through the proxy; the returned stream is a transparent TCP
-    // tunnel that we TLS-wrap exactly as before. The no-proxy path is unchanged.
-    let tcp = if let Some(proxy_url) = crate::proxy::get_proxy_for(&host) {
-        let (proxy_host, proxy_port) = crate::proxy::parse_proxy_url(&proxy_url)
-            .map_err(|e| HttpErr::Io(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
-        crate::proxy::connect_via_proxy(
-            &proxy_host,
-            proxy_port,
-            &host,
-            port,
-            Duration::from_secs(30),
-        )?
-    } else {
-        let addr = format!("{host}:{port}");
-        let mut addrs = addr.to_socket_addrs()?;
-        let sock_addr = addrs
-            .next()
-            .ok_or_else(|| HttpErr::Parse("DNS returned no addresses".into()))?;
-        TcpStream::connect_timeout(&sock_addr, Duration::from_secs(30))?
-    };
+    // The Dialer honors HTTPS_PROXY / SOCKS5 (with NO_PROXY bypass and auth)
+    // when a proxy env var applies, otherwise resolves directly honoring
+    // `--custom-dns` and `--prefer-ip-version`.
+    let tcp = dial.connect(&host, port, Duration::from_secs(30)).map_err(|e| match e {
+        crate::proxy::NetErr::Io(io_err) => HttpErr::Io(io_err),
+        crate::proxy::NetErr::Dns(d) => {
+            HttpErr::Parse(format!("DNS resolution failed for '{host}': {d}"))
+        }
+        crate::proxy::NetErr::Proxy(s) => {
+            HttpErr::Io(io::Error::new(io::ErrorKind::Other, s))
+        }
+    })?;
 
     tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
     tcp.set_write_timeout(Some(Duration::from_secs(30)))?;

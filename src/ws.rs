@@ -311,44 +311,28 @@ impl WsConnection {
         tls_cfg: Arc<rustls::ClientConfig>,
         timeout: Duration,
         extra_headers: &[(String, String)],
+        dial: &crate::proxy::Dialer,
     ) -> Result<Self, WsErr> {
         // ── 1. Parse URL → host + port (path supplied by caller) ──
         let (host, port, _default_path) = parse_endpoint(endpoint)?;
 
-        // ── 3. TCP connect with timeout ──
+        // ── 2. Reach (host, port) via the unified Dialer ──
         //
-        // If an HTTP proxy is configured via HTTPS_PROXY / ALL_PROXY / HTTP_PROXY,
-        // CONNECT-tunnel to (host, port) through the proxy instead of connecting
-        // directly. The returned stream is a transparent TCP tunnel that we then
-        // TLS-wrap exactly as before. When no proxy env var is set, the direct
-        // connect path is unchanged.
-        let sock = if let Some(proxy_url) = crate::proxy::get_proxy_for(&host) {
-            let (proxy_host, proxy_port) = crate::proxy::parse_proxy_url(&proxy_url)
-                .map_err(|e| WsErr::Io(format!("invalid proxy URL '{proxy_url}': {e}")))?;
-            crate::proxy::connect_via_proxy(
-                &proxy_host,
-                proxy_port,
-                &host,
-                port,
-                timeout,
-            )
-            .map_err(|e| WsErr::Io(format!("proxy CONNECT to {proxy_host}:{proxy_port}: {e}")))?
-        } else {
-            // ── 2. DNS resolve (direct path only) ──
-            let addr_str = format!("{}:{}", host, port);
-            let addrs: Vec<SocketAddr> = addr_str
-                .to_socket_addrs()
-                .map_err(|e| {
-                    WsErr::Dns(format!("DNS resolution failed for '{}': {}", host, e))
-                })?
-                .collect();
-
-            if addrs.is_empty() {
-                return Err(WsErr::Dns(format!("no addresses resolved for '{}'", host)));
+        // The Dialer encapsulates the full network policy: HTTPS_PROXY /
+        // SOCKS5 tunneling (with NO_PROXY bypass and auth) when a proxy env
+        // var applies, otherwise direct connect honoring `--custom-dns` and
+        // `--prefer-ip-version`. This keeps the WS layer agnostic of the
+        // surrounding network environment.
+        let sock = dial.connect(&host, port, timeout).map_err(|e| {
+            // Preserve the DNS-specific error variant so callers (FSM) can
+            // classify connection vs. DNS failures.
+            match e {
+                crate::proxy::NetErr::Dns(d) => {
+                    WsErr::Dns(format!("{}: {}", host, d))
+                }
+                other => WsErr::Io(format!("connect to {host}:{port}: {other}")),
             }
-
-            connect_with_timeout(&addrs, timeout)?
-        };
+        })?;
 
         sock.set_read_timeout(Some(Duration::from_secs(30)))
             .map_err(|e| WsErr::Io(format!("set_read_timeout: {}", e)))?;

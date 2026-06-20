@@ -92,6 +92,7 @@ fn build_static_heartbeat() -> Vec<u8> {
 pub(super) fn update_basic_info(
     config: &Config,
     tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
 ) -> Result<(), String> {
     let base = config.endpoint.trim_end_matches('/');
     let encoded_token = crate::ws::url_encode(&config.token);
@@ -122,6 +123,7 @@ pub(super) fn update_basic_info(
         None,
         &extra_headers,
         tls_cfg,
+        dial,
     ) {
         Ok(resp) if resp.status_code == 200 => {
             info!("Basic info uploaded successfully");

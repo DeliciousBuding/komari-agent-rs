@@ -253,18 +253,38 @@ mod tests {
     }
 
     #[test]
-    fn three_strikes_ws_to_http_v2() {
+    fn three_strikes_ws_v2_to_ws_v1() {
         let mut fsm = ProtocolFsm::new(2);
         assert!(!fsm.on_failure(FailureKind::WsConnect));
         assert!(!fsm.on_failure(FailureKind::WsConnect));
         assert!(fsm.on_failure(FailureKind::WsConnect));
+        // 4-stage chain: WsV2 → WsV1 → HttpV2 → HttpV1.
+        assert_eq!(fsm.mode(), ProtocolMode::WsV1);
+    }
+
+    #[test]
+    fn full_chain_ws_v2_to_http_v1() {
+        let mut fsm = ProtocolFsm::new(2);
+        // Each stage needs 3 strikes to downshift.
+        for _ in 0..3 {
+            fsm.on_failure(FailureKind::WsConnect);
+        }
+        assert_eq!(fsm.mode(), ProtocolMode::WsV1);
+        for _ in 0..3 {
+            fsm.on_failure(FailureKind::WsConnect);
+        }
         assert_eq!(fsm.mode(), ProtocolMode::HttpV2);
+        for _ in 0..3 {
+            fsm.on_failure(FailureKind::HttpPost);
+        }
+        assert_eq!(fsm.mode(), ProtocolMode::HttpV1);
     }
 
     #[test]
     fn reconnect_resets_to_ws_v2() {
         let mut fsm = ProtocolFsm::new(2);
-        for _ in 0..6 {
+        // Walk all the way to HttpV1 (9 failures across 3 stages).
+        for _ in 0..9 {
             fsm.on_failure(FailureKind::HttpPost);
         }
         assert_eq!(fsm.mode(), ProtocolMode::HttpV1);
