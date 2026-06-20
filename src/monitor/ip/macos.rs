@@ -181,9 +181,13 @@ fn ip_from_nic(include: &[String], exclude: &[String]) -> (Option<String>, Optio
             continue;
         }
 
-        let sa = unsafe { &*ifa.ifa_addr };
-
-        match sa.sa_family {
+        // macOS/BSD sockaddr has sa_len at offset 0, sa_family at offset 1.
+        // Read the family byte directly — the Rust struct definitions below
+        // have sa_family at offset 0 (as a u16) for code simplicity, so we
+        // cannot use sa.sa_family on macOS.  Address layout at offsets >= 4
+        // (sin_addr / sin6_addr) is identical in both layouts.
+        let family = unsafe { *(ifa.ifa_addr as *const u8).add(1) };
+        match family {
             AF_INET if ipv4.is_none() => {
                 let sin = unsafe { &*(ifa.ifa_addr as *const SockAddrIn) };
                 let addr = &sin.sin_addr.s_addr;

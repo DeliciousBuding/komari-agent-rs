@@ -63,6 +63,17 @@ pub enum Field {
     Load5,     // "load5"
     Load15,    // "load15"
     Cores,     // "cores"
+
+    // --- GPU ---
+    Backend,       // "backend"
+    Devices,       // "devices"
+    MemoryTotal,   // "memory_total"
+    MemoryUsed,    // "memory_used"
+    Utilization,   // "utilization"
+    Temperature,   // "temperature"
+    AverageUsage,  // "average_usage"
+    DetailedInfo,  // "detailed_info"
+    Models,        // "models"
 }
 
 impl Field {
@@ -106,6 +117,16 @@ impl Field {
             Field::Load5 => b"load5",
             Field::Load15 => b"load15",
             Field::Cores => b"cores",
+            // --- GPU ---
+            Field::Backend => b"backend",
+            Field::Devices => b"devices",
+            Field::MemoryTotal => b"memory_total",
+            Field::MemoryUsed => b"memory_used",
+            Field::Utilization => b"utilization",
+            Field::Temperature => b"temperature",
+            Field::AverageUsage => b"average_usage",
+            Field::DetailedInfo => b"detailed_info",
+            Field::Models => b"models",
         }
     }
 }

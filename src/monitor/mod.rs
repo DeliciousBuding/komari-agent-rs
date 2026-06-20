@@ -269,10 +269,48 @@ fn encode_report(
     // Uptime
     j.u64_field(Field::Uptime, uptime_secs)?;
 
-    // GPU stub — only included when enabled (matches Go behavior)
+    // GPU — only included when enabled (matches Go behavior)
     if config.enable_gpu {
-        j.begin_obj_field(Field::Gpu)?;
-        j.end_obj()?; // empty {} for now
+        match gpu::detect_gpus() {
+            Ok((_backend, gpus)) => {
+                j.begin_obj_field(Field::Gpu)?;
+
+                // Device count
+                j.u64_field(Field::Count, gpus.len() as u64)?;
+
+                // Average GPU utilisation
+                let total_util: f64 = gpus.iter().map(|g| g.utilization).sum();
+                let avg_usage = if gpus.is_empty() {
+                    0.0
+                } else {
+                    total_util / gpus.len() as f64
+                };
+                j.f64_field(Field::AverageUsage, avg_usage)?;
+
+                // Detailed info array
+                if !gpus.is_empty() {
+                    j.begin_arr_field(Field::DetailedInfo)?;
+                    for gpu_info in gpus.iter() {
+                        j.begin_obj()?;
+                        j.str_field(Field::Name, &gpu_info.name)?;
+                        j.u64_field(Field::MemoryTotal, gpu_info.memory_total)?;
+                        j.u64_field(Field::MemoryUsed, gpu_info.memory_used)?;
+                        j.f64_field(Field::Utilization, gpu_info.utilization)?;
+                        j.u64_field(Field::Temperature, gpu_info.temperature)?;
+                        j.end_obj()?;
+                    }
+                    j.end_arr()?;
+                }
+
+                j.end_obj()?;
+            }
+            Err(e) => {
+                // GPU detection failed — emit empty object, note error.
+                message.push_str(&format!("gpu error: {}; ", e));
+                j.begin_obj_field(Field::Gpu)?;
+                j.end_obj()?;
+            }
+        }
     }
 
     // Message (error accumulation, empty on success)

@@ -19,6 +19,62 @@ pub use windows::{collect, PrevNetSnapshot};
 #[cfg(target_os = "macos")]
 pub use macos::{collect, NetInfo, PrevNetSnapshot};
 
+// ── Stub for unsupported platforms (FreeBSD, etc.) ──────────────────────────
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+pub use stub::{collect, NetInfo, PrevNetSnapshot};
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+mod stub {
+    use crate::arena::{SmallVec, MAX_NETWORKS};
+    use crate::config::Config;
+    use std::time::Instant;
+
+    pub struct NetInfo {
+        pub name_buf: [u8; 16],
+        pub name_len: u8,
+        pub up: u64,
+        pub down: u64,
+        pub total_up: u64,
+        pub total_down: u64,
+    }
+
+    impl NetInfo {
+        #[inline]
+        pub fn name(&self) -> &str {
+            std::str::from_utf8(&self.name_buf[..self.name_len as usize]).unwrap_or("?")
+        }
+    }
+
+    pub struct PrevNetSnapshot {
+        pub names: [[u8; 16]; MAX_NETWORKS],
+        pub name_lens: [u8; MAX_NETWORKS],
+        pub rx: [u64; MAX_NETWORKS],
+        pub tx: [u64; MAX_NETWORKS],
+        pub ts: Instant,
+        pub len: u8,
+    }
+
+    impl PrevNetSnapshot {
+        pub fn new() -> Self {
+            Self {
+                names: [[0u8; 16]; MAX_NETWORKS],
+                name_lens: [0u8; MAX_NETWORKS],
+                rx: [0u64; MAX_NETWORKS],
+                tx: [0u64; MAX_NETWORKS],
+                ts: Instant::now(),
+                len: 0,
+            }
+        }
+    }
+
+    pub fn collect(
+        _config: &Config,
+        _prev: &mut PrevNetSnapshot,
+    ) -> SmallVec<NetInfo, MAX_NETWORKS> {
+        SmallVec::new()
+    }
+}
+
 use std::time::Instant;
 
 /// Tracks a single cumulative counter across ticks to compute per-second rates.

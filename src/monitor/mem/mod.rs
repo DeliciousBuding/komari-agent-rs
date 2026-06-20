@@ -13,3 +13,24 @@ pub use linux::{collect, MemInfo};
 pub use windows::collect;
 #[cfg(target_os = "macos")]
 pub use macos::{collect, MemInfo};
+
+// ── Stub for unsupported platforms (FreeBSD, etc.) ──────────────────────────
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+pub use stub::{collect, MemInfo};
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+mod stub {
+    use crate::config::Config;
+
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct MemInfo {
+        pub total: u64,
+        pub used: u64,
+        pub swap_total: u64,
+        pub swap_used: u64,
+    }
+
+    pub fn collect(_config: &Config) -> MemInfo {
+        MemInfo::default()
+    }
+}
