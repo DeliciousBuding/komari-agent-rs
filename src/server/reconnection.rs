@@ -88,7 +88,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
         eprintln!("[komari] WARN: initial basic info upload failed: {}", e);
     }
 
-    let mut fsm = ProtocolFsm::new();
+    let mut fsm = ProtocolFsm::new(config.protocol_version);
     let mut backoff = Backoff::new(config.max_retries, config.reconnect_interval);
     let mut monitor = Monitor::new();
     let mut arena = ScratchArena::new();
@@ -104,9 +104,8 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
             last_info_refresh = Instant::now();
         }
 
-        // Always retry from best protocol on reconnect.
-        fsm.on_reconnect();
-
+        // Do NOT on_reconnect() here — connect failures must accumulate to
+        // trigger the 3-strike downgrade (WsV2 → WsV1 → HttpV2 → HttpV1).
         let conn = match connect_with_fsm(&fsm, config, &tls_cfg) {
             Ok(conn) => {
                 fsm.on_success();
@@ -170,13 +169,19 @@ fn connect_with_fsm(
     let cf_access = CfAccess::from_config(config);
 
     match fsm.mode() {
-        ProtocolMode::WsV2 => {
+        ProtocolMode::WsV2 | ProtocolMode::WsV1 => {
+            let ws_path = match fsm.mode() {
+                ProtocolMode::WsV2 => "/api/clients/v2/rpc",
+                ProtocolMode::WsV1 => "/api/clients/report",
+                _ => unreachable!(),
+            };
             let mut ws_headers: Vec<(String, String)> = Vec::new();
             if let Some(ref cf) = cf_access {
                 cf.inject_ws_headers(&mut ws_headers);
             }
             let conn = WsConnection::connect(
                 &config.endpoint,
+                ws_path,
                 &config.token,
                 Arc::clone(tls_cfg),
                 Duration::from_secs(30),
@@ -252,6 +257,10 @@ fn run_tick_loop(
             (Connection::Ws(ws), ProtocolMode::WsV2) => {
                 let notif = v2::new_notification(v2::METHOD_AGENT_REPORT, report);
                 ws.send_text(&notif)?;
+            }
+            (Connection::Ws(ws), ProtocolMode::WsV1) => {
+                // v1: flat JSON report, no JSON-RPC wrapper.
+                ws.send_text(report)?;
             }
             (Connection::Http, ProtocolMode::HttpV2) => {
                 let req = v2::new_request("0", v2::METHOD_AGENT_REPORT, report);

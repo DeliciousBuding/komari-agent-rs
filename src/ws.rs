@@ -306,27 +306,49 @@ impl WsConnection {
     /// 8. Return ready `WsConnection`.
     pub fn connect(
         endpoint: &str,
+        ws_path: &str,
         token: &str,
         tls_cfg: Arc<rustls::ClientConfig>,
         timeout: Duration,
         extra_headers: &[(String, String)],
     ) -> Result<Self, WsErr> {
-        // ── 1. Parse URL → host + port + path ──
-        let (host, port, path) = parse_endpoint(endpoint)?;
-
-        // ── 2. DNS resolve ──
-        let addr_str = format!("{}:{}", host, port);
-        let addrs: Vec<SocketAddr> = addr_str
-            .to_socket_addrs()
-            .map_err(|e| WsErr::Dns(format!("DNS resolution failed for '{}': {}", host, e)))?
-            .collect();
-
-        if addrs.is_empty() {
-            return Err(WsErr::Dns(format!("no addresses resolved for '{}'", host)));
-        }
+        // ── 1. Parse URL → host + port (path supplied by caller) ──
+        let (host, port, _default_path) = parse_endpoint(endpoint)?;
 
         // ── 3. TCP connect with timeout ──
-        let sock = connect_with_timeout(&addrs, timeout)?;
+        //
+        // If an HTTP proxy is configured via HTTPS_PROXY / ALL_PROXY / HTTP_PROXY,
+        // CONNECT-tunnel to (host, port) through the proxy instead of connecting
+        // directly. The returned stream is a transparent TCP tunnel that we then
+        // TLS-wrap exactly as before. When no proxy env var is set, the direct
+        // connect path is unchanged.
+        let sock = if let Some(proxy_url) = crate::proxy::get_proxy_for(&host) {
+            let (proxy_host, proxy_port) = crate::proxy::parse_proxy_url(&proxy_url)
+                .map_err(|e| WsErr::Io(format!("invalid proxy URL '{proxy_url}': {e}")))?;
+            crate::proxy::connect_via_proxy(
+                &proxy_host,
+                proxy_port,
+                &host,
+                port,
+                timeout,
+            )
+            .map_err(|e| WsErr::Io(format!("proxy CONNECT to {proxy_host}:{proxy_port}: {e}")))?
+        } else {
+            // ── 2. DNS resolve (direct path only) ──
+            let addr_str = format!("{}:{}", host, port);
+            let addrs: Vec<SocketAddr> = addr_str
+                .to_socket_addrs()
+                .map_err(|e| {
+                    WsErr::Dns(format!("DNS resolution failed for '{}': {}", host, e))
+                })?
+                .collect();
+
+            if addrs.is_empty() {
+                return Err(WsErr::Dns(format!("no addresses resolved for '{}'", host)));
+            }
+
+            connect_with_timeout(&addrs, timeout)?
+        };
 
         sock.set_read_timeout(Some(Duration::from_secs(30)))
             .map_err(|e| WsErr::Io(format!("set_read_timeout: {}", e)))?;
@@ -354,7 +376,7 @@ impl WsConnection {
             WsErr::Handshake("generated WebSocket key is not valid UTF-8".to_string())
         })?;
 
-        let upgrade_request = build_upgrade_request(&host, &path, token, ws_key_str, extra_headers);
+        let upgrade_request = build_upgrade_request(&host, ws_path, token, ws_key_str, extra_headers);
         stream
             .write_all(upgrade_request.as_bytes())
             .map_err(|e| WsErr::Io(format!("write upgrade request: {}", e)))?;
@@ -640,6 +662,8 @@ fn build_upgrade_request(
     req.push_str(ws_key);
     req.push_str("\r\n");
     req.push_str("Sec-WebSocket-Version: 13\r\n");
+    req.push_str("User-Agent: komari-agent-rs/0.1.0\r\n");
+    req.push_str("Accept: */*\r\n");
     for (name, value) in extra_headers {
         req.push_str(name);
         req.push_str(": ");
