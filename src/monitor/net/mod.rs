@@ -5,10 +5,19 @@
 //! first call to [`update`](Delta::update) the return value is 0 — there is
 //! no previous sample to compute a delta from.
 
+#[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(windows)]
+pub mod windows;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
-#[allow(unused_imports)]
+#[cfg(target_os = "linux")]
 pub use linux::{collect, NetInfo, PrevNetSnapshot};
+#[cfg(windows)]
+pub use windows::{collect, PrevNetSnapshot};
+#[cfg(target_os = "macos")]
+pub use macos::{collect, NetInfo, PrevNetSnapshot};
 
 use std::time::Instant;
 

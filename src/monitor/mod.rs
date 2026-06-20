@@ -13,7 +13,7 @@
 //! # Sub-modules
 //! Each collector has a per-platform implementation:
 //! `cpu`, `mem`, `disk`, `net`, `load`, `connections`, `process`, `uptime`,
-//! `ip`, `gpu`.
+//! `ip`, `gpu`, `os`, `virtualization`.
 
 use crate::arena::ScratchArena;
 use crate::config::Config;
@@ -29,8 +29,10 @@ pub mod ip;
 pub mod load;
 pub mod mem;
 pub mod net;
+pub mod os;
 pub mod process;
 pub mod uptime;
+pub mod virtualization;
 
 // ── MonitorErr ───────────────────────────────────────────────────────────────
 
