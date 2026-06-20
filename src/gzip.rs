@@ -437,9 +437,7 @@ mod tests {
         // (header + CRC32 + ISIZE) must yield a stream system gzip can decode.
         let data = b"Hello World";
         let mut gz = Vec::with_capacity(out.len() + 18);
-        gz.extend_from_slice(&[
-            0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xFF,
-        ]);
+        gz.extend_from_slice(&[0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xFF]);
         gz.extend_from_slice(&out);
         gz.extend_from_slice(&crc32(data).to_le_bytes());
         gz.extend_from_slice(&(data.len() as u32).to_le_bytes());
@@ -476,9 +474,7 @@ mod tests {
         assert!(!out.is_empty(), "empty input must still emit a block");
         assert_eq!(out[0] & 0x07, 0b011);
         let mut gz = Vec::with_capacity(out.len() + 18);
-        gz.extend_from_slice(&[
-            0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xFF,
-        ]);
+        gz.extend_from_slice(&[0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xFF]);
         gz.extend_from_slice(&out);
         gz.extend_from_slice(&crc32(b"").to_le_bytes());
         gz.extend_from_slice(&0u32.to_le_bytes());

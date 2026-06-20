@@ -161,7 +161,9 @@ impl Huff {
         let mut off = 0u16;
         for len in 1..16 {
             offsets[len] = off;
-            off = off.checked_add(counts[len]).ok_or(InflateErr::InvalidData)?;
+            off = off
+                .checked_add(counts[len])
+                .ok_or(InflateErr::InvalidData)?;
         }
 
         let mut symbols = vec![0u16; lens.len()];
