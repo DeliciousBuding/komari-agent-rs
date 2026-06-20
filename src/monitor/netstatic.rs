@@ -13,6 +13,11 @@
 //! ```json
 //! {"month":"2026-06","tx_bytes":12345,"rx_bytes":67890}
 //! ```
+//!
+//! Module is library-style: the persist/load/format helpers form a complete API
+//! surfaced for the Go parity and for future monitor integration; not all
+//! entry points are wired into the live tick yet. Allow dead_code for the API.
+#![allow(dead_code)]
 
 use crate::config::Config;
 use std::fs;

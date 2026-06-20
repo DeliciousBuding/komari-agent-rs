@@ -10,6 +10,12 @@
 //! 2. WS connect fails → retry WsV2 up to `max_retries` (caller-driven).
 //! 3. After 3 consecutive v2 failures → auto-downgrade to next mode.
 //! 4. WsV2 → HttpV2 → HttpV1 (terminal).
+//!
+//! `ProtocolFsm` drives the live reconnection loop. `ConnectionFsm` (TCP → TLS →
+//! WS lifecycle) plus a few `FailureKind` variants are kept as a complete
+//! parity/observability surface but not yet wired into the agent. Allow
+//! dead_code for that surface.
+#![allow(dead_code)]
 //! 5. On any successful connection → `on_success()` resets all counters.
 //! 6. On reconnect after disconnect → `on_reconnect()` retries from WsV2.
 

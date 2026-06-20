@@ -17,6 +17,7 @@ pub mod windows;
 #[cfg(target_os = "freebsd")]
 pub use freebsd::{NetInfo, PrevNetSnapshot, collect};
 #[cfg(target_os = "linux")]
+#[allow(unused_imports)]
 pub use linux::{NetInfo, PrevNetSnapshot, collect};
 #[cfg(target_os = "macos")]
 pub use macos::{NetInfo, PrevNetSnapshot, collect};
@@ -96,12 +97,14 @@ use std::time::Instant;
 /// No heap allocation.  Create one instance per monitored counter (e.g. one
 /// for RX bytes, one for TX bytes) or per interface when counters are stored
 /// externally (see [`super::linux::PrevNetSnapshot`]).
+#[allow(dead_code)]
 pub(crate) struct Delta {
     prev: u64,
     ts: Instant,
     ready: bool,
 }
 
+#[allow(dead_code)]
 impl Delta {
     /// Create a new delta tracker with no previous sample.
     #[inline]

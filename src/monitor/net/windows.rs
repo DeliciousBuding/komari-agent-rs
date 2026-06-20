@@ -1,5 +1,6 @@
 // komari-agent-rs: Windows network metrics — GetIfTable2 + delta calculation.
 #![cfg(windows)]
+#![allow(dead_code)]
 
 use std::time::Instant;
 

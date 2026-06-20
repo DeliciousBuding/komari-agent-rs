@@ -1,5 +1,6 @@
 // komari-agent-rs: Windows CPU metrics — GetSystemTimes + registry CPU name.
 #![cfg(windows)]
+#![allow(dead_code)]
 
 use crate::arena::ScratchArena;
 use std::io;
@@ -33,6 +34,7 @@ pub struct CpuInfo<'a> {
 // ── FFI: kernel32.dll ────────────────────────────────────────────────────────
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct FileTime {
     dwLowDateTime: u32,
     dwHighDateTime: u32,

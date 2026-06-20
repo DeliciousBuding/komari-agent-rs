@@ -12,6 +12,7 @@ use std::time::Duration;
 
 pub struct HttpResponse {
     pub status_code: u16,
+    #[allow(dead_code)]
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }

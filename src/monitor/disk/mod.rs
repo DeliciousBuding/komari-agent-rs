@@ -12,6 +12,7 @@ pub mod windows;
 #[cfg(target_os = "freebsd")]
 pub use freebsd::{DiskInfo, aggregate, collect};
 #[cfg(target_os = "linux")]
+#[allow(unused_imports)]
 pub use linux::{DiskInfo, aggregate, collect};
 #[cfg(target_os = "macos")]
 pub use macos::{DiskInfo, aggregate, collect};

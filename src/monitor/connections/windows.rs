@@ -1,5 +1,6 @@
 // komari-agent-rs: Windows connection counts — GetTcpTable + GetUdpTable
 #![cfg(windows)]
+#![allow(dead_code)]
 
 use std::io;
 
@@ -10,8 +11,10 @@ impl From<io::Error> for MetricErr { fn from(e: io::Error) -> Self { MetricErr::
 pub struct ConnectionsInfo { pub tcp: u32, pub udp: u32 }
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct MIB_TCPTABLE { dwNumEntries: u32 }
 #[repr(C)]
+#[allow(non_snake_case)]
 struct MIB_UDPTABLE { dwNumEntries: u32 }
 
 #[link(name = "iphlpapi")]

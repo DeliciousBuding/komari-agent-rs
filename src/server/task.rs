@@ -4,6 +4,11 @@
 //!
 //! - Go `server/task.go` — task lifecycle and result upload
 //! - Go `server/ping_icmp.go`, `server/ping_tcp.go`, `server/ping_http.go`
+//!
+//! Task classification (`TaskKind::from_method`) and ping helpers form part of the
+//! server-task parity surface and feature-gated paths; not all are wired into the
+//! live dispatch yet. Allow dead_code for the surface.
+#![allow(dead_code)]
 
 /// A task dispatched by the Komari server for this agent to execute.
 #[derive(Debug, Clone)]

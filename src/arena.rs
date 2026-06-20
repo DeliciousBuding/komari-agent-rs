@@ -8,6 +8,12 @@
 //! - No heap allocation in `new`, `push`, `reset`, `alloc_str`, or `alloc_bytes`.
 //! - All methods are `#[inline]` to maximise LTO in `opt-level="z"` builds.
 //! - Single-threaded (no `Sync` / interior mutability needed).
+//!
+//! The arena exposes a complete allocation primitive surface (`alloc_str`,
+//! `offset`, `fill_slice`, ...). Not every method is exercised by the live
+//! monitor yet; they are part of the documented zero-alloc API. Allow
+//! dead_code for the unused-but-documented primitives.
+#![allow(dead_code)]
 
 use std::mem::MaybeUninit;
 use std::ops::{Deref, Index, IndexMut};

@@ -2,6 +2,12 @@
 //
 // Zero-dependency.  No serde.  No format!/Display in hot paths.
 // Stack-allocated byte buffer + compile-time Field constants.
+//
+// The encoder exposes a full builder surface (variant constructors,
+// `begin_arr`/`bool_field`, the `EncodeJson` trait) for parity and future
+// callers; not every entry is wired into the live encoder yet. Allow
+// dead_code for the complete encoder surface.
+#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Error type

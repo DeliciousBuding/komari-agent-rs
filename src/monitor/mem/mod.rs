@@ -12,6 +12,7 @@ pub mod windows;
 #[cfg(target_os = "freebsd")]
 pub use freebsd::{MemInfo, collect};
 #[cfg(target_os = "linux")]
+#[allow(unused_imports)]
 pub use linux::{MemInfo, collect};
 #[cfg(target_os = "macos")]
 pub use macos::{MemInfo, collect};

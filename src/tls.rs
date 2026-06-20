@@ -415,15 +415,12 @@ fn base64_decode_strip(input: &str) -> Option<Vec<u8>> {
     let bytes = input.as_bytes();
     let len = bytes.len();
 
-    // Strip '=' padding from end (but keep the count).
-    let mut padded = 0u8;
+    // Strip '=' padding from end (the trimmed `end` is what drives sizing below).
     let mut end = len;
     if end > 0 && bytes[end - 1] == b'=' {
-        padded += 1;
         end -= 1;
     }
     if end > 0 && bytes[end - 1] == b'=' {
-        padded += 1;
         end -= 1;
     }
 

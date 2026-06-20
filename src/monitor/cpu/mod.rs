@@ -13,6 +13,7 @@ pub mod windows;
 #[cfg(target_os = "freebsd")]
 pub use freebsd::{CpuInfo, MetricErr, PrevCpu, collect_cpu};
 #[cfg(target_os = "linux")]
+#[allow(unused_imports)]
 pub use linux::{CpuInfo, MetricErr, PrevCpu, collect_cpu};
 #[cfg(target_os = "macos")]
 pub use macos::{CpuInfo, MetricErr, PrevCpu, collect_cpu};

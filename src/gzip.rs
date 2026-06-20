@@ -1,6 +1,11 @@
 // Fixed-Huffman DEFLATE encoder with gzip (RFC 1952) wrapper.
 // Encode only — no decode needed (server responses are uncompressed JSON).
 // DD9 in spec.md: fixed Huffman encode-only. Unconditional: needed for HTTP POST fallback.
+//
+// The full encoder surface (crc32, deflate, gzip_compress, helpers) is kept as a
+// complete library; only the public entry point is exercised today. Allow
+// dead_code for the internal API while it remains on the parity surface.
+#![allow(dead_code)]
 
 const CRC32_TABLE: [u32; 256] = {
     let mut t = [0u32; 256];

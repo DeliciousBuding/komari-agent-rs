@@ -1,3 +1,7 @@
+// Public API surface for the connections module; some fields/variants are part
+// of the cross-platform MetricErr contract but not exercised on every build.
+#![allow(dead_code)]
+
 use std::fs;
 use std::io;
 

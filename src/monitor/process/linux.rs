@@ -1,6 +1,7 @@
 // komari-agent-rs: Linux process count — enumerate /proc/[0-9]+/ directories.
 //
 // Best-effort metric.  No /proc → Ok(0), not an error.
+#![allow(dead_code)]
 
 use std::fs;
 use std::io;
