@@ -87,7 +87,7 @@ opt-level = "z"        # 依赖也最小体积
 | exec 远程命令 | ✅ | ✅ | sh -s (Unix) / powershell (Windows) + task/result |
 | ping (ICMP/TCP/HTTP) | ✅ | ✅ | 3-tier 降级，feature-gated `ping` |
 | terminal/WebSSH | ✅ | ✅ | WS<->PTY 双向循环 + ConPTY resize，feature-gated `terminal` |
-| gzip 压缩 | ✅ | ✅ | v2 HTTP POST（permessage-deflate 未实现） |
+| gzip / WS 压缩 | ✅ | ✅ | HTTP POST gzip + WS permessage-deflate (RFC 7692) |
 | JSON config | ✅ | ✅ | `--config` 文件分层 |
 | self-update | ✅ | ✅ | GitHub Releases + SHA256，feature-gated `self-update` |
 | month-rotate 流量 | ✅ | ✅ | netstatic 持久化 |
@@ -121,7 +121,7 @@ opt-level = "z"        # 依赖也最小体积
 
 - **basicInfo fork 兼容（已解决）**：v1.1.9 fork 拒绝 `kernel_version`/`cpu_physical_cores` 字段（HTTP 500）。agent 用 Go 兼容回退（先完整 payload，500 则删字段重试）→ us3 验证 200 成功。
 - **v2 API 不支持**：fork 的 `/api/clients/v2/rpc` 返回 SPA HTML。FSM 正确回退 v1。
-- **WS permessage-deflate 未实现**：HTTP POST gzip 已实现；WS 压缩（RFC 7692）需扩展协商 + raw deflate/inflate，复杂度高。当前 fork 用 v1 WS（不协商 deflate），report 仅 ~356B，不压缩可接受。标记为后续优化。
+- **WS permessage-deflate 已实现**：RFC 7692 WS 压缩完整对齐 Go（inflate 解码器 + raw deflate encoder + RSV1 帧位 + 扩展协商）。v2 server 协商后压缩数据帧；控制帧不压缩。当前 fork 用 v1 WS（不协商 deflate），compression_enabled=false，行为透明。同时修复 gzip encoder 位序 bug（Huffman 码 MSB-first）。
 
 ---
 
