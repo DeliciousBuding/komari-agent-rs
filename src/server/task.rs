@@ -53,8 +53,7 @@ impl TaskKind {
 /// Minimal byte-scanner: extract a JSON string value for `key` from raw JSON bytes.
 /// Handles both `"key":"value"` (v1) and `"key":"value"` (v2 camelCase).
 /// Returns `None` if the key is not found or the JSON is malformed.
-#[cfg(feature = "ping")]
-fn extract_json_string(params: &[u8], key: &str) -> Option<String> {
+pub(crate) fn extract_json_string(params: &[u8], key: &str) -> Option<String> {
     let text = std::str::from_utf8(params).ok()?;
 
     // Manual scan: find `"key":`
@@ -145,6 +144,33 @@ fn extract_json_string(params: &[u8], key: &str) -> Option<String> {
     None
 }
 
+/// Extract a JSON number value for `key` (used for numeric `task_id` fields).
+/// Returns the parsed i64, or None if absent / not a number.
+pub(crate) fn extract_json_number(params: &[u8], key: &str) -> Option<i64> {
+    let text = std::str::from_utf8(params).ok()?;
+    let needle = format!("\"{key}\"");
+    let mut idx = text.find(&needle)?;
+    idx += needle.len();
+    let bytes = text.as_bytes();
+    // Skip whitespace + colon + whitespace.
+    while idx < bytes.len() && (bytes[idx] == b' ' || bytes[idx] == b':' || bytes[idx] == b'\t' || bytes[idx] == b'\n') {
+        idx += 1;
+    }
+    let start = idx;
+    while idx < bytes.len() && (bytes[idx].is_ascii_digit() || bytes[idx] == b'-') {
+        idx += 1;
+    }
+    if start == idx {
+        return None;
+    }
+    text[start..idx].parse::<i64>().ok()
+}
+
+/// Extract the `"method":"..."` value from a JSON-RPC message.
+pub(crate) fn extract_json_method(params: &[u8]) -> Option<String> {
+    extract_json_string(params, "method")
+}
+
 #[derive(Debug, Clone)]
 pub struct PingResult {
     pub ping_type: String,
@@ -160,7 +186,6 @@ impl PingResult {
     }
 
     /// Build the JSON payload for ping result upload.
-    #[cfg(feature = "ping")]
     pub fn build_payload(&self, task_id: u64, protocol_version: u8) -> Vec<u8> {
         let now = current_time_iso8601();
         if protocol_version >= 2 {
@@ -180,8 +205,7 @@ impl PingResult {
 }
 
 /// Minimal ISO 8601 timestamp (UTC, no external crate).
-#[cfg(feature = "ping")]
-fn current_time_iso8601() -> String {
+pub(crate) fn current_time_iso8601() -> String {
     use std::time::SystemTime;
     let dur = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -205,7 +229,6 @@ fn current_time_iso8601() -> String {
 
 /// Convert days since 1970-01-01 to (year, month, day).
 /// Algorithm from Howard Hinnant's civil_from_days.
-#[cfg(feature = "ping")]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
@@ -286,4 +309,251 @@ pub fn handle_ping(_ping_type: &str, _target: &str, _timeout_ms: Option<u64>) ->
 #[cfg(not(feature = "ping"))]
 pub fn parse_ping_params(_params: &[u8]) -> Option<(String, String)> {
     None
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Remote command execution (agent.exec) — parity with Go server/task.go
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Outcome of a remote command execution.
+#[derive(Debug, Clone)]
+pub struct ExecResult {
+    /// Combined stdout + stderr (stderr appended after a newline).
+    pub output: String,
+    /// Process exit code (-1 when the command could not be run at all).
+    pub exit_code: i32,
+}
+
+impl ExecResult {
+    pub fn new(output: String, exit_code: i32) -> Self {
+        Self { output, exit_code }
+    }
+}
+
+/// Execute a server-sent command and return its combined output + exit code.
+///
+/// Mirrors Go `executeCommand`:
+///   - When `disable_web_ssh` is set, returns a fixed "disabled" message with
+///     exit code -1 (the server surfaces this as a failed task).
+///   - An empty/whitespace command yields "No command provided", code 0.
+///   - Unix: `sh -s` with the command piped to stdin.
+///   - Windows: a temp `.ps1` script (UTF-8 + BOM, ExecutionPolicy bypass)
+///     run via `powershell.exe`.
+///   - stdout and stderr are merged (stderr last); `\r\n` is normalised to `\n`.
+pub fn execute_exec(command: &str, disable_web_ssh: bool) -> ExecResult {
+    if disable_web_ssh {
+        return ExecResult::new("Remote control is disabled.".to_string(), -1);
+    }
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return ExecResult::new("No command provided".to_string(), 0);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut child = match Command::new("sh")
+            .arg("-s")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => return ExecResult::new(format!("failed to spawn shell: {e}"), -1),
+        };
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(command.as_bytes());
+        }
+        // Dropping stdin happens implicitly when the borrow ends; wait_with_output
+        // closes stdin, reads stdout/stderr fully, then waits.
+        match child.wait_with_output() {
+            Ok(out) => normalize_output(&out.stdout, &out.stderr, out.status.code()),
+            Err(e) => ExecResult::new(format!("failed to wait for command: {e}"), -1),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        exec_windows_powershell(command)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        ExecResult::new(
+            "remote command execution is not supported on this platform".to_string(),
+            -1,
+        )
+    }
+}
+
+/// Merge stdout + stderr, normalise line endings, attach the exit code.
+#[cfg(any(unix, windows))]
+fn normalize_output(stdout: &[u8], stderr: &[u8], code: Option<i32>) -> ExecResult {
+    let mut combined = String::from_utf8_lossy(stdout).into_owned();
+    if !stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&String::from_utf8_lossy(stderr));
+    }
+    combined = combined.replace("\r\n", "\n");
+    ExecResult::new(combined, code.unwrap_or(-1))
+}
+
+/// Windows execution path: write a UTF-8 (+ BOM) PowerShell script and run it
+/// with `-NoProfile -ExecutionPolicy Bypass`, matching the Go agent.
+#[cfg(windows)]
+fn exec_windows_powershell(command: &str) -> ExecResult {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Write the command to a temp .ps1 file. Prefix with a UTF-8 BOM and an
+    // encoding shim so non-ASCII output round-trips correctly.
+    let mut tmp = match tempfile_path("komari-exec", ".ps1") {
+        Ok(p) => p,
+        Err(e) => return ExecResult::new(format!("failed to create temp script: {e}"), -1),
+    };
+    let script = format!(
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n\
+         $OutputEncoding = [System.Text.Encoding]::UTF8\n\
+         {command}"
+    );
+    let mut file = match std::fs::File::create(&tmp) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return ExecResult::new(format!("failed to open temp script: {e}"), -1);
+        }
+    };
+    // UTF-8 BOM + script body.
+    let _ = file.write_all(&[0xEF, 0xBB, 0xBF]);
+    let _ = file.write_all(script.as_bytes());
+    drop(file);
+
+    let out = Command::new("powershell.exe")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&tmp)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+
+    match out {
+        Ok(out) => normalize_output(&out.stdout, &out.stderr, out.status.code()),
+        Err(e) => ExecResult::new(format!("failed to run powershell: {e}"), -1),
+    }
+}
+
+/// Build a temp file path in the OS temp dir without pulling in the `tempfile`
+/// crate. Uses the PID + a static counter to avoid collisions.
+#[cfg(windows)]
+fn tempfile_path(prefix: &str, suffix: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    Ok(dir.join(format!("{prefix}-{pid}-{n}{suffix}")))
+}
+
+/// Escape a string for safe embedding as a JSON string literal.
+///
+/// Handles the mandatory escapes (`\"`, `\\`, control chars) and common
+/// whitespace (`\n`, `\r`, `\t`). Non-ASCII bytes are passed through as UTF-8.
+pub(crate) fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Build the v1 `task/result` upload body:
+/// `{"task_id":"...","result":"...","exit_code":N,"finished_at":"..."}`
+pub fn build_task_result(task_id: &str, result: &str, exit_code: i32) -> Vec<u8> {
+    let now = current_time_iso8601();
+    format!(
+        r#"{{"task_id":"{}","result":"{}","exit_code":{},"finished_at":"{}"}}"#,
+        json_escape(task_id),
+        json_escape(result),
+        exit_code,
+        now
+    )
+    .into_bytes()
+}
+
+/// Build the v2 `agent.taskResult` JSON-RPC notification wrapping the same
+/// payload fields (camelCase).
+pub fn build_task_result_v2(task_id: &str, result: &str, exit_code: i32) -> Vec<u8> {
+    let now = current_time_iso8601();
+    let params = format!(
+        r#"{{"taskId":"{}","result":"{}","exitCode":{},"finishedAt":"{}"}}"#,
+        json_escape(task_id),
+        json_escape(result),
+        exit_code,
+        now
+    )
+    .into_bytes();
+    crate::protocol::v2::new_notification(crate::protocol::v2::METHOD_AGENT_TASK_RESULT, &params)
+}
+
+#[cfg(test)]
+mod exec_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn exec_runs_simple_command() {
+        let r = execute_exec("echo hello", false);
+        assert!(r.output.contains("hello"), "got: {}", r.output);
+        assert_eq!(r.exit_code, 0);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exec_empty_command() {
+        let r = execute_exec("   ", false);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.output.contains("No command"));
+    }
+
+    #[test]
+    fn exec_disabled_when_web_ssh_off() {
+        let r = execute_exec("rm -rf /", true);
+        assert_eq!(r.exit_code, -1);
+        assert!(r.output.contains("disabled"));
+    }
+
+    #[test]
+    fn json_escape_quotes_and_backslashes() {
+        assert_eq!(json_escape(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    #[test]
+    fn json_escape_newline() {
+        assert_eq!(json_escape("a\nb"), r#"a\nb"#);
+    }
+
+
+    #[test]
+    fn task_result_body_shape() {
+        let body = build_task_result("t1", "ok", 0);
+        let s = std::str::from_utf8(&body).unwrap();
+        assert!(s.contains("\"task_id\":\"t1\""));
+        assert!(s.contains("\"exit_code\":0"));
+        assert!(s.contains("\"finished_at\""));
+    }
 }
