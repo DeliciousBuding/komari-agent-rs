@@ -227,8 +227,12 @@ fn parse_pem_certs(pem: &str) -> Vec<CertificateDer<'static>> {
             }
             in_cert = false;
         } else if in_cert {
-            // PEM allows whitespace anywhere in the base64 body.
-            b64_buf.push_str(trimmed);
+            // PEM allows whitespace anywhere in the base64 body — strip all.
+            for ch in line.chars() {
+                if !ch.is_whitespace() {
+                    b64_buf.push(ch);
+                }
+            }
         }
     }
 
