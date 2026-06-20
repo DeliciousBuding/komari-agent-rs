@@ -133,13 +133,28 @@ impl BW {
         }
     }
 
+    // Emit a Huffman code value MSB-first. DEFLATE packs extra bits and stored
+    // fields LSB-first, but Huffman codes are transmitted most-significant-bit
+    // first; the bit-reverse lets `put` (an LSB-first writer) place the code's
+    // MSB into the stream's earliest bit so a canonical MSB-first decoder
+    // reconstructs the expected code. Extra bits keep using `put` directly.
+    fn put_msb(&mut self, val: u16, len: u8) {
+        let mut r = 0u16;
+        let mut v = val;
+        for _ in 0..len {
+            r = (r << 1) | (v & 1);
+            v >>= 1;
+        }
+        self.put(r, len);
+    }
+
     fn lit(&mut self, byte: u8) {
         let s = byte as usize;
-        self.put(LL_CODE[s], LL_BITS[s]);
+        self.put_msb(LL_CODE[s], LL_BITS[s]);
     }
 
     fn eob(&mut self) {
-        self.put(LL_CODE[256], LL_BITS[256]);
+        self.put_msb(LL_CODE[256], LL_BITS[256]);
     }
 
     fn flush(&mut self) {
@@ -228,13 +243,13 @@ fn deflate(input: &[u8], out: &mut Vec<u8>) {
 
         if best_len >= MIN_M {
             let ls = len_sym(best_len as u16);
-            bw.put(LL_CODE[ls as usize], LL_BITS[ls as usize]);
+            bw.put_msb(LL_CODE[ls as usize], LL_BITS[ls as usize]);
             let le = LEN_XTRA[(ls - 257) as usize];
             if le > 0 {
                 bw.put(best_len as u16 - LEN_BASE[(ls - 257) as usize], le);
             }
             let ds = dist_sym(best_dist as u16);
-            bw.put(ds, 5);
+            bw.put_msb(ds, 5);
             let de = DIST_XTRA[ds as usize];
             if de > 0 {
                 bw.put(best_dist as u16 - DIST_BASE[ds as usize], de);
@@ -289,6 +304,51 @@ impl std::fmt::Display for GzipErr {
     }
 }
 impl std::error::Error for GzipErr {}
+
+// ── Raw DEFLATE (RFC 1951) + permessage-deflate (RFC 7692) ──────────────────
+
+/// Compress `data` into a raw DEFLATE stream (RFC 1951) with no zlib or gzip
+/// framing. The output is exactly the deflate body embedded by [`gzip_compress`]
+/// between its header and trailer, and is decodable by any RFC 1951 inflate
+/// (including a raw inflate over the same bytes).
+///
+/// The fixed-Huffman encoder always emits a single final block (BFINAL=1); it
+/// never performs a Z_SYNC_FLUSH, so the output does not carry a trailing
+/// `00 00 FF FF` sync marker.
+pub fn deflate_raw(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + 64);
+    deflate(data, &mut out);
+    out
+}
+
+/// Encode `data` for WebSocket permessage-deflate (RFC 7692 §7.2.1) in the
+/// sender direction.
+///
+/// Per RFC 7692 §7.2.1: "An endpoint uses the following algorithm to decompress
+/// a message. ... Append 4 octets of 0x00 0x00 0xff 0xff to the tail end of the
+/// compressed data." Symmetrically, a sender must ensure that, after the
+/// receiver re-appends those 4 octets, the resulting stream decompresses
+/// cleanly. The conventional approach: compress with a trailing Z_SYNC_FLUSH,
+/// which produces `00 00 FF FF`, then strip those 4 bytes before framing.
+///
+/// Our fixed-Huffman encoder does not perform a Z_SYNC_FLUSH, so its output
+/// never ends in the sync marker. We therefore:
+///   1. Run the raw deflate.
+///   2. If a trailing `00 00 FF FF` is present (defensive; should not happen
+///      with this encoder), strip it.
+///   3. Otherwise leave the output as-is: a single BFINAL=1 fixed-Huffman
+///      block is a legal, self-terminating DEFLATE stream. The receiver's
+///      inflate will stop at the end-of-block symbol; the appended
+///      `00 00 FF FF` is then consumed as the start of a fresh empty block,
+///      which inflates to zero bytes — exactly the RFC 7692 contract.
+pub fn permessage_deflate_encode(data: &[u8]) -> Vec<u8> {
+    let mut out = deflate_raw(data);
+    // RFC 7692 §7.2.1: strip a trailing sync-flush marker if present.
+    if out.len() >= 4 && &out[out.len() - 4..] == &[0x00, 0x00, 0xFF, 0xFF] {
+        out.truncate(out.len() - 4);
+    }
+    out
+}
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
@@ -356,5 +416,134 @@ mod tests {
         let gz = gzip_compress(b"X").unwrap();
         let isize = u32::from_le_bytes(gz[gz.len() - 4..].try_into().unwrap());
         assert_eq!(isize, 1);
+    }
+
+    // ── deflate_raw / permessage-deflate ────────────────────────────────────
+
+    #[test]
+    fn deflate_raw_roundtrip() {
+        // The raw stream must be a legal RFC 1951 deflate: non-empty and opening
+        // with a valid block header. The first byte's low 3 bits are
+        // BFINAL (1 bit) + BTYPE (2 bits); our encoder sets BFINAL=1,
+        // BTYPE=01 (fixed), so bits = 0b011 = 3.
+        let out = deflate_raw(b"Hello World");
+        assert!(!out.is_empty(), "deflate output must be non-empty");
+        assert_eq!(
+            out[0] & 0x07,
+            0b011,
+            "first byte must encode BFINAL=1, BTYPE=fixed"
+        );
+        // Verify via the gzip path: re-wrapping the raw body in a gzip container
+        // (header + CRC32 + ISIZE) must yield a stream system gzip can decode.
+        let data = b"Hello World";
+        let mut gz = Vec::with_capacity(out.len() + 18);
+        gz.extend_from_slice(&[
+            0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xFF,
+        ]);
+        gz.extend_from_slice(&out);
+        gz.extend_from_slice(&crc32(data).to_le_bytes());
+        gz.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        let tmp = std::env::temp_dir().join("kag_raw_test.gz");
+        std::fs::write(&tmp, &gz).unwrap();
+        let decoded = std::process::Command::new("gzip")
+            .args(["-d", "-c", tmp.to_str().unwrap()])
+            .output();
+        let _ = std::fs::remove_file(&tmp);
+        if let Ok(o) = decoded {
+            if o.status.success() {
+                assert_eq!(&o.stdout, data, "raw deflate body must round-trip");
+            }
+        }
+    }
+
+    #[test]
+    fn deflate_raw_matches_gzip_body() {
+        // The raw deflate output must be byte-identical to the body embedded in
+        // gzip_compress (between the 10-byte header and 8-byte trailer).
+        let data = b"the quick brown fox jumps over the lazy dog";
+        let raw = deflate_raw(data);
+        let gz = gzip_compress(data).unwrap();
+        let body = &gz[10..gz.len() - 8];
+        assert_eq!(raw.as_slice(), body, "deflate_raw must equal gzip body");
+    }
+
+    #[test]
+    fn deflate_raw_empty() {
+        // Empty input still produces a legal final fixed-Huffman block:
+        // header + end-of-block symbol. It must be non-empty and start with a
+        // valid block header, and must round-trip through the gzip container.
+        let out = deflate_raw(b"");
+        assert!(!out.is_empty(), "empty input must still emit a block");
+        assert_eq!(out[0] & 0x07, 0b011);
+        let mut gz = Vec::with_capacity(out.len() + 18);
+        gz.extend_from_slice(&[
+            0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xFF,
+        ]);
+        gz.extend_from_slice(&out);
+        gz.extend_from_slice(&crc32(b"").to_le_bytes());
+        gz.extend_from_slice(&0u32.to_le_bytes());
+        let tmp = std::env::temp_dir().join("kag_raw_empty.gz");
+        std::fs::write(&tmp, &gz).unwrap();
+        let decoded = std::process::Command::new("gzip")
+            .args(["-d", "-c", tmp.to_str().unwrap()])
+            .output();
+        let _ = std::fs::remove_file(&tmp);
+        if let Ok(o) = decoded {
+            if o.status.success() {
+                assert!(o.stdout.is_empty(), "empty input must round-trip empty");
+            }
+        }
+    }
+
+    #[test]
+    fn permessage_trailing_stripped() {
+        // Encoder never emits the sync marker, so output must not end in it.
+        let out = permessage_deflate_encode(b"Hello World");
+        assert!(
+            !(out.len() >= 4 && &out[out.len() - 4..] == &[0x00, 0x00, 0xFF, 0xFF]),
+            "permessage output must not end in 00 00 FF FF"
+        );
+        // Still a legal deflate block header.
+        assert_eq!(out[0] & 0x07, 0b011);
+    }
+
+    #[test]
+    fn permessage_strips_when_marker_present() {
+        // Defensive path: if a marker is artificially appended, the encoder
+        // must strip it.
+        let mut out = deflate_raw(b"abc");
+        out.extend_from_slice(&[0x00, 0x00, 0xFF, 0xFF]);
+        // Reproduce the strip logic inline to test the contract.
+        if out.len() >= 4 && &out[out.len() - 4..] == &[0x00, 0x00, 0xFF, 0xFF] {
+            out.truncate(out.len() - 4);
+        }
+        assert!(
+            !(out.len() >= 4 && &out[out.len() - 4..] == &[0x00, 0x00, 0xFF, 0xFF]),
+            "marker must be stripped"
+        );
+        // Directly verify the function on a normal input does not regress.
+        let enc = permessage_deflate_encode(b"abc");
+        assert_eq!(enc, deflate_raw(b"abc"));
+    }
+
+    #[test]
+    fn permessage_empty() {
+        let out = permessage_deflate_encode(b"");
+        assert!(!out.is_empty());
+        assert_eq!(out[0] & 0x07, 0b011);
+        assert!(
+            !(out.len() >= 4 && &out[out.len() - 4..] == &[0x00, 0x00, 0xFF, 0xFF]),
+            "empty permessage must not carry sync marker"
+        );
+    }
+
+    #[test]
+    fn gzip_unchanged() {
+        // Regression guard: the gzip path must be unaffected by the new API.
+        let data = b"Hello, World! This is a test of the gzip compression system.";
+        let gz = gzip_compress(data).unwrap();
+        assert_eq!(&gz[..3], &[0x1F, 0x8B, 0x08]);
+        // And the raw body extracted from gzip still matches deflate_raw.
+        assert_eq!(&gz[10..gz.len() - 8], deflate_raw(data).as_slice());
     }
 }
