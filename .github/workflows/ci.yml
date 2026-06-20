@@ -1,5 +1,6 @@
 name: CI
 on: [push, pull_request]
+
 jobs:
   test:
     strategy:
@@ -11,7 +12,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings 2>&1 || true
+      - run: cargo clippy -- -D warnings
+
   build-linux-musl:
     runs-on: ubuntu-latest
     steps:
@@ -19,5 +21,51 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      - run: cargo build --release --target x86_64-unknown-linux-musl
-      - run: ls -lh target/x86_64-unknown-linux-musl/release/komari-agent-rs
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl --features full
+      - name: Check binary size < 1MB
+        run: |
+          SIZE=$(stat -c%s target/x86_64-unknown-linux-musl/release/komari-agent-rs)
+          echo "Binary size: $SIZE bytes ($(du -h target/x86_64-unknown-linux-musl/release/komari-agent-rs | cut -f1))"
+          ls -lh target/x86_64-unknown-linux-musl/release/komari-agent-rs
+          if [ "$SIZE" -ge 1048576 ]; then
+            echo "::error::Binary size $SIZE bytes exceeds 1MB limit"
+            exit 1
+          fi
+          echo "Size OK: $SIZE bytes (< 1MB)"
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --features full
+      - name: Check binary size < 1MB
+        shell: pwsh
+        run: |
+          $path = "target\release\komari-agent-rs.exe"
+          $size = (Get-Item $path).Length
+          Write-Host "Binary size: $size bytes"
+          Get-Item $path | Format-List Name, Length
+          if ($size -ge 1048576) {
+            Write-Error "Binary size $size bytes exceeds 1MB limit"
+            exit 1
+          }
+          Write-Host "Size OK: $size bytes (< 1MB)"
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --features full
+      - name: Check binary size < 1MB
+        run: |
+          SIZE=$(stat -f%z target/release/komari-agent-rs)
+          echo "Binary size: $SIZE bytes"
+          ls -lh target/release/komari-agent-rs
+          if [ "$SIZE" -ge 1048576 ]; then
+            echo "::error::Binary size $SIZE bytes exceeds 1MB limit"
+            exit 1
+          fi
+          echo "Size OK: $SIZE bytes (< 1MB)"
