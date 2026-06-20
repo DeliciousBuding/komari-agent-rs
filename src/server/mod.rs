@@ -97,17 +97,19 @@ pub(super) fn update_basic_info(
     let base = config.endpoint.trim_end_matches('/');
     let encoded_token = crate::ws::url_encode(&config.token);
 
-    let (url, body) = if config.protocol_version >= 2 {
-        let url = format!("{}/api/clients/v2/rpc?token={}", base, encoded_token);
-        let body = build_basic_info_v2(config);
-        (url, body)
+    // Build the endpoint URL + a body builder closure for the active protocol.
+    let is_v2 = config.protocol_version >= 2;
+    let url = if is_v2 {
+        format!("{}/api/clients/v2/rpc?token={}", base, encoded_token)
     } else {
-        let url = format!(
-            "{}/api/clients/uploadBasicInfo?token={}",
-            base, encoded_token
-        );
-        let body = build_basic_info_v1(config);
-        (url, body)
+        format!("{}/api/clients/uploadBasicInfo?token={}", base, encoded_token)
+    };
+    let build = |extended: bool| -> Vec<u8> {
+        if is_v2 {
+            build_basic_info_v2(config, extended)
+        } else {
+            build_basic_info_v1(config, extended)
+        }
     };
 
     let cf_access = crate::server::cf_access::CfAccess::from_config(config);
@@ -116,21 +118,53 @@ pub(super) fn update_basic_info(
         cf.inject_http_headers(&mut extra_headers);
     }
 
-    match crate::http::http_post(
-        &url,
-        &body,
-        "application/json",
-        None,
-        &extra_headers,
-        tls_cfg,
-        dial,
-    ) {
-        Ok(resp) if resp.status_code == 200 => {
+    // One POST attempt → status code (transport errors returned as Err).
+    let post = |body: &[u8]| -> Result<u16, String> {
+        match crate::http::http_post(
+            &url,
+            body,
+            "application/json",
+            None,
+            &extra_headers,
+            tls_cfg,
+            dial,
+        ) {
+            Ok(resp) => Ok(resp.status_code),
+            Err(e) => Err(format!("basic info upload transport error: {e}")),
+        }
+    };
+
+    // Attempt 1: full payload (includes kernel_version + cpu_physical_cores).
+    let body_full = build(true);
+    match post(&body_full) {
+        Ok(200) => {
             info!("Basic info uploaded successfully");
+            return Ok(());
+        }
+        Ok(code) => {
+            // Older Komari servers (<= 1.0.2 / <= 1.2.0, and the v1.1.9 fork)
+            // reject the payload when the extended fields are present. Retry
+            // without them — mirrors Go `uploadBasicInfo` fallback.
+            warn!(
+                "basic info HTTP {} with extended fields, retrying compat payload",
+                code
+            );
+        }
+        Err(e) => {
+            warn!("{}", e);
+            return Err(e);
+        }
+    }
+
+    // Attempt 2: compat payload (no kernel_version / cpu_physical_cores).
+    let body_compat = build(false);
+    match post(&body_compat) {
+        Ok(200) => {
+            info!("Basic info uploaded (compat payload)");
             Ok(())
         }
-        Ok(resp) => {
-            let msg = format!("Basic info upload returned HTTP {}", resp.status_code);
+        Ok(code) => {
+            let msg = format!("Basic info upload returned HTTP {}", code);
             warn!("{}", msg);
             Err(msg)
         }
@@ -148,13 +182,13 @@ pub(super) fn update_basic_info(
 /// Field set matches Go `uploadBasicInfo` exactly:
 /// cpu_name, cpu_cores, cpu_physical_cores, arch, os, kernel_version, ipv4,
 /// ipv6, mem_total, swap_total, disk_total, gpu_name, virtualization, version.
-fn collect_basic_info(config: &Config) -> Vec<u8> {
+fn collect_basic_info(config: &Config, include_extended: bool) -> Vec<u8> {
     let mut arena = crate::arena::ScratchArena::new();
     let mut prev_cpu = crate::monitor::cpu::PrevCpu::default();
     let mut buf = vec![0u8; 2048];
     let len = {
         let mut j = crate::json::JsonBuf::new(&mut buf);
-        let _ = encode_basic_info(&mut j, &mut arena, &mut prev_cpu, config);
+        let _ = encode_basic_info(&mut j, &mut arena, &mut prev_cpu, config, include_extended);
         j.finish().len()
     };
     buf.truncate(len);
@@ -163,11 +197,17 @@ fn collect_basic_info(config: &Config) -> Vec<u8> {
 
 /// Encode the basic-info JSON into `j`.  Each collector is best-effort: a
 /// failure yields a sensible default rather than aborting the whole payload.
+///
+/// `include_extended` controls the `kernel_version` and `cpu_physical_cores`
+/// fields. Older Komari servers (<= 1.0.2 / <= 1.2.0, and the v1.1.9 fork)
+/// reject the payload when these are present — the caller retries with this
+/// flag off (mirrors Go `uploadBasicInfo` fallback).
 fn encode_basic_info(
     j: &mut crate::json::JsonBuf,
     arena: &mut crate::arena::ScratchArena,
     prev_cpu: &mut crate::monitor::cpu::PrevCpu,
     config: &Config,
+    include_extended: bool,
 ) -> Result<(), crate::json::JsonErr> {
     use crate::json::Field;
 
@@ -202,10 +242,14 @@ fn encode_basic_info(
     j.begin_obj()?;
     j.str_field(Field::CpuName, cpu.name)?;
     j.u64_field(Field::CpuCores, cpu.cores as u64)?;
-    j.u64_field(Field::CpuPhysicalCores, cpu.physical_cores as u64)?;
+    if include_extended {
+        j.u64_field(Field::CpuPhysicalCores, cpu.physical_cores as u64)?;
+    }
     j.str_field(Field::Arch, cpu.arch)?;
     j.str_field(Field::Os, &os.name)?;
-    j.str_field(Field::KernelVersion, &os.kernel_version)?;
+    if include_extended {
+        j.str_field(Field::KernelVersion, &os.kernel_version)?;
+    }
     j.str_field(Field::Ipv4, ipv4.as_deref().unwrap_or(""))?;
     j.str_field(Field::Ipv6, ipv6.as_deref().unwrap_or(""))?;
     j.u64_field(Field::MemTotal, mem.total)?;
@@ -218,8 +262,8 @@ fn encode_basic_info(
     Ok(())
 }
 
-fn build_basic_info_v2(config: &Config) -> Vec<u8> {
-    let info = collect_basic_info(config);
+fn build_basic_info_v2(config: &Config, include_extended: bool) -> Vec<u8> {
+    let info = collect_basic_info(config, include_extended);
     // Wrap as JSON-RPC notification: {"jsonrpc":"2.0","method":"agent.basicInfo","params":{"info":<info>}}
     let mut params = Vec::with_capacity(info.len() + 20);
     params.extend_from_slice(b"{\"info\":");
@@ -228,7 +272,7 @@ fn build_basic_info_v2(config: &Config) -> Vec<u8> {
     v2::new_notification(v2::METHOD_AGENT_BASIC_INFO, &params)
 }
 
-fn build_basic_info_v1(config: &Config) -> Vec<u8> {
+fn build_basic_info_v1(config: &Config, include_extended: bool) -> Vec<u8> {
     // V1: flat JSON, no JSON-RPC wrapper.
-    collect_basic_info(config)
+    collect_basic_info(config, include_extended)
 }
