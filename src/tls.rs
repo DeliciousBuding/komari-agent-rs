@@ -491,8 +491,8 @@ fn base64_decode_strip(input: &str) -> Option<Vec<u8>> {
         }
     }
 
-    // Trim padding bytes.
-    let final_len = out.len().saturating_sub(padded as usize);
+    // Trim output to correct length: (valid_chars * 3) / 4 bytes output.
+    let final_len = (end * 3) / 4;
     out.truncate(final_len);
 
     Some(out)
