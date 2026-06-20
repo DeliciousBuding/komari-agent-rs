@@ -1,7 +1,7 @@
 // komari-agent-rs: Windows disk metrics — GetLogicalDriveStringsW + GetDiskFreeSpaceExW.
 #![cfg(windows)]
 
-use crate::arena::{SmallVec, MAX_DISKS};
+use crate::arena::{MAX_DISKS, SmallVec};
 use crate::config::Config;
 
 /// Per-drive disk usage snapshot.

@@ -65,15 +65,15 @@ pub enum Field {
     Cores,     // "cores"
 
     // --- GPU ---
-    Backend,       // "backend"
-    Devices,       // "devices"
-    MemoryTotal,   // "memory_total"
-    MemoryUsed,    // "memory_used"
-    Utilization,   // "utilization"
-    Temperature,   // "temperature"
-    AverageUsage,  // "average_usage"
-    DetailedInfo,  // "detailed_info"
-    Models,        // "models"
+    Backend,      // "backend"
+    Devices,      // "devices"
+    MemoryTotal,  // "memory_total"
+    MemoryUsed,   // "memory_used"
+    Utilization,  // "utilization"
+    Temperature,  // "temperature"
+    AverageUsage, // "average_usage"
+    DetailedInfo, // "detailed_info"
+    Models,       // "models"
 }
 
 impl Field {

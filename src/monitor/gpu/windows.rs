@@ -2,8 +2,8 @@
 // No windows-rs / windows crate — bare LoadLibraryW + GetProcAddress + vtable calls.
 // Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_windows.go
 
-use crate::arena::{SmallVec, MAX_GPUS};
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
+use crate::arena::{MAX_GPUS, SmallVec};
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
@@ -69,10 +69,11 @@ struct IDXGIFactory1Vtbl {
     query_interface: usize,
     add_ref: unsafe extern "system" fn(*mut IDXGIFactory1) -> u32,
     release: unsafe extern "system" fn(*mut IDXGIFactory1) -> u32,
-    _pad_obj: [usize; 4],                // slots 3-6: IDXGIObject
-    _pad_factory: [usize; 5],            // slots 7-11: IDXGIFactory
-    enum_adapters1: unsafe extern "system" fn(*mut IDXGIFactory1, u32, *mut *mut IDXGIAdapter1) -> i32,
-    _pad_is_current: usize,              // slot 13: IsCurrent
+    _pad_obj: [usize; 4],     // slots 3-6: IDXGIObject
+    _pad_factory: [usize; 5], // slots 7-11: IDXGIFactory
+    enum_adapters1:
+        unsafe extern "system" fn(*mut IDXGIFactory1, u32, *mut *mut IDXGIAdapter1) -> i32,
+    _pad_is_current: usize, // slot 13: IsCurrent
 }
 
 #[repr(C)]
@@ -92,14 +93,13 @@ struct IDXGIFactory1 {
 /// Slot 8: GetDesc                    (IDXGIAdapter)
 /// Slot 9: CheckInterfaceSupport      (IDXGIAdapter)
 /// Slot 10: GetDesc1                  (IDXGIAdapter1)
-
 #[repr(C)]
 struct IDXGIAdapter1Vtbl {
     query_interface: usize,
     add_ref: unsafe extern "system" fn(*mut IDXGIAdapter1) -> u32,
     release: unsafe extern "system" fn(*mut IDXGIAdapter1) -> u32,
-    _pad_obj: [usize; 4],                // slots 3-6: IDXGIObject
-    _pad_adapter: [usize; 3],            // slots 7-9: IDXGIAdapter
+    _pad_obj: [usize; 4],     // slots 3-6: IDXGIObject
+    _pad_adapter: [usize; 3], // slots 7-9: IDXGIAdapter
     get_desc1: unsafe extern "system" fn(*mut IDXGIAdapter1, *mut DxgiAdapterDesc1) -> i32,
 }
 
@@ -155,15 +155,21 @@ fn detect_dxgi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     let dll_name = to_wide_null("dxgi.dll");
     let h_module = unsafe { LoadLibraryW(dll_name.as_ptr()) };
     if h_module == 0 {
-        return Err(GpuDetectErr::Subprocess("LoadLibraryW dxgi.dll failed".into()));
+        return Err(GpuDetectErr::Subprocess(
+            "LoadLibraryW dxgi.dll failed".into(),
+        ));
     }
 
     // Get CreateDXGIFactory1
     let proc_name = b"CreateDXGIFactory1\0";
     let proc_addr = unsafe { GetProcAddress(h_module, proc_name.as_ptr()) };
     if proc_addr.is_null() {
-        unsafe { FreeLibrary(h_module); }
-        return Err(GpuDetectErr::Subprocess("GetProcAddress CreateDXGIFactory1 failed".into()));
+        unsafe {
+            FreeLibrary(h_module);
+        }
+        return Err(GpuDetectErr::Subprocess(
+            "GetProcAddress CreateDXGIFactory1 failed".into(),
+        ));
     }
 
     let create_factory: CreateDXGIFactory1Fn = unsafe { std::mem::transmute(proc_addr) };
@@ -172,8 +178,13 @@ fn detect_dxgi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     let mut factory: *mut IDXGIFactory1 = std::ptr::null_mut();
     let hr = unsafe { create_factory(&IID_IDXGIFACTORY1, &mut factory) };
     if hr != S_OK || factory.is_null() {
-        unsafe { FreeLibrary(h_module); }
-        return Err(GpuDetectErr::Subprocess(format!("CreateDXGIFactory1 HRESULT: 0x{:08X}", hr as u32)));
+        unsafe {
+            FreeLibrary(h_module);
+        }
+        return Err(GpuDetectErr::Subprocess(format!(
+            "CreateDXGIFactory1 HRESULT: 0x{:08X}",
+            hr as u32
+        )));
     }
 
     let mut gpus: SmallVec<GpuInfo, MAX_GPUS> = SmallVec::new();
@@ -191,7 +202,9 @@ fn detect_dxgi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         if hr != S_OK {
             if !adapter.is_null() {
                 let avtbl = unsafe { &*((*adapter).lp_vtbl) };
-                unsafe { (avtbl.release)(adapter); }
+                unsafe {
+                    (avtbl.release)(adapter);
+                }
             }
             continue;
         }
@@ -206,7 +219,9 @@ fn detect_dxgi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         let desc_hr = unsafe { (adapter_vtbl.get_desc1)(adapter, &mut desc) };
 
         // Release adapter
-        unsafe { (adapter_vtbl.release)(adapter); }
+        unsafe {
+            (adapter_vtbl.release)(adapter);
+        }
 
         if desc_hr != S_OK {
             continue;
@@ -225,9 +240,9 @@ fn detect_dxgi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         let _ = gpus.push(GpuInfo {
             name,
             memory_total: desc.dedicated_video_memory as u64,
-            memory_used: 0,    // DXGI doesn't report per-adapter usage
-            utilization: 0.0,  // DXGI doesn't report utilization
-            temperature: 0,    // DXGI doesn't report temperature
+            memory_used: 0,   // DXGI doesn't report per-adapter usage
+            utilization: 0.0, // DXGI doesn't report utilization
+            temperature: 0,   // DXGI doesn't report temperature
         });
     }
 
@@ -236,10 +251,14 @@ fn detect_dxgi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         let vtbl = &*((*factory).lp_vtbl);
         (vtbl.release)(factory);
     }
-    unsafe { FreeLibrary(h_module); }
+    unsafe {
+        FreeLibrary(h_module);
+    }
 
     if gpus.is_empty() {
-        Err(GpuDetectErr::Parse("DXGI: no hardware adapters found".into()))
+        Err(GpuDetectErr::Parse(
+            "DXGI: no hardware adapters found".into(),
+        ))
     } else {
         Ok(gpus)
     }

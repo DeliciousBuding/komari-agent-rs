@@ -4,7 +4,7 @@
 use std::ffi::CStr;
 use std::time::Instant;
 
-use crate::arena::{SmallVec, MAX_NETWORKS};
+use crate::arena::{MAX_NETWORKS, SmallVec};
 use crate::config::Config;
 
 /// Per-interface network statistics for a single monitoring tick.
@@ -80,30 +80,30 @@ struct SockAddrDl {
 // struct if_data — 64-bit FreeBSD layout (from net/if_var.h)
 #[repr(C)]
 struct IfData {
-    ifi_type: u8,           // offset 0
-    ifi_physical: u8,       // offset 1
-    ifi_addrlen: u8,        // offset 2
-    ifi_hdrlen: u8,         // offset 3
-    ifi_link_state: u8,     // offset 4
-    ifi_vhid: u8,           // offset 5
-    ifi_datalen: u16,       // offset 6
-    ifi_mtu: u32,           // offset 8
-    ifi_metric: u32,        // offset 12
-    ifi_baudrate: u64,      // offset 16
-    ifi_ipackets: u64,      // offset 24
-    ifi_ierrors: u64,       // offset 32
-    ifi_opackets: u64,      // offset 40
-    ifi_oerrors: u64,       // offset 48
-    ifi_collisions: u64,    // offset 56
-    ifi_ibytes: u64,        // offset 64
-    ifi_obytes: u64,        // offset 72
-    ifi_imcasts: u64,       // offset 80
-    ifi_omcasts: u64,       // offset 88
-    ifi_iqdrops: u64,       // offset 96
-    ifi_oqdrops: u64,       // offset 104
-    ifi_noproto: u64,       // offset 112
-    ifi_hwassist: u64,      // offset 120
-    // __ifi_epoch and __ifi_lastchange follow (16 bytes each)
+    ifi_type: u8,        // offset 0
+    ifi_physical: u8,    // offset 1
+    ifi_addrlen: u8,     // offset 2
+    ifi_hdrlen: u8,      // offset 3
+    ifi_link_state: u8,  // offset 4
+    ifi_vhid: u8,        // offset 5
+    ifi_datalen: u16,    // offset 6
+    ifi_mtu: u32,        // offset 8
+    ifi_metric: u32,     // offset 12
+    ifi_baudrate: u64,   // offset 16
+    ifi_ipackets: u64,   // offset 24
+    ifi_ierrors: u64,    // offset 32
+    ifi_opackets: u64,   // offset 40
+    ifi_oerrors: u64,    // offset 48
+    ifi_collisions: u64, // offset 56
+    ifi_ibytes: u64,     // offset 64
+    ifi_obytes: u64,     // offset 72
+    ifi_imcasts: u64,    // offset 80
+    ifi_omcasts: u64,    // offset 88
+    ifi_iqdrops: u64,    // offset 96
+    ifi_oqdrops: u64,    // offset 104
+    ifi_noproto: u64,    // offset 112
+    ifi_hwassist: u64,   // offset 120
+                         // __ifi_epoch and __ifi_lastchange follow (16 bytes each)
 }
 
 // Minimal ifaddrs — only the fields we actually read
@@ -128,11 +128,10 @@ unsafe extern "C" {
 
 fn is_virtual(name: &str) -> bool {
     const VP: &[&str] = &[
-        "bridge", "gif", "stf", "tap", "tun", "epair", "wg", "pflog",
-        "pfsync", "enc", "lo", "vlan", "lagg",
+        "bridge", "gif", "stf", "tap", "tun", "epair", "wg", "pflog", "pfsync", "enc", "lo",
+        "vlan", "lagg",
     ];
-    name == "lo0"
-        || VP.iter().any(|p| name.starts_with(p))
+    name == "lo0" || VP.iter().any(|p| name.starts_with(p))
 }
 
 fn glob_match(pat: &str, name: &str) -> bool {
@@ -156,10 +155,7 @@ fn include_nic(name: &str, cfg: &Config) -> bool {
 /// Iterates AF_LINK entries to read `ifi_ibytes` / `ifi_obytes` cumulative
 /// counters.  Filters loopback and virtual interfaces.
 /// Computes per-second upload/download speeds via delta from the previous tick.
-pub fn collect(
-    config: &Config,
-    prev: &mut PrevNetSnapshot,
-) -> SmallVec<NetInfo, MAX_NETWORKS> {
+pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo, MAX_NETWORKS> {
     let mut out = SmallVec::new();
     let now = Instant::now();
 

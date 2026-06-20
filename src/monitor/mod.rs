@@ -208,9 +208,7 @@ fn encode_report(
     });
 
     // ── IP: NIC + HTTP APIs (collected for basicInfo, not in monitoring JSON) ──
-    let (_ipv4, _ipv6) = ip::collect_ip(config).unwrap_or_else(|_| {
-        (None, None)
-    });
+    let (_ipv4, _ipv6) = ip::collect_ip(config).unwrap_or({ (None, None) });
 
     // ══════════════════════════════════════════════════════════════════════
     // Build JSON matching Go komari-agent wire format exactly.

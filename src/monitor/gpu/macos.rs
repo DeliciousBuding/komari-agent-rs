@@ -2,8 +2,8 @@
 // No plist/xml parser — simple string scanning for sppci_model and spdisplays_vram.
 // Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_darwin.go
 
-use crate::arena::{SmallVec, MAX_GPUS};
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
+use crate::arena::{MAX_GPUS, SmallVec};
 use std::process::Command;
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -23,7 +23,9 @@ fn detect_system_profiler() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr>
         .map_err(|e| GpuDetectErr::Subprocess(format!("system_profiler: {}", e)))?;
 
     if !output.status.success() {
-        return Err(GpuDetectErr::Subprocess("system_profiler exited non-zero".into()));
+        return Err(GpuDetectErr::Subprocess(
+            "system_profiler exited non-zero".into(),
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -83,7 +85,9 @@ fn detect_system_profiler() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr>
     }
 
     if gpus.is_empty() {
-        Err(GpuDetectErr::Parse("system_profiler: no GPU entries found".into()))
+        Err(GpuDetectErr::Parse(
+            "system_profiler: no GPU entries found".into(),
+        ))
     } else {
         Ok(gpus)
     }

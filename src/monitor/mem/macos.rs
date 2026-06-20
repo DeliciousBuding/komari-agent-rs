@@ -28,29 +28,29 @@ const HOST_VM_INFO64: i32 = 4;
 // HOST_VM_INFO64_COUNT = sizeof(struct) / sizeof(integer_t) = 38.
 #[repr(C)]
 struct VmStatistics64 {
-    free_count: NaturalT,             // offset 0
-    active_count: NaturalT,           // offset 4
-    inactive_count: NaturalT,         // offset 8
-    wire_count: NaturalT,             // offset 12
-    zero_fill_count: u64,             // offset 16
-    reactivations: u64,               // offset 24
-    pageins: u64,                      // offset 32
-    pageouts: u64,                     // offset 40
-    faults: u64,                       // offset 48
-    cow_faults: u64,                   // offset 56
-    lookups: u64,                      // offset 64
-    hits: u64,                         // offset 72
-    purges: u64,                       // offset 80
-    purgeable_count: NaturalT,        // offset 88
-    speculative_count: NaturalT,      // offset 92
-    decompressions: u64,              // offset 96
-    compressions: u64,                // offset 104
-    swapins: u64,                     // offset 112
-    swapouts: u64,                    // offset 120
-    compressor_page_count: NaturalT,  // offset 128
-    throttled_count: NaturalT,        // offset 132
-    external_page_count: NaturalT,    // offset 136
-    internal_page_count: NaturalT,    // offset 140
+    free_count: NaturalT,                        // offset 0
+    active_count: NaturalT,                      // offset 4
+    inactive_count: NaturalT,                    // offset 8
+    wire_count: NaturalT,                        // offset 12
+    zero_fill_count: u64,                        // offset 16
+    reactivations: u64,                          // offset 24
+    pageins: u64,                                // offset 32
+    pageouts: u64,                               // offset 40
+    faults: u64,                                 // offset 48
+    cow_faults: u64,                             // offset 56
+    lookups: u64,                                // offset 64
+    hits: u64,                                   // offset 72
+    purges: u64,                                 // offset 80
+    purgeable_count: NaturalT,                   // offset 88
+    speculative_count: NaturalT,                 // offset 92
+    decompressions: u64,                         // offset 96
+    compressions: u64,                           // offset 104
+    swapins: u64,                                // offset 112
+    swapouts: u64,                               // offset 120
+    compressor_page_count: NaturalT,             // offset 128
+    throttled_count: NaturalT,                   // offset 132
+    external_page_count: NaturalT,               // offset 136
+    internal_page_count: NaturalT,               // offset 140
     total_uncompressed_pages_in_compressor: u64, // offset 144
 }
 
@@ -154,8 +154,7 @@ pub fn collect(_config: &Config) -> MemInfo {
     }
 
     // ── Page size (bytes) via sysctl ──
-    let page_size = unsafe { sysctl_u32("hw.pagesize") }
-        .unwrap_or(16384) as u64; // Apple Silicon default = 16 KiB
+    let page_size = unsafe { sysctl_u32("hw.pagesize") }.unwrap_or(16384) as u64; // Apple Silicon default = 16 KiB
 
     // ── Total RAM via sysctl ──
     let total_ram = unsafe { sysctl_u64("hw.memsize") }.unwrap_or(0);

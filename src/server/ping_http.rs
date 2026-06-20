@@ -63,8 +63,7 @@ pub fn ping_http(target: &str, timeout_ms: Option<u64>) -> i64 {
         };
 
         let start = Instant::now();
-        let mut stream = match TcpStream::connect_timeout(&first_addr, timeout)
-        {
+        let mut stream = match TcpStream::connect_timeout(&first_addr, timeout) {
             Ok(s) => s,
             Err(_) => return -1,
         };

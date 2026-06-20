@@ -40,17 +40,9 @@ struct MIB_UDPTABLE2 {
 }
 
 unsafe extern "system" {
-    fn GetTcpTable2(
-        tcpTable: *mut MIB_TCPTABLE2,
-        sizePointer: *mut u32,
-        order: i32,
-    ) -> u32;
+    fn GetTcpTable2(tcpTable: *mut MIB_TCPTABLE2, sizePointer: *mut u32, order: i32) -> u32;
 
-    fn GetUdpTable2(
-        udpTable: *mut MIB_UDPTABLE2,
-        sizePointer: *mut u32,
-        order: i32,
-    ) -> u32;
+    fn GetUdpTable2(udpTable: *mut MIB_UDPTABLE2, sizePointer: *mut u32, order: i32) -> u32;
 }
 
 const NO_ERROR: u32 = 0;
@@ -58,10 +50,7 @@ const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 
 /// Query a table-returning API with automatic buffer sizing.
 /// Returns the number of entries (from dwNumEntries in the first 4 bytes), or 0 on failure.
-fn get_table_entry_count(
-    table_ptr: *const u8,
-    size: u32,
-) -> u32 {
+fn get_table_entry_count(table_ptr: *const u8, size: u32) -> u32 {
     if size < 4 {
         return 0;
     }

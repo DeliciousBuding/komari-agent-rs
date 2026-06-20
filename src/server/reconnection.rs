@@ -16,15 +16,15 @@
 //! rule: 3 consecutive v2 failures trigger a downgrade
 //! (WsV2 → HttpV2 → HttpV1).
 
+use super::backoff::Backoff;
 use crate::arena::ScratchArena;
 use crate::config::Config;
-use crate::http::{http_post, HttpErr};
-use crate::monitor::{generate_report, Monitor};
+use crate::http::{HttpErr, http_post};
+use crate::monitor::{Monitor, generate_report};
 use crate::protocol::fsm::{FailureKind, ProtocolFsm, ProtocolMode};
 use crate::protocol::v2;
 use crate::server::cf_access::CfAccess;
 use crate::ws::{WsConnection, WsErr, WsMessage};
-use super::backoff::Backoff;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 // ═══════════════════════════════════════════════════════════════════════════
 
 enum Connection {
-    Ws(WsConnection),
+    Ws(Box<WsConnection>),
     Http,
 }
 
@@ -49,11 +49,15 @@ enum TickErr {
 }
 
 impl From<WsErr> for TickErr {
-    fn from(e: WsErr) -> Self { TickErr::Ws(e) }
+    fn from(e: WsErr) -> Self {
+        TickErr::Ws(e)
+    }
 }
 
 impl From<HttpErr> for TickErr {
-    fn from(e: HttpErr) -> Self { TickErr::Http(e) }
+    fn from(e: HttpErr) -> Self {
+        TickErr::Http(e)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -113,12 +117,16 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
                 let downgraded = fsm.on_failure(kind);
                 eprintln!(
                     "[komari] ERROR: connect failed ({:?}/{:?}{}): {:?}",
-                    fsm.mode(), kind,
+                    fsm.mode(),
+                    kind,
                     if downgraded { " -- DOWNSHIFTED" } else { "" },
                     e
                 );
                 if backoff.exhausted() {
-                    eprintln!("[komari] ERROR: max retries ({}) exhausted -- exiting", backoff.max_retries);
+                    eprintln!(
+                        "[komari] ERROR: max retries ({}) exhausted -- exiting",
+                        backoff.max_retries
+                    );
                     std::process::exit(1);
                 }
                 std::thread::sleep(backoff.next_delay());
@@ -131,14 +139,18 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
             let downgraded = fsm.on_failure(kind);
             eprintln!(
                 "[komari] ERROR: tick loop error ({:?}/{:?}{}): {:?}",
-                fsm.mode(), kind,
+                fsm.mode(),
+                kind,
                 if downgraded { " -- DOWNSHIFTED" } else { "" },
                 e
             );
         }
 
         if backoff.exhausted() {
-            eprintln!("[komari] ERROR: max retries ({}) exhausted -- exiting", backoff.max_retries);
+            eprintln!(
+                "[komari] ERROR: max retries ({}) exhausted -- exiting",
+                backoff.max_retries
+            );
             std::process::exit(1);
         }
         std::thread::sleep(backoff.next_delay());
@@ -163,11 +175,13 @@ fn connect_with_fsm(
                 cf.inject_ws_headers(&mut ws_headers);
             }
             let conn = WsConnection::connect(
-                &config.endpoint, &config.token,
-                Arc::clone(tls_cfg), Duration::from_secs(30),
+                &config.endpoint,
+                &config.token,
+                Arc::clone(tls_cfg),
+                Duration::from_secs(30),
                 &ws_headers,
             )?;
-            Ok(Connection::Ws(conn))
+            Ok(Connection::Ws(Box::new(conn)))
         }
         ProtocolMode::HttpV2 | ProtocolMode::HttpV1 => {
             let url = build_http_url(config, fsm.mode());
@@ -175,8 +189,15 @@ fn connect_with_fsm(
             if let Some(ref cf) = cf_access {
                 cf.inject_http_headers(&mut http_headers);
             }
-            http_post(&url, b"{}", "application/json", None, &http_headers, tls_cfg)
-                .map_err(|e| WsErr::Io(format!("HTTP probe failed: {}", e)))?;
+            http_post(
+                &url,
+                b"{}",
+                "application/json",
+                None,
+                &http_headers,
+                tls_cfg,
+            )
+            .map_err(|e| WsErr::Io(format!("HTTP probe failed: {}", e)))?;
             Ok(Connection::Http)
         }
     }
@@ -189,7 +210,12 @@ fn build_http_url(config: &Config, mode: ProtocolMode) -> String {
         ProtocolMode::HttpV1 => "/api/clients/report",
         _ => unreachable!(),
     };
-    format!("{}{}?token={}", base, path, crate::ws::url_encode(&config.token))
+    format!(
+        "{}{}?token={}",
+        base,
+        path,
+        crate::ws::url_encode(&config.token)
+    )
 }
 
 /// Build the CF Access extra headers Vec for HTTP requests.
@@ -230,26 +256,42 @@ fn run_tick_loop(
                 let req = v2::new_request("0", v2::METHOD_AGENT_REPORT, report);
                 let resp = http_post(
                     &build_http_url(config, ProtocolMode::HttpV2),
-                    &req, "application/json", None, &build_http_cf_headers(config), tls_cfg,
+                    &req,
+                    "application/json",
+                    None,
+                    &build_http_cf_headers(config),
+                    tls_cfg,
                 )?;
-                if !resp.body.is_empty() { dispatch_server_message(&resp.body, config); }
+                if !resp.body.is_empty() {
+                    dispatch_server_message(&resp.body, config);
+                }
             }
             (Connection::Http, ProtocolMode::HttpV1) => {
                 let resp = http_post(
                     &build_http_url(config, ProtocolMode::HttpV1),
-                    report, "application/json", None, &build_http_cf_headers(config), tls_cfg,
+                    report,
+                    "application/json",
+                    None,
+                    &build_http_cf_headers(config),
+                    tls_cfg,
                 )?;
-                if !resp.body.is_empty() { dispatch_server_message(&resp.body, config); }
+                if !resp.body.is_empty() {
+                    dispatch_server_message(&resp.body, config);
+                }
             }
             _ => return Err(TickErr::Other("mode/connection mismatch".into())),
         }
 
         // 3. Read server messages (WS: non-blocking poll).
         if let Connection::Ws(ws) = &mut conn {
-            let _ = ws.get_ref().set_read_timeout(Some(Duration::from_millis(100)));
+            let _ = ws
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_millis(100)));
             match ws.read_message() {
                 Ok(Some(WsMessage::Text(data))) => dispatch_server_message(&data, config),
-                Ok(Some(WsMessage::Ping(data))) => { ws.send_pong(&data)?; }
+                Ok(Some(WsMessage::Ping(data))) => {
+                    ws.send_pong(&data)?;
+                }
                 Ok(Some(WsMessage::Close)) => {
                     eprintln!("[komari] server sent close frame");
                     return Ok(());
@@ -257,7 +299,9 @@ fn run_tick_loop(
                 Ok(Some(WsMessage::Binary(_))) | Ok(Some(WsMessage::Pong(_))) => {}
                 Ok(None) => return Err(TickErr::Other("connection closed by server".into())),
                 Err(e) => {
-                    if !is_timeout(&e) { return Err(e.into()); }
+                    if !is_timeout(&e) {
+                        return Err(e.into());
+                    }
                 }
             }
             let _ = ws.get_ref().set_read_timeout(Some(Duration::from_secs(30)));
@@ -265,7 +309,9 @@ fn run_tick_loop(
 
         // 4. Heartbeat every 30 s.
         if last_heartbeat.elapsed() >= Duration::from_secs(30) {
-            if let Connection::Ws(ws) = &mut conn { ws.send_ping()?; }
+            if let Connection::Ws(ws) = &mut conn {
+                ws.send_ping()?;
+            }
             last_heartbeat = Instant::now();
         }
 
@@ -281,7 +327,10 @@ fn run_tick_loop(
 fn dispatch_server_message(data: &[u8], config: &Config) {
     let text = match std::str::from_utf8(data) {
         Ok(s) => s,
-        Err(_) => { eprintln!("[komari] WARN: non-UTF8 server message, ignoring"); return; }
+        Err(_) => {
+            eprintln!("[komari] WARN: non-UTF8 server message, ignoring");
+            return;
+        }
     };
     if text.contains("\"jsonrpc\":\"2.0\"") || text.contains("\"jsonrpc\": \"2.0\"") {
         dispatch_v2_event(data, config);
@@ -313,9 +362,13 @@ fn dispatch_v2_event(data: &[u8], _config: &Config) {
 
 fn classify_ws_failure(e: &WsErr) -> FailureKind {
     match e {
-        WsErr::Handshake(s) if s.contains("401") || s.contains("403") => FailureKind::HttpStatus(401),
+        WsErr::Handshake(s) if s.contains("401") || s.contains("403") => {
+            FailureKind::HttpStatus(401)
+        }
         WsErr::Tls(_) => FailureKind::WsConnect,
-        WsErr::Handshake(s) if s.contains("404") || s.contains("405") => FailureKind::HttpStatus(404),
+        WsErr::Handshake(s) if s.contains("404") || s.contains("405") => {
+            FailureKind::HttpStatus(404)
+        }
         WsErr::Io(_) | WsErr::Dns(_) => FailureKind::WsConnect,
         _ => FailureKind::WsConnect,
     }

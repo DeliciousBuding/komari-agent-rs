@@ -16,7 +16,7 @@ pub fn collect() -> OsInfo {
     }
     #[cfg(windows)]
     {
-        return windows::collect();
+        windows::collect()
     }
     #[cfg(target_os = "macos")]
     {
@@ -26,7 +26,12 @@ pub fn collect() -> OsInfo {
     {
         return freebsd::collect();
     }
-    #[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        windows,
+        target_os = "macos",
+        target_os = "freebsd"
+    )))]
     {
         OsInfo {
             name: String::from("Unknown"),
@@ -50,19 +55,34 @@ mod linux {
         let kv = kernel_version();
         // Priority: Android → Proxmox VE → Synology → fnOS → /etc/os-release
         if let Some(n) = detect_android() {
-            return OsInfo { name: n, kernel_version: kv };
+            return OsInfo {
+                name: n,
+                kernel_version: kv,
+            };
         }
         if let Some(n) = detect_proxmox() {
-            return OsInfo { name: n, kernel_version: kv };
+            return OsInfo {
+                name: n,
+                kernel_version: kv,
+            };
         }
         if let Some(n) = detect_synology() {
-            return OsInfo { name: n, kernel_version: kv };
+            return OsInfo {
+                name: n,
+                kernel_version: kv,
+            };
         }
         if let Some(n) = detect_fnos() {
-            return OsInfo { name: n, kernel_version: kv };
+            return OsInfo {
+                name: n,
+                kernel_version: kv,
+            };
         }
         let name = parse_os_release().unwrap_or_else(|| String::from("Linux"));
-        OsInfo { name, kernel_version: kv }
+        OsInfo {
+            name,
+            kernel_version: kv,
+        }
     }
 
     fn kernel_version() -> String {
@@ -103,7 +123,10 @@ mod linux {
     /// Detect Android via `getprop` or `/system/build.prop` or directory heuristics.
     fn detect_android() -> Option<String> {
         // 1. getprop ro.build.version.release
-        if let Ok(out) = Command::new("getprop").arg("ro.build.version.release").output() {
+        if let Ok(out) = Command::new("getprop")
+            .arg("ro.build.version.release")
+            .output()
+        {
             if let Ok(ver) = String::from_utf8(out.stdout) {
                 let ver = ver.trim().to_string();
                 if !ver.is_empty() {
@@ -205,7 +228,10 @@ mod linux {
                 }
             }
         }
-        if fs::metadata("/usr/syno").map(|m| m.is_dir()).unwrap_or(false) {
+        if fs::metadata("/usr/syno")
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
             return Some(String::from("Synology DSM"));
         }
         None
@@ -219,7 +245,10 @@ mod linux {
                 return Some(format!("fnOS {}", v));
             }
         }
-        if fs::metadata("/usr/trim").map(|m| m.is_dir()).unwrap_or(false) {
+        if fs::metadata("/usr/trim")
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
             return Some(String::from("fnOS"));
         }
         None
@@ -247,39 +276,41 @@ mod windows {
 
     // ── FFI: advapi32.dll ───────────────────────────────────────────────────
 
-    type HKEY = isize;
+    type Hkey = isize;
     #[allow(non_upper_case_globals)]
-    const HKEY_LOCAL_MACHINE: HKEY = 0x80000002;
+    const HKEY_LOCAL_MACHINE: Hkey = 0x80000002;
     const KEY_READ: u32 = 0x20019;
     const ERROR_SUCCESS: i32 = 0;
     const REG_SZ: u32 = 1;
 
     unsafe extern "system" {
         fn RegOpenKeyExW(
-            hKey: HKEY,
+            hKey: Hkey,
             lpSubKey: *const u16,
             ulOptions: u32,
             samDesired: u32,
-            phkResult: *mut HKEY,
+            phkResult: *mut Hkey,
         ) -> i32;
         fn RegQueryValueExW(
-            hKey: HKEY,
+            hKey: Hkey,
             lpValueName: *const u16,
             lpReserved: *const u8,
             lpType: *mut u32,
             lpData: *mut u8,
             lpcbData: *mut u32,
         ) -> i32;
-        fn RegCloseKey(hKey: HKEY) -> i32;
+        fn RegCloseKey(hKey: Hkey) -> i32;
     }
 
     /// Read a REG_SZ value from the given registry key.
-    fn reg_get_string(hkey: HKEY, subkey: &str, value: &str) -> Option<String> {
+    fn reg_get_string(hkey: Hkey, subkey: &str, value: &str) -> Option<String> {
         let subkey_wide: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
         let value_wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut hk: HKEY = 0;
+        let mut hk: Hkey = 0;
         // SAFETY: FFI call with valid null-terminated wide string pointers.
-        if unsafe { RegOpenKeyExW(hkey, subkey_wide.as_ptr(), 0, KEY_READ, &mut hk) } != ERROR_SUCCESS {
+        if unsafe { RegOpenKeyExW(hkey, subkey_wide.as_ptr(), 0, KEY_READ, &mut hk) }
+            != ERROR_SUCCESS
+        {
             return None;
         }
         let mut data_type: u32 = 0;
@@ -302,7 +333,7 @@ mod windows {
             return None;
         }
         // Allocate buffer (buf_size includes null terminator)
-        let mut buf: Vec<u16> = vec![0u16; (buf_size as usize + 1) / 2];
+        let mut buf: Vec<u16> = vec![0u16; (buf_size as usize).div_ceil(2)];
         let mut buf_bytes = buf_size;
         // SAFETY: FFI call with valid handle, type, and buffer pointers.
         if unsafe {
@@ -350,20 +381,17 @@ mod windows {
         }
 
         // Check build number: >= 22000 → Windows 11
-        if let Some(build_str) =
-            reg_get_string(HKEY_LOCAL_MACHINE, REG_PATH, "CurrentBuild")
+        if let Some(build_str) = reg_get_string(HKEY_LOCAL_MACHINE, REG_PATH, "CurrentBuild")
+            && let Ok(build) = build_str.parse::<u32>()
+            && build >= 22000
         {
-            if let Ok(build) = build_str.parse::<u32>() {
-                if build >= 22000 {
-                    if let Some(edition) = product.strip_prefix("Windows 10 ") {
-                        return format!("Windows 11 {}", edition);
-                    }
-                    if product == "Windows 10" {
-                        return String::from("Windows 11");
-                    }
-                    return product.replace("Windows 10", "Windows 11");
-                }
+            if let Some(edition) = product.strip_prefix("Windows 10 ") {
+                return format!("Windows 11 {}", edition);
             }
+            if product == "Windows 10" {
+                return String::from("Windows 11");
+            }
+            return product.replace("Windows 10", "Windows 11");
         }
         product
     }

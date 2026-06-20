@@ -613,7 +613,13 @@ fn host_to_server_name(host: &str) -> Result<ServerName<'static>, WsErr> {
 /// Sec-WebSocket-Version: 13
 ///
 /// ```
-fn build_upgrade_request(host: &str, path: &str, token: &str, ws_key: &str, extra_headers: &[(String, String)]) -> String {
+fn build_upgrade_request(
+    host: &str,
+    path: &str,
+    token: &str,
+    ws_key: &str,
+    extra_headers: &[(String, String)],
+) -> String {
     let mut req = String::with_capacity(512);
     req.push_str("GET ");
     req.push_str(path);

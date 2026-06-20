@@ -49,7 +49,13 @@ unsafe extern "C" {
 
 unsafe fn sysctl_str(name: &str, buf: &mut [u8]) -> Option<&str> {
     let mut len = buf.len();
-    let ret = sysctlbyname(name.as_ptr(), buf.as_mut_ptr(), &mut len, std::ptr::null(), 0);
+    let ret = sysctlbyname(
+        name.as_ptr(),
+        buf.as_mut_ptr(),
+        &mut len,
+        std::ptr::null(),
+        0,
+    );
     if ret != 0 || len == 0 {
         return None;
     }
@@ -121,11 +127,8 @@ pub fn collect_cpu<'a>(
             for i in 0..ncpu {
                 let base = i * CPUSTATES;
                 // CP_USER(0) + CP_NICE(1) + CP_SYS(2) + CP_INTR(3) + CP_IDLE(4)
-                total_ticks += buf[base]
-                    + buf[base + 1]
-                    + buf[base + 2]
-                    + buf[base + 3]
-                    + buf[base + 4];
+                total_ticks +=
+                    buf[base] + buf[base + 1] + buf[base + 2] + buf[base + 3] + buf[base + 4];
                 idle_ticks += buf[base + 4]; // CP_IDLE
             }
 

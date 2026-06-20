@@ -1,30 +1,40 @@
 // komari-agent-rs: monitor::disk — Linux statfs / Windows GetDiskFreeSpaceExW.
 
-#[cfg(target_os = "linux")]
-pub mod linux;
-#[cfg(windows)]
-pub mod windows;
-#[cfg(target_os = "macos")]
-pub mod macos;
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
-
 #[cfg(target_os = "linux")]
-pub use linux::{collect, aggregate, DiskInfo};
-#[cfg(windows)]
-pub use windows::{collect, aggregate};
+pub mod linux;
 #[cfg(target_os = "macos")]
-pub use macos::{collect, aggregate, DiskInfo};
+pub mod macos;
+#[cfg(windows)]
+pub mod windows;
+
 #[cfg(target_os = "freebsd")]
-pub use freebsd::{collect, aggregate, DiskInfo};
+pub use freebsd::{DiskInfo, aggregate, collect};
+#[cfg(target_os = "linux")]
+pub use linux::{DiskInfo, aggregate, collect};
+#[cfg(target_os = "macos")]
+pub use macos::{DiskInfo, aggregate, collect};
+#[cfg(windows)]
+pub use windows::{aggregate, collect};
 
 // ── Stub for unsupported platforms ──────────────────────────────────────────
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
-pub use stub::{collect, aggregate, DiskInfo};
+#[cfg(not(any(
+    target_os = "linux",
+    windows,
+    target_os = "macos",
+    target_os = "freebsd"
+)))]
+pub use stub::{DiskInfo, aggregate, collect};
 
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    windows,
+    target_os = "macos",
+    target_os = "freebsd"
+)))]
 mod stub {
-    use crate::arena::{SmallVec, MAX_DISKS};
+    use crate::arena::{MAX_DISKS, SmallVec};
     use crate::config::Config;
 
     pub struct DiskInfo {

@@ -76,12 +76,7 @@ unsafe extern "C" {
         errbuf: *mut u8,
     ) -> KvmT;
 
-    fn kvm_getswapinfo(
-        kd: KvmT,
-        kswap: *mut KvmSwap,
-        maxswap: i32,
-        flags: i32,
-    ) -> i32;
+    fn kvm_getswapinfo(kd: KvmT, kswap: *mut KvmSwap, maxswap: i32, flags: i32) -> i32;
 
     fn kvm_close(kd: KvmT) -> i32;
 }
@@ -139,8 +134,7 @@ unsafe fn swap_via_kvm() -> (u64, u64) {
 /// ignores `memory_include_cache` / `memory_report_raw_used`.
 pub fn collect(_config: &Config) -> MemInfo {
     // ── Page size ──
-    let page_size = unsafe { sysctl_u32("vm.stats.vm.v_page_size\0") }
-        .unwrap_or(4096) as u64;
+    let page_size = unsafe { sysctl_u32("vm.stats.vm.v_page_size\0") }.unwrap_or(4096) as u64;
 
     // ── Page counts ──
     let page_count = unsafe { sysctl_u32("vm.stats.vm.v_page_count\0") }.unwrap_or(0) as u64;

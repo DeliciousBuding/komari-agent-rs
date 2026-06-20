@@ -498,7 +498,9 @@ fn query_dns_server_happy_eyeballs(
     // --- Phase 1: preferred family with family timeout ---
     let remaining = remaining_ms(overall_deadline);
     if remaining == 0 {
-        return Err(DnsErr::Timeout("overall budget exhausted before query".into()));
+        return Err(DnsErr::Timeout(
+            "overall budget exhausted before query".into(),
+        ));
     }
     socket.set_read_timeout(Some(Duration::from_millis(
         remaining.min(HAPPY_EYEBALLS_FAMILY_TIMEOUT.as_millis() as u64),
@@ -707,10 +709,7 @@ pub fn resolve_with_happy_eyeballs(
 /// Resolve using system DNS (std::net::ToSocketAddrs).
 fn resolve_via_system(host: &str, port: u16) -> Result<Vec<SocketAddr>, DnsErr> {
     let target = (host, port);
-    let addrs: Vec<SocketAddr> = target
-        .to_socket_addrs()
-        .map_err(|e| DnsErr::Io(e))?
-        .collect();
+    let addrs: Vec<SocketAddr> = target.to_socket_addrs().map_err(DnsErr::Io)?.collect();
 
     Ok(addrs)
 }
@@ -912,12 +911,11 @@ fn get_if_addrs() -> io::Result<Vec<std::net::IpAddr>> {
     let mut addrs = vec![local.ip()];
 
     // Also try IPv6
-    if let Ok(socket6) = UdpSocket::bind("[::]:0") {
-        if socket6.connect("[2606:4700:4700::1111]:53").is_ok() {
-            if let Ok(local6) = socket6.local_addr() {
-                addrs.push(local6.ip());
-            }
-        }
+    if let Ok(socket6) = UdpSocket::bind("[::]:0")
+        && socket6.connect("[2606:4700:4700::1111]:53").is_ok()
+        && let Ok(local6) = socket6.local_addr()
+    {
+        addrs.push(local6.ip());
     }
 
     Ok(addrs)
@@ -1034,8 +1032,7 @@ pub fn make_dial_context_happy_eyeballs(
         })?;
 
         // Resolve with Happy Eyeballs
-        let addrs =
-            resolve_with_happy_eyeballs(host, port, &prefer, &custom_dns)?;
+        let addrs = resolve_with_happy_eyeballs(host, port, &prefer, &custom_dns)?;
 
         let mut last_err: Option<io::Error> = None;
         for socket_addr in &addrs {
@@ -1259,7 +1256,11 @@ mod tests {
 
     #[test]
     fn test_dns_servers_count() {
-        assert_eq!(DNS_SERVERS.len(), 10, "must have exactly 10 built-in servers");
+        assert_eq!(
+            DNS_SERVERS.len(),
+            10,
+            "must have exactly 10 built-in servers"
+        );
     }
 
     #[test]

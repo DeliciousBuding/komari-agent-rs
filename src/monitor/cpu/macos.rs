@@ -51,11 +51,7 @@ unsafe extern "C" {
         out_processor_info: *mut *mut IntegerT,
         out_processor_infoCnt: *mut MachMsgTypeNumberT,
     ) -> KernReturnT;
-    fn vm_deallocate(
-        target: MachPort,
-        address: usize,
-        size: VmSizeT,
-    ) -> KernReturnT;
+    fn vm_deallocate(target: MachPort, address: usize, size: VmSizeT) -> KernReturnT;
 }
 
 // ── sysctl FFI (libSystem) ──────────────────────────────────────────────────
@@ -74,11 +70,20 @@ unsafe extern "C" {
 
 unsafe fn sysctl_str(name: &str, buf: &mut [u8]) -> Option<&str> {
     let mut len = buf.len();
-    let ret = sysctlbyname(name.as_ptr(), buf.as_mut_ptr(), &mut len, std::ptr::null(), 0);
+    let ret = sysctlbyname(
+        name.as_ptr(),
+        buf.as_mut_ptr(),
+        &mut len,
+        std::ptr::null(),
+        0,
+    );
     if ret != 0 || len == 0 {
         return None;
     }
-    let end = buf[..len.min(buf.len())].iter().position(|&b| b == 0).unwrap_or(len);
+    let end = buf[..len.min(buf.len())]
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(len);
     std::str::from_utf8(&buf[..end]).ok()
 }
 

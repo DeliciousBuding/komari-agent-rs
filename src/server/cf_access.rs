@@ -45,14 +45,20 @@ impl CfAccess {
     /// mutable header vector.  Used for WebSocket upgrade requests.
     pub fn inject_ws_headers(&self, headers: &mut Vec<(String, String)>) {
         headers.push(("CF-Access-Client-Id".to_string(), self.client_id.clone()));
-        headers.push(("CF-Access-Client-Secret".to_string(), self.client_secret.clone()));
+        headers.push((
+            "CF-Access-Client-Secret".to_string(),
+            self.client_secret.clone(),
+        ));
     }
 
     /// Append `CF-Access-Client-Id` and `CF-Access-Client-Secret` to a
     /// mutable header vector.  Used for HTTP POST requests.
     pub fn inject_http_headers(&self, headers: &mut Vec<(String, String)>) {
         headers.push(("CF-Access-Client-Id".to_string(), self.client_id.clone()));
-        headers.push(("CF-Access-Client-Secret".to_string(), self.client_secret.clone()));
+        headers.push((
+            "CF-Access-Client-Secret".to_string(),
+            self.client_secret.clone(),
+        ));
     }
 }
 

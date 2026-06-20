@@ -5,31 +5,41 @@
 //! first call to [`update`](Delta::update) the return value is 0 — there is
 //! no previous sample to compute a delta from.
 
-#[cfg(target_os = "linux")]
-pub mod linux;
-#[cfg(windows)]
-pub mod windows;
-#[cfg(target_os = "macos")]
-pub mod macos;
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
-
 #[cfg(target_os = "linux")]
-pub use linux::{collect, NetInfo, PrevNetSnapshot};
-#[cfg(windows)]
-pub use windows::{collect, PrevNetSnapshot};
+pub mod linux;
 #[cfg(target_os = "macos")]
-pub use macos::{collect, NetInfo, PrevNetSnapshot};
+pub mod macos;
+#[cfg(windows)]
+pub mod windows;
+
 #[cfg(target_os = "freebsd")]
-pub use freebsd::{collect, NetInfo, PrevNetSnapshot};
+pub use freebsd::{NetInfo, PrevNetSnapshot, collect};
+#[cfg(target_os = "linux")]
+pub use linux::{NetInfo, PrevNetSnapshot, collect};
+#[cfg(target_os = "macos")]
+pub use macos::{NetInfo, PrevNetSnapshot, collect};
+#[cfg(windows)]
+pub use windows::{PrevNetSnapshot, collect};
 
 // ── Stub for unsupported platforms ──────────────────────────────────────────
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
-pub use stub::{collect, NetInfo, PrevNetSnapshot};
+#[cfg(not(any(
+    target_os = "linux",
+    windows,
+    target_os = "macos",
+    target_os = "freebsd"
+)))]
+pub use stub::{NetInfo, PrevNetSnapshot, collect};
 
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    windows,
+    target_os = "macos",
+    target_os = "freebsd"
+)))]
 mod stub {
-    use crate::arena::{SmallVec, MAX_NETWORKS};
+    use crate::arena::{MAX_NETWORKS, SmallVec};
     use crate::config::Config;
     use std::time::Instant;
 
