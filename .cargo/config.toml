@@ -1,0 +1,5 @@
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "link-arg=-s"]
+
+[target.x86_64-pc-windows-msvc]
+# Windows strip via profile
