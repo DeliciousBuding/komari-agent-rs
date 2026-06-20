@@ -5,6 +5,10 @@
 //! and computes per-second upload/download speeds via delta from the
 //! previous monitoring tick.
 
+// NetInfo exposes its inline name buffer through a public accessor; the raw
+// fields are part of the self-contained struct layout and not read directly.
+#![allow(dead_code)]
+
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;

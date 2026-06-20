@@ -1,5 +1,6 @@
 // komari-agent-rs: Windows process count — CreateToolhelp32Snapshot.
 #![cfg(windows)]
+#![allow(dead_code)]
 
 use std::io;
 
@@ -23,6 +24,7 @@ const INVALID_HANDLE_VALUE: isize = -1;
 const MAX_PATH: usize = 260;
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct ProcessEntry32W {
     dwSize: u32,
     cntUsage: u32,

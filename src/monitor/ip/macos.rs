@@ -40,8 +40,8 @@ impl From<std::io::Error> for MetricErr {
 // ═══════════════════════════════════════════════════════════════════
 
 // macOS uses AF_INET=2, AF_INET6=30 (not 10 as on Linux)
-const AF_INET: u16 = 2;
-const AF_INET6: u16 = 30;
+const AF_INET: u8 = 2;
+const AF_INET6: u8 = 30;
 const IFF_UP: u32 = 1;
 const IFF_LOOPBACK: u32 = 8;
 

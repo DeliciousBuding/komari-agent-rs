@@ -10,6 +10,11 @@
 //! ```
 //!
 //! See Go reference: `protocol/v1/report.go`  (type ReportPayload = []byte)
+//!
+//! The v1 `encode_report` builder and `ReportPayload` alias are part of the
+//! backward-compatibility parity surface but not all are wired into the live
+//! agent. Allow dead_code for the parity surface.
+#![allow(dead_code)]
 
 /// Raw v1 report payload — flat JSON bytes, no JSON-RPC envelope.
 ///

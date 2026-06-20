@@ -12,6 +12,7 @@ pub mod windows;
 #[cfg(target_os = "freebsd")]
 pub use freebsd::{MetricErr, collect_process_count};
 #[cfg(target_os = "linux")]
+#[allow(unused_imports)]
 pub use linux::{MetricErr, collect_process_count};
 #[cfg(target_os = "macos")]
 pub use macos::{MetricErr, collect_process_count};

@@ -1,5 +1,6 @@
 // komari-agent-rs: Windows IP detection — GetAdaptersAddresses + HTTP fallback chain.
 #![cfg(windows)]
+#![allow(dead_code)]
 
 use crate::config::Config;
 use std::fmt;

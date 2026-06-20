@@ -2,6 +2,7 @@
 //
 // Endpoints matched from D:/Code/Projects/external/komari-agent-go/monitoring/unit/ip.go
 // (7 IPv4 + 4 IPv6 endpoints in the Go reference; 3+3+cf-trace used here for simplicity).
+#![allow(dead_code)]
 
 use crate::config::Config;
 use core::ffi::c_void;

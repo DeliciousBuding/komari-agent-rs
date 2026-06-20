@@ -5,6 +5,10 @@
 //! [`DiskInfo`] records plus aggregate totals.  Respects
 //! `Config::include_mountpoints` / `Config::exclude_mountpoints`.
 
+// DiskInfo exposes its inline buffers through public accessors; the raw fields
+// are part of the self-contained struct layout and not read directly.
+#![allow(dead_code)]
+
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};

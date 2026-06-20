@@ -68,7 +68,7 @@ unsafe extern "C" {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-unsafe fn sysctl_str(name: &str, buf: &mut [u8]) -> Option<&str> {
+unsafe fn sysctl_str<'a>(name: &str, buf: &'a mut [u8]) -> Option<&'a str> {
     let mut len = buf.len();
     let ret = sysctlbyname(
         name.as_ptr(),

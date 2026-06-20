@@ -12,6 +12,7 @@ pub mod windows;
 #[cfg(target_os = "freebsd")]
 pub use freebsd::{ConnectionsInfo, MetricErr, collect_connections};
 #[cfg(target_os = "linux")]
+#[allow(unused_imports)]
 pub use linux::{ConnectionsInfo, MetricErr, collect_connections};
 #[cfg(target_os = "macos")]
 pub use macos::{ConnectionsInfo, MetricErr, collect_connections};

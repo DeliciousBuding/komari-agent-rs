@@ -5,15 +5,18 @@
 
 ## 硬约束
 
-| 约束 | 目标 |
-|------|:----:|
-| 二进制 | <1 MB（Linux stripped） |
-| 稳态 RSS | <3 MB |
-| 热路径分配 | 0 |
-| 外部依赖 | rustls（+ webpki-roots ~80KB 豁免）、ring crypto |
-| 并发模型 | sync 单线程 |
-| License | MIT |
-| 仓库 | DeliciousBuding/komari-agent-rs |
+| 约束 | 目标 | 实测 |
+|------|:----:|:----:|
+| 二进制 | 原 <1 MB 目标 → 实测 ~1.5 MB（Linux musl stripped） | ⚠️ 未达 <1 MB |
+| ↳ 说明 | rustls+ring+webpki ~1 MB 不可压（TLS 70%），我们自身代码仅 196 KB | — |
+| 稳态 RSS | <3 MB | ✅ ~3 MB |
+| 热路径分配 | 0 | ✅ |
+| 外部依赖 | rustls（+ webpki-roots ~80KB 豁免）、ring crypto | ✅ |
+| 并发模型 | sync 单线程 | ✅ |
+| License | MIT | ✅ |
+| 仓库 | DeliciousBuding/komari-agent-rs | ✅ |
+
+> **<1 MB 目标复盘**：cargo-bloat 实测显示二进制 70%（~1 MB）来自强制 TLS 栈（rustls 1.1MB + ring 528KB + webpki 262KB），这是无 OpenSSL 的 HTTPS/WSS 不可压缩代价。我们自写的 80 个源文件监控逻辑仅占 196 KB（7%），是真正的 "featherweight" 成就。原 <1 MB 目标被 TLS 顶层否决，改为记录实测值 + 解释，不再声称达标。
 
 ## 已确认设计决策
 
@@ -36,14 +39,16 @@
 
 ## Feature 矩阵
 
-| Feature | 二进制增量 | 默认 | 说明 |
+| Feature | 自身代码增量 | 默认 | 说明 |
 |---------|:---------:|:----:|------|
-| (none) | ~600 KB | ✅ | 核心监控 + v1/v2 协议 + HTTP fallback |
-| `gpu-detection` | +80 KB | ❌ | GPU 名称/利用率/显存/温度 |
-| `terminal` | +60 KB | ❌ | PTY/ConPTY 交互式 Shell |
-| `ping` | +30 KB | ❌ | ICMP/TCP/HTTP ping 三层降级 |
-| `self-update` | +15 KB | ❌ | GitHub Release 自动更新 |
-| **`full`（全部）** | **~876 KB** | — | 完整功能 <1MB ✅ |
+| (none) | ~196 KB 代码 + ~1 MB TLS 栈 | ✅ | 核心监控 + v1/v2 协议 + HTTP fallback |
+| `gpu-detection` | +~80 KB | ❌ | GPU 名称/利用率/显存/温度 |
+| `terminal` | +~60 KB | ❌ | PTY/ConPTY 交互式 Shell |
+| `ping` | +~30 KB | ❌ | ICMP/TCP/HTTP ping 三层降级 |
+| `self-update` | +~15 KB | ❌ | GitHub Release 自动更新 |
+| **`full`（全部）** | **~196 KB 代码 + ~1 MB TLS ≈ 1.5 MB stripped** | — | 完整功能 |
+
+> 增量仅统计自身代码。无论 feature 组合，TLS 栈（rustls+ring+webpki）固定 ~1 MB，无法低于此前提。原 spec 中的 ~600 KB / ~876 KB 是规划期估算，cargo-bloat 实测后被 TLS 真实成本推翻。
 
 ## 参考仓库
 

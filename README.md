@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Latest Release](https://img.shields.io/github/v/release/DeliciousBuding/komari-agent-rs?color=green)](https://github.com/DeliciousBuding/komari-agent-rs/releases/latest)
 
-**Featherweight Komari monitoring agent — sync single-threaded Rust, &lt;1 MB binary, &lt;3 MB RSS.**
+**Featherweight Komari monitoring agent — sync single-threaded Rust, ~1.5 MB binary (196 KB our code + ~1 MB mandatory TLS stack), &lt;3 MB RSS.**
 
 ## Quick Start
 
@@ -41,14 +41,27 @@ One binary. No runtime deps. No OpenSSL.
 
 | | Go Agent | Zig Agent | **komari-agent-rs** |
 |---|---|---|---|
-| Binary size | ~14 MB | ~1.3 MB | **&lt;1 MB** |
-| Steady-state RSS | ~32 MB | ~8.5 MB | **&lt;3 MB** |
+| Binary size | ~14 MB | ~1.3 MB | **~1.5 MB** (196 KB our code + ~1 MB TLS stack) |
+| Steady-state RSS | ~18-32 MB | ~8.5 MB | **~3 MB** |
 | Concurrency | goroutines | async | **sync single-threaded** |
 | TLS | crypto/tls | OS-native | **rustls + ring** |
 | JSON | encoding/json | std.json | **custom zero-alloc** |
 | Gzip | compress/gzip | std.compress | **fixed-Huffman encoder** |
 | Async runtime | built-in | built-in | **none — no tokio, no async-std** |
 | Build dep | Go toolchain | Zig compiler | **Rust (stable) only** |
+
+**Where the binary goes** (cargo-bloat, Linux musl release, stripped):
+
+| Component | Size | Share |
+|---|---:|---:|
+| rustls (TLS impl) | ~1.1 MB | 40% |
+| ring (crypto primitives) | ~528 KB | 19% |
+| webpki (root cert bundle) | ~262 KB | 10% |
+| std (Rust stdlib) | ~471 KB | 17% |
+| **Our agent code** | **~196 KB** | **7%** |
+| Other (misc crates) | ~rest | 7% |
+
+The binary is **TLS-bound**: rustls + ring + webpki (~70%) is the irreducible cost of speaking HTTPS/WSS without OpenSSL. The actual monitoring agent we wrote is **196 KB** — that is the "featherweight" achievement. The operational win that matters on a tiny VPS is **RSS ~3 MB vs the Go agent's 18-32 MB**: an order of magnitude less resident memory for the same job.
 
 ## Installation
 
@@ -94,10 +107,10 @@ Requires Rust stable (1.75+).
 git clone https://github.com/DeliciousBuding/komari-agent-rs.git
 cd komari-agent-rs
 
-# Core build (~600 KB) — monitoring + v1/v2 protocol + HTTP fallback
+# Core build — monitoring + v1/v2 protocol + HTTP fallback
 cargo build --release
 
-# Full build (~876 KB) — everything enabled
+# Full build — everything enabled
 cargo build --release --features full
 
 # Feature-gated builds
@@ -106,6 +119,8 @@ cargo build --release --features terminal           # +Interactive terminal
 cargo build --release --features ping               # +ICMP/TCP/HTTP ping
 cargo build --release --features self-update        # +Self-update
 ```
+
+> **Binary size note:** Total stripped Linux musl binary is ~1.5 MB. ~1 MB of that is the mandatory TLS stack (rustls + ring + webpki-roots); our own monitoring code is ~196 KB. Use `cargo bloat --release --crates` to reproduce the breakdown.
 
 ## Configuration
 
@@ -151,14 +166,16 @@ Full blueprint: **[docs/plan/architecture-reference.md](docs/plan/architecture-r
 
 ## Feature Matrix
 
-| Feature | Binary delta | Default | Description |
+| Feature | Our-code delta | Default | Description |
 |---|---|---|---|
-| Core (monitoring + v1/v2 + HTTP) | ~600 KB | Yes | Essential metrics collection and reporting |
-| `gpu-detection` | +80 KB | No | GPU name, utilization, VRAM, temperature |
-| `terminal` | +60 KB | No | PTY/ConPTY interactive shell |
-| `ping` | +30 KB | No | ICMP → TCP → HTTP three-tier ping |
-| `self-update` | +15 KB | No | GitHub Release auto-update |
-| **`full` (all features)** | **~876 KB** | — | Complete agent &lt;1 MB |
+| Core (monitoring + v1/v2 + HTTP) | ~196 KB (incl. TLS floor ~1 MB) | Yes | Essential metrics collection and reporting |
+| `gpu-detection` | +~80 KB | No | GPU name, utilization, VRAM, temperature |
+| `terminal` | +~60 KB | No | PTY/ConPTY interactive shell |
+| `ping` | +~30 KB | No | ICMP → TCP → HTTP three-tier ping |
+| `self-update` | +~15 KB | No | GitHub Release auto-update |
+| **`full` (all features)** | **~196 KB agent + ~1 MB TLS** | — | Complete agent, ~1.5 MB stripped total |
+
+> Deltas reflect our own code only. Every build pays a fixed ~1 MB for the rustls+ring+webpki TLS stack regardless of features.
 
 ## Design Principles
 

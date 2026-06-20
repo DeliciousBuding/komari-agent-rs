@@ -9,6 +9,12 @@
 //! The builder functions below are convenience helpers that allocate
 //! (cold path, called once per message) and are expected to be replaced
 //! by `JsonBuf`-based builders in a future refactor.
+//!
+//! The full JSON-RPC 2.0 type surface (method constants, request/response/error/
+//! event structs) is part of the wire-format parity contract and is referenced by
+//! tests and future code paths; not every entry point is wired into the live agent
+//! today. Allow dead_code for the parity surface.
+#![allow(dead_code)]
 
 #[allow(unused_imports)]
 use crate::json::{EncodeJson, JsonBuf, JsonErr};

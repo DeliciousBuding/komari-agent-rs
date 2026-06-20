@@ -1,5 +1,6 @@
 // komari-agent-rs: Windows disk metrics — GetLogicalDriveStringsW + GetDiskFreeSpaceExW.
 #![cfg(windows)]
+#![allow(dead_code)]
 
 use crate::arena::{MAX_DISKS, SmallVec};
 use crate::config::Config;

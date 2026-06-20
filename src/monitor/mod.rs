@@ -41,6 +41,7 @@ pub mod virtualization;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorErr {
     /// The scratch arena has insufficient space for the report.
+    #[allow(dead_code)]
     ArenaFull,
     /// JSON encoding failed (buffer exhausted or nesting depth > 8).
     EncodeError,
@@ -79,6 +80,7 @@ impl Monitor {
     /// Resets the arena, collects all metrics, encodes them as JSON, and
     /// returns a `&[u8]` slice pointing into the arena.  The slice is valid
     /// until the next [`ScratchArena::reset`].
+    #[allow(dead_code)]
     pub fn tick<'a>(
         &mut self,
         arena: &'a mut ScratchArena,
@@ -208,7 +210,7 @@ fn encode_report(
     });
 
     // ── IP: NIC + HTTP APIs (collected for basicInfo, not in monitoring JSON) ──
-    let (_ipv4, _ipv6) = ip::collect_ip(config).unwrap_or({ (None, None) });
+    let (_ipv4, _ipv6) = ip::collect_ip(config).unwrap_or((None, None));
 
     // ══════════════════════════════════════════════════════════════════════
     // Build JSON matching Go komari-agent wire format exactly.

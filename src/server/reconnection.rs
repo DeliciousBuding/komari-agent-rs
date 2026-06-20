@@ -42,6 +42,7 @@ enum Connection {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum TickErr {
     Ws(WsErr),
     Http(HttpErr),

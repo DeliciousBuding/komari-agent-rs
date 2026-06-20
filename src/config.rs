@@ -9,6 +9,13 @@
 //   D:/Code/Projects/external/komari-agent-go/cmd/root.go        (cobra init + env loader)
 //   D:/Code/Projects/edgehub/komari-agent-rs/docs/plan/spec.md   (DD1 constraint)
 
+// The parser module carries a complete config surface: the live CLI/env parser
+// used by main(), plus a parallel JSON-config loader + hand-rolled JSON
+// tokenizer kept for parity and future wiring. The JSON-config path and several
+// ConfigErr variants are not exercised by the binary yet. Allow dead_code for
+// that surface rather than trimming the parity contract.
+#![allow(dead_code)]
+
 use std::env;
 use std::fmt;
 use std::fs;

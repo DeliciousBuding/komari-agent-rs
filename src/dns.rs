@@ -8,6 +8,12 @@
 // sorting, Happy Eyeballs lite, and a dial-context factory for TCP connections.
 //
 // Constraints: no tokio/async, no clap, no serde. std-only + rustls.
+//
+// This module is a self-contained library-style resolver. Many entry points
+// are kept public even though the current binary only exercises a subset;
+// they are part of the parity surface against the Go reference and may be
+// wired in later. Silence dead_code for the whole module accordingly.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::fmt;

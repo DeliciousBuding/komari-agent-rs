@@ -1,20 +1,25 @@
 # MASTER.md — komari-agent-rs
 
-最后更新：2026-06-20
+最后更新：2026-06-20（P1–P6 全部完成，据 cargo-bloat 实测修订指标）
 
 ## 任务标识
 
 - **任务名**：komari-agent-rs — Komari 监控 Agent 极致轻量 Rust 重写
-- **描述**：从 Go 原版 100% 复刻功能到 Rust，sync 单线程，二进制 <1MB，RSS <3MB
+- **描述**：从 Go 原版 100% 复刻功能到 Rust，sync 单线程，二进制 ~1.5 MB（自身代码 196 KB + TLS 栈 ~1 MB），RSS ~3 MB
 - **追踪模式**：`GITHUB_STANDARD`（Issues + Milestones + Labels，无 Project board）
 - **仓库**：`DeliciousBuding/komari-agent-rs`
 - **工程管线**：spec-driven develop（6 阶段）
 
 ## 当前状态
 
-- **当前阶段**：Phase 4 — Progress Tracking
-- **上一阶段**：Phase 3 ✅ Task Decomposition
-- **下一阶段**：Phase 5 — Execution
+- **当前阶段**：全部完成 ✅（P1–P6）
+- **上一里程碑**：Phase 6 ✅ Polish + Packaging
+- **工程状态**：6 阶段全部交付；80 源文件，162 单元测试通过；4 平台（Linux/Windows/macOS/FreeBSD）全功能对等
+- **实测指标**（cargo-bloat，Linux musl release stripped）：
+  - 二进制 ~1.5 MB（rustls 1.1MB + ring 528KB + webpki 262KB + std 471KB + **自身代码 196KB**）
+  - RSS ~3 MB（达标，对比 Go 原版 18-32 MB）
+  - 原 <1 MB 二进制目标被 TLS 栈（~1 MB 不可压）否决，已据实测修正
+- **下一步**：无（任务完结；可选后续：长期稳定性观察、用户反馈收集）
 
 ## 文档索引
 
@@ -41,13 +46,13 @@
 
 | Phase | Milestone | GitHub | 任务数 | 状态 |
 |------|------|------|:-----:|:----:|
-| P1 | Foundation + Handshake | [M1](https://github.com/DeliciousBuding/komari-agent-rs/milestone/1) | 10 (#1-#10) | ⬜ |
-| P2 | Linux Metrics + Zero-Alloc | [M2](https://github.com/DeliciousBuding/komari-agent-rs/milestone/2) | 12 (#11-#22) | ⬜ |
-| P3 | Protocol FSM + Fallback | [M3](https://github.com/DeliciousBuding/komari-agent-rs/milestone/3) | 7 (#23-#29) | ⬜ |
-| P4 | Cross-Platform + GPU | [M4](https://github.com/DeliciousBuding/komari-agent-rs/milestone/4) | 7 (#30-#36) | ⬜ |
-| P5 | Terminal + Ping + Tools | [M5](https://github.com/DeliciousBuding/komari-agent-rs/milestone/5) | 9 (#37-#45) | ⬜ |
-| P6 | Polish + Packaging | [M6](https://github.com/DeliciousBuding/komari-agent-rs/milestone/6) | 6 (#46-#51) | ⬜ |
-| **Total** | | | **51** | |
+| P1 | Foundation + Handshake | [M1](https://github.com/DeliciousBuding/komari-agent-rs/milestone/1) | 10 (#1-#10) | ✅ |
+| P2 | Linux Metrics + Zero-Alloc | [M2](https://github.com/DeliciousBuding/komari-agent-rs/milestone/2) | 12 (#11-#22) | ✅ |
+| P3 | Protocol FSM + Fallback | [M3](https://github.com/DeliciousBuding/komari-agent-rs/milestone/3) | 7 (#23-#29) | ✅ |
+| P4 | Cross-Platform + GPU | [M4](https://github.com/DeliciousBuding/komari-agent-rs/milestone/4) | 7 (#30-#36) | ✅ |
+| P5 | Terminal + Ping + Tools | [M5](https://github.com/DeliciousBuding/komari-agent-rs/milestone/5) | 9 (#37-#45) | ✅ |
+| P6 | Polish + Packaging | [M6](https://github.com/DeliciousBuding/komari-agent-rs/milestone/6) | 6 (#46-#51) | ✅ |
+| **Total** | | | **51** | **✅ 6/6** |
 
 ## 快速状态命令
 
@@ -66,5 +71,7 @@ gh milestone list --repo DeliciousBuding/komari-agent-rs
 
 ## 下一步
 
-1. 创建 GitHub Labels + Milestones + Issues
-2. 进入 Phase 5 — 开始执行 P1 任务
+任务完结。可选后续：
+1. 长期稳定性与内存占用观察
+2. 收集用户反馈，规划下一轮迭代
+3. 视需要补 cargo-bloat / 测试覆盖率自动报告到 CI

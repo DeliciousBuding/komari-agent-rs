@@ -1,4 +1,6 @@
 // komari-agent-rs: Linux CPU metrics — /proc/stat delta + /proc/cpuinfo parsing.
+#![allow(dead_code)]
+
 use crate::arena::ScratchArena;
 use std::fs;
 use std::io;

@@ -10,6 +10,11 @@
 // References:
 //   - RFC 6455 (WebSocket Protocol)
 //   - D:/Code/Projects/edgehub/komari-agent-rs/docs/plan/spec.md (DD3)
+//
+// The WS codec exposes a complete frame/error/close surface (RFC 6455 §7); a few
+// error variants and the `close` handshake helper are not yet exercised by the
+// live agent. Allow dead_code for the parity surface.
+#![allow(dead_code)]
 
 use crate::crypto;
 

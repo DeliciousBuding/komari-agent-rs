@@ -15,6 +15,7 @@ pub struct MemInfo {
 // ── FFI: kernel32.dll ────────────────────────────────────────────────────────
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct MemoryStatusEx {
     dwLength: u32,
     dwMemoryLoad: u32,
