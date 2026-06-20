@@ -102,7 +102,10 @@ pub(super) fn update_basic_info(
     let url = if is_v2 {
         format!("{}/api/clients/v2/rpc?token={}", base, encoded_token)
     } else {
-        format!("{}/api/clients/uploadBasicInfo?token={}", base, encoded_token)
+        format!(
+            "{}/api/clients/uploadBasicInfo?token={}",
+            base, encoded_token
+        )
     };
     let build = |extended: bool| -> Vec<u8> {
         if is_v2 {

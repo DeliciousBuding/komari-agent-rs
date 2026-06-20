@@ -206,6 +206,7 @@ fn connect_with_fsm(
                 Duration::from_secs(30),
                 &ws_headers,
                 dial,
+                !config.disable_compression,
             )?;
             Ok(Connection::Ws(Box::new(conn)))
         }

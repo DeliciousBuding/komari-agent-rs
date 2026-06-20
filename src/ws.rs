@@ -222,12 +222,14 @@ fn build_frame_header(
     payload_len: u64,
     masked: bool,
     mask_key: [u8; 4],
+    rsv1: bool,
 ) -> ([u8; 14], usize, [u8; 4]) {
     let mut buf = [0u8; 14];
     let mut pos = 0;
 
-    // Byte 0: FIN=1 | opcode
-    buf[pos] = 0x80 | (opcode & 0x0F);
+    // Byte 0: FIN=1 | RSV1(permessage-deflate) | opcode
+    let fin_rsv: u8 = if rsv1 { 0xC0 } else { 0x80 };
+    buf[pos] = fin_rsv | (opcode & 0x0F);
     pos += 1;
 
     // Byte 1: MASK + payload length (or extend marker)
@@ -261,16 +263,30 @@ fn write_masked_frame(
     stream: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
     opcode: u8,
     payload: &[u8],
+    compress: bool,
 ) -> Result<(), WsErr> {
+    // permessage-deflate (RFC 7692): when active, compress the payload and set
+    // RSV1 on the frame. The compressed bytes replace the payload; opcode is
+    // unchanged. Control frames (ping/pong/close) MUST NOT be compressed, so
+    // callers pass compress=false for those.
+    let owned_compressed: Vec<u8>;
+    let (frame_payload, rsv1) = if compress {
+        owned_compressed = crate::gzip::permessage_deflate_encode(payload);
+        (owned_compressed.as_slice(), true)
+    } else {
+        (payload, false)
+    };
+
     let mask_key = random_mask_key();
-    let (header, header_len, mk) = build_frame_header(opcode, payload.len() as u64, true, mask_key);
+    let (header, header_len, mk) =
+        build_frame_header(opcode, frame_payload.len() as u64, true, mask_key, rsv1);
 
     stream.write_all(&header[..header_len])?;
     stream.write_all(&mk)?;
 
     // Mask and write in chunks — avoids allocating a full copy of the payload.
     let mut chunk_buf = [0u8; MASK_CHUNK_SIZE];
-    for chunk in payload.chunks(MASK_CHUNK_SIZE) {
+    for chunk in frame_payload.chunks(MASK_CHUNK_SIZE) {
         let len = chunk.len();
         chunk_buf[..len].copy_from_slice(chunk);
         apply_mask(&mut chunk_buf[..len], mask_key);
@@ -289,6 +305,8 @@ fn write_masked_frame(
 /// All reads and writes go through rustls for automatic TLS encryption.
 pub struct WsConnection {
     stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+    /// Whether permessage-deflate (RFC 7692) was negotiated with the server.
+    compression_enabled: bool,
 }
 
 impl WsConnection {
@@ -312,6 +330,7 @@ impl WsConnection {
         timeout: Duration,
         extra_headers: &[(String, String)],
         dial: &crate::proxy::Dialer,
+        enable_compression: bool,
     ) -> Result<Self, WsErr> {
         // ── 1. Parse URL → host + port (path supplied by caller) ──
         let (host, port, _default_path) = parse_endpoint(endpoint)?;
@@ -358,8 +377,14 @@ impl WsConnection {
             WsErr::Handshake("generated WebSocket key is not valid UTF-8".to_string())
         })?;
 
-        let upgrade_request =
-            build_upgrade_request(&host, ws_path, token, ws_key_str, extra_headers);
+        let upgrade_request = build_upgrade_request(
+            &host,
+            ws_path,
+            token,
+            ws_key_str,
+            extra_headers,
+            enable_compression,
+        );
         stream
             .write_all(upgrade_request.as_bytes())
             .map_err(|e| WsErr::Io(format!("write upgrade request: {}", e)))?;
@@ -372,7 +397,7 @@ impl WsConnection {
         let response = std::str::from_utf8(&response_bytes)
             .map_err(|_| WsErr::Handshake("HTTP response is not valid UTF-8".to_string()))?;
 
-        let (status_code, accept_header) = parse_http_response(response)?;
+        let (status_code, accept_header, permessage) = parse_http_response(response)?;
 
         if status_code != 101 {
             return Err(WsErr::Handshake(format!(
@@ -393,20 +418,35 @@ impl WsConnection {
         }
 
         // ── 8. Return ready connection ──
-        Ok(Self { stream })
+        // permessage-deflate is active only if we offered it AND the server
+        // echoed it back in its handshake response.
+        Ok(Self {
+            stream,
+            compression_enabled: enable_compression && permessage,
+        })
     }
 
     /// Send a masked text frame (opcode=1, FIN=1).
     ///
     /// The caller must ensure `data` is valid UTF-8.
     pub fn send_text(&mut self, data: &[u8]) -> Result<(), WsErr> {
-        write_masked_frame(&mut self.stream, WsOpcode::Text as u8, data)
+        write_masked_frame(
+            &mut self.stream,
+            WsOpcode::Text as u8,
+            data,
+            self.compression_enabled,
+        )
     }
 
     /// Send a masked binary frame (opcode=2, FIN=1).
     #[allow(dead_code)]
     pub fn send_binary(&mut self, data: &[u8]) -> Result<(), WsErr> {
-        write_masked_frame(&mut self.stream, WsOpcode::Binary as u8, data)
+        write_masked_frame(
+            &mut self.stream,
+            WsOpcode::Binary as u8,
+            data,
+            self.compression_enabled,
+        )
     }
 
     /// Send a masked ping frame (opcode=9, FIN=1, empty payload).
@@ -414,7 +454,8 @@ impl WsConnection {
     /// Per RFC 6455, a ping may carry up to 125 bytes of application data.
     /// This implementation sends an empty ping (payload_len=0).
     pub fn send_ping(&mut self) -> Result<(), WsErr> {
-        write_masked_frame(&mut self.stream, WsOpcode::Ping as u8, &[])
+        // Control frames are never compressed (RFC 7692 §6.1).
+        write_masked_frame(&mut self.stream, WsOpcode::Ping as u8, &[], false)
     }
 
     /// Send a masked pong frame (opcode=10, FIN=1).
@@ -422,7 +463,7 @@ impl WsConnection {
     /// Called in response to a received ping.  RFC 6455 requires the pong
     /// payload to be identical to the ping payload.
     pub fn send_pong(&mut self, data: &[u8]) -> Result<(), WsErr> {
-        write_masked_frame(&mut self.stream, WsOpcode::Pong as u8, data)
+        write_masked_frame(&mut self.stream, WsOpcode::Pong as u8, data, false)
     }
 
     /// Send a masked close frame (opcode=8, FIN=1, empty payload).
@@ -430,7 +471,7 @@ impl WsConnection {
     /// After sending, the caller should read until a close frame is received
     /// back or the connection drops (per RFC 6455 §7.1.1 close handshake).
     pub fn close(&mut self) -> Result<(), WsErr> {
-        write_masked_frame(&mut self.stream, WsOpcode::Close as u8, &[])
+        write_masked_frame(&mut self.stream, WsOpcode::Close as u8, &[], false)
     }
 
     /// Read and parse the next WebSocket frame.
@@ -451,6 +492,7 @@ impl WsConnection {
         }
 
         let fin = (buf2[0] & 0x80) != 0;
+        let rsv1 = (buf2[0] & 0x40) != 0;
         let opcode_raw = buf2[0] & 0x0F;
         let masked = (buf2[1] & 0x80) != 0;
         let mut payload_len = (buf2[1] & 0x7F) as u64;
@@ -488,6 +530,19 @@ impl WsConnection {
 
         if masked {
             apply_mask(&mut payload, mask_key);
+        }
+
+        // permessage-deflate (RFC 7692): a data frame (text/binary) with RSV1
+        // set carries a compressed payload. Re-append the sync-flush tail that
+        // the sender stripped, then inflate. Control frames are never compressed.
+        if rsv1 && self.compression_enabled && (opcode_raw == 1 || opcode_raw == 2) {
+            let mut tail = payload.clone();
+            tail.extend_from_slice(&[0x00, 0x00, 0xFF, 0xFF]);
+            let mut inflated = Vec::with_capacity(payload.len() * 2);
+            crate::inflate::inflate_raw(&tail, &mut inflated).map_err(|e| {
+                WsErr::Protocol(format!("permessage-deflate inflate error: {:?}", e))
+            })?;
+            payload = inflated;
         }
 
         // ── Fragmentation guard ──
@@ -629,6 +684,7 @@ fn build_upgrade_request(
     token: &str,
     ws_key: &str,
     extra_headers: &[(String, String)],
+    enable_compression: bool,
 ) -> String {
     let mut req = String::with_capacity(512);
     req.push_str("GET ");
@@ -645,6 +701,10 @@ fn build_upgrade_request(
     req.push_str(ws_key);
     req.push_str("\r\n");
     req.push_str("Sec-WebSocket-Version: 13\r\n");
+    if enable_compression {
+        // RFC 7692: offer permessage-deflate. Server echoes it back if accepted.
+        req.push_str("Sec-WebSocket-Extensions: permessage-deflate\r\n");
+    }
     req.push_str("User-Agent: komari-agent-rs/0.1.0\r\n");
     req.push_str("Accept: */*\r\n");
     for (name, value) in extra_headers {
@@ -717,8 +777,9 @@ fn read_http_response_headers(
     Ok(buf)
 }
 
-/// Parse an HTTP/1.1 response text into `(status_code, sec_websocket_accept)`.
-fn parse_http_response(response: &str) -> Result<(u16, Option<String>), WsErr> {
+/// Parse an HTTP/1.1 response text into `(status_code, sec_websocket_accept,
+/// permessage_deflate_accepted)`.
+fn parse_http_response(response: &str) -> Result<(u16, Option<String>, bool), WsErr> {
     let mut lines = response.lines();
 
     // Status line: "HTTP/1.1 101 Switching Protocols"
@@ -738,8 +799,9 @@ fn parse_http_response(response: &str) -> Result<(u16, Option<String>), WsErr> {
         .parse()
         .map_err(|_| WsErr::Handshake(format!("invalid status code: '{}'", parts[1])))?;
 
-    // Parse headers; we only need Sec-WebSocket-Accept.
+    // Parse headers: Sec-WebSocket-Accept + Sec-WebSocket-Extensions.
     let mut accept: Option<String> = None;
+    let mut permessage = false;
     for line in lines {
         let line = line.trim();
         if line.is_empty() {
@@ -750,11 +812,15 @@ fn parse_http_response(response: &str) -> Result<(u16, Option<String>), WsErr> {
             let value = line[idx + 1..].trim();
             if name.eq_ignore_ascii_case("sec-websocket-accept") {
                 accept = Some(value.to_string());
+            } else if name.eq_ignore_ascii_case("sec-websocket-extensions")
+                && value.to_ascii_lowercase().contains("permessage-deflate")
+            {
+                permessage = true;
             }
         }
     }
 
-    Ok((status_code, accept))
+    Ok((status_code, accept, permessage))
 }
 
 /// Read exactly `buf.len()` bytes into `buf`, retrying on partial reads.
@@ -874,7 +940,7 @@ mod tests {
 
     #[test]
     fn frame_header_small_payload() {
-        let (buf, len, _) = build_frame_header(WsOpcode::Text as u8, 5, true, [0; 4]);
+        let (buf, len, _) = build_frame_header(WsOpcode::Text as u8, 5, true, [0; 4], false);
         assert_eq!(len, 2);
         assert_eq!(buf[0] & 0x0F, 1); // opcode=Text
         assert_eq!(buf[0] & 0x80, 0x80); // FIN=1
@@ -884,7 +950,7 @@ mod tests {
 
     #[test]
     fn frame_header_16bit_extended() {
-        let (buf, len, _) = build_frame_header(WsOpcode::Binary as u8, 256, true, [0; 4]);
+        let (buf, len, _) = build_frame_header(WsOpcode::Binary as u8, 256, true, [0; 4], false);
         assert_eq!(len, 4); // 2 fixed + 2 extended
         assert_eq!(buf[1] & 0x7F, 126); // marker
         let ext = u16::from_be_bytes([buf[2], buf[3]]);
@@ -893,7 +959,7 @@ mod tests {
 
     #[test]
     fn frame_header_unmasked() {
-        let (buf, len, _) = build_frame_header(WsOpcode::Ping as u8, 0, false, [0; 4]);
+        let (buf, len, _) = build_frame_header(WsOpcode::Ping as u8, 0, false, [0; 4], false);
         assert_eq!(len, 2);
         assert_eq!(buf[0] & 0x0F, 9); // opcode=Ping
         assert_eq!(buf[1], 0x00); // no mask, len=0
@@ -901,7 +967,7 @@ mod tests {
 
     #[test]
     fn frame_header_large_64bit() {
-        let (buf, len, _) = build_frame_header(WsOpcode::Binary as u8, 70000, true, [0; 4]);
+        let (buf, len, _) = build_frame_header(WsOpcode::Binary as u8, 70000, true, [0; 4], false);
         assert_eq!(len, 10); // 2 fixed + 8 extended
         assert_eq!(buf[1] & 0x7F, 127); // marker
         let ext = u64::from_be_bytes(buf[2..10].try_into().unwrap());
@@ -918,6 +984,7 @@ mod tests {
             "test-token-123",
             "dGhlIHNhbXBsZSBub25jZQ==",
             &[],
+            false,
         );
         assert!(req.starts_with("GET /api/clients/v2/rpc?token=test-token-123 HTTP/1.1\r\n"));
         assert!(req.contains("Host: example.com\r\n"));
@@ -925,13 +992,20 @@ mod tests {
         assert!(req.contains("Connection: Upgrade\r\n"));
         assert!(req.contains("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"));
         assert!(req.contains("Sec-WebSocket-Version: 13\r\n"));
+        assert!(!req.contains("permessage-deflate"));
         assert!(req.ends_with("\r\n\r\n"));
     }
 
     #[test]
     fn upgrade_request_url_encodes_token() {
-        let req = build_upgrade_request("host", "/path", "token with spaces!", "key", &[]);
+        let req = build_upgrade_request("host", "/path", "token with spaces!", "key", &[], false);
         assert!(req.contains("token%20with%20spaces%21"));
+    }
+
+    #[test]
+    fn upgrade_request_with_compression() {
+        let req = build_upgrade_request("host", "/path", "tok", "key", &[], true);
+        assert!(req.contains("Sec-WebSocket-Extensions: permessage-deflate\r\n"));
     }
 
     // ── url_encode ──
@@ -957,17 +1031,29 @@ mod tests {
                         Connection: Upgrade\r\n\
                         Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
                         \r\n";
-        let (code, accept) = parse_http_response(response).unwrap();
+        let (code, accept, permessage) = parse_http_response(response).unwrap();
         assert_eq!(code, 101);
         assert_eq!(accept.as_deref(), Some("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+        assert!(!permessage);
     }
 
     #[test]
     fn parse_401_no_accept() {
         let response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
-        let (code, accept) = parse_http_response(response).unwrap();
+        let (code, accept, _) = parse_http_response(response).unwrap();
         assert_eq!(code, 401);
         assert!(accept.is_none());
+    }
+
+    #[test]
+    fn parse_101_with_permessage_deflate() {
+        let response = "HTTP/1.1 101 Switching Protocols\r\n\
+                        Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+                        Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover\r\n\
+                        \r\n";
+        let (code, _accept, permessage) = parse_http_response(response).unwrap();
+        assert_eq!(code, 101);
+        assert!(permessage);
     }
 
     #[test]
