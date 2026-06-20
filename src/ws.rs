@@ -304,6 +304,7 @@ impl WsConnection {
         token: &str,
         tls_cfg: Arc<rustls::ClientConfig>,
         timeout: Duration,
+        extra_headers: &[(String, String)],
     ) -> Result<Self, WsErr> {
         // ── 1. Parse URL → host + port + path ──
         let (host, port, path) = parse_endpoint(endpoint)?;
@@ -348,7 +349,7 @@ impl WsConnection {
             WsErr::Handshake("generated WebSocket key is not valid UTF-8".to_string())
         })?;
 
-        let upgrade_request = build_upgrade_request(&host, &path, token, ws_key_str);
+        let upgrade_request = build_upgrade_request(&host, &path, token, ws_key_str, extra_headers);
         stream
             .write_all(upgrade_request.as_bytes())
             .map_err(|e| WsErr::Io(format!("write upgrade request: {}", e)))?;
@@ -612,7 +613,7 @@ fn host_to_server_name(host: &str) -> Result<ServerName<'static>, WsErr> {
 /// Sec-WebSocket-Version: 13
 ///
 /// ```
-fn build_upgrade_request(host: &str, path: &str, token: &str, ws_key: &str) -> String {
+fn build_upgrade_request(host: &str, path: &str, token: &str, ws_key: &str, extra_headers: &[(String, String)]) -> String {
     let mut req = String::with_capacity(512);
     req.push_str("GET ");
     req.push_str(path);
@@ -628,6 +629,12 @@ fn build_upgrade_request(host: &str, path: &str, token: &str, ws_key: &str) -> S
     req.push_str(ws_key);
     req.push_str("\r\n");
     req.push_str("Sec-WebSocket-Version: 13\r\n");
+    for (name, value) in extra_headers {
+        req.push_str(name);
+        req.push_str(": ");
+        req.push_str(value);
+        req.push_str("\r\n");
+    }
     req.push_str("\r\n");
     req
 }
@@ -892,6 +899,7 @@ mod tests {
             "/api/clients/v2/rpc",
             "test-token-123",
             "dGhlIHNhbXBsZSBub25jZQ==",
+            &[],
         );
         assert!(req.starts_with("GET /api/clients/v2/rpc?token=test-token-123 HTTP/1.1\r\n"));
         assert!(req.contains("Host: example.com\r\n"));
@@ -904,7 +912,7 @@ mod tests {
 
     #[test]
     fn upgrade_request_url_encodes_token() {
-        let req = build_upgrade_request("host", "/path", "token with spaces!", "key");
+        let req = build_upgrade_request("host", "/path", "token with spaces!", "key", &[]);
         assert!(req.contains("token%20with%20spaces%21"));
     }
 

@@ -55,7 +55,7 @@ pub fn http_post(
     body: &[u8],
     content_type: &str,
     content_encoding: Option<&str>,
-    cf_headers: Option<(&str, &str)>,
+    extra_headers: &[(String, String)],
     tls_cfg: &Arc<rustls::ClientConfig>,
 ) -> Result<HttpResponse, HttpErr> {
     // 1. Parse URL → host, port, path, query
@@ -93,9 +93,8 @@ pub fn http_post(
     if let Some(enc) = content_encoding {
         write!(stream, "Content-Encoding: {enc}\r\n")?;
     }
-    if let Some((id, secret)) = cf_headers {
-        write!(stream, "CF-Access-Client-Id: {id}\r\n")?;
-        write!(stream, "CF-Access-Client-Secret: {secret}\r\n")?;
+    for (name, value) in extra_headers {
+        write!(stream, "{name}: {value}\r\n")?;
     }
     write!(stream, "Connection: close\r\n\r\n")?;
 

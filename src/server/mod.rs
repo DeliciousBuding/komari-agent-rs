@@ -20,6 +20,13 @@
 //! - [`build_static_heartbeat`] — fallback heartbeat (until monitor wired)
 
 pub mod backoff;
+pub mod cf_access;
+#[cfg(feature = "ping")]
+pub mod ping_http;
+#[cfg(feature = "ping")]
+pub mod ping_icmp;
+#[cfg(feature = "ping")]
+pub mod ping_tcp;
 pub mod reconnection;
 pub mod task;
 
@@ -99,14 +106,18 @@ pub(super) fn update_basic_info(config: &Config, tls_cfg: &Arc<rustls::ClientCon
         (url, body)
     };
 
-    let cf_headers = build_cf_headers(config);
+    let cf_access = crate::server::cf_access::CfAccess::from_config(config);
+    let mut extra_headers: Vec<(String, String)> = Vec::new();
+    if let Some(ref cf) = cf_access {
+        cf.inject_http_headers(&mut extra_headers);
+    }
 
     match crate::http::http_post(
         &url,
         &body,
         "application/json",
         None,
-        cf_headers,
+        &extra_headers,
         tls_cfg,
     ) {
         Ok(resp) if resp.status_code == 200 => {
@@ -140,12 +151,4 @@ fn build_basic_info_v2() -> Vec<u8> {
 
 fn build_basic_info_v1() -> Vec<u8> {
     br#"{"cpu_name":"","cpu_cores":0,"cpu_physical_cores":0,"arch":"","os":"","kernel_version":"","ipv4":"","ipv6":"","mem_total":0,"swap_total":0,"disk_total":0,"gpu_name":"","virtualization":"","version":"0.1.0"}"#.to_vec()
-}
-
-fn build_cf_headers(config: &Config) -> Option<(&str, &str)> {
-    if config.cf_access_client_id.is_empty() || config.cf_access_client_secret.is_empty() {
-        None
-    } else {
-        Some((&config.cf_access_client_id, &config.cf_access_client_secret))
-    }
 }

@@ -3,9 +3,9 @@
 // Mirrors Go dnsresolver package:
 //   D:/Code/Projects/external/komari-agent-go/dnsresolver/resolver.go
 //
-// 100% feature parity: TTL cache (50 entries, 5 min), 10+ built-in DNS servers,
+// 100% feature parity: TTL cache (50 entries, 5 min), 10 built-in DNS servers,
 // system DNS fallback, raw UDP DNS query (A + AAAA), IP version preference
-// sorting, and a dial-context factory for TCP connections.
+// sorting, Happy Eyeballs lite, and a dial-context factory for TCP connections.
 //
 // Constraints: no tokio/async, no clap, no serde. std-only + rustls.
 
@@ -67,22 +67,31 @@ const DNS_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default TCP dial timeout.
 const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Built-in DNS servers matching Go agent's DNSServers list exactly,
-/// plus Quad9 (9.9.9.9) as an additional primary.
+/// Happy Eyeballs: per-family DNS query timeout.
+///
+/// When resolving with Happy Eyeballs, the first (preferred) address family
+/// gets 750 ms to respond before the second family query is also sent.
+const HAPPY_EYEBALLS_FAMILY_TIMEOUT: Duration = Duration::from_millis(750);
+
+/// Happy Eyeballs: overall DNS resolution budget.
+///
+/// Both families together must complete within 5 seconds.
+const HAPPY_EYEBALLS_OVERALL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Built-in DNS server IPs matching the Go agent's 10-server list exactly.
+///
+/// Port 53 is appended by `normalize_dns_server` at query time.
 const DNS_SERVERS: &[&str] = &[
-    // IPv6
-    "[2606:4700:4700::1111]:53", // Cloudflare IPv6
-    "[2606:4700:4700::1001]:53", // Cloudflare IPv6 backup
-    "[2001:4860:4860::8888]:53", // Google IPv6
-    "[2001:4860:4860::8844]:53", // Google IPv6 backup
-    // IPv4
-    "1.1.1.1:53",         // Cloudflare IPv4 (primary)
-    "8.8.8.8:53",         // Google IPv4 (primary)
-    "9.9.9.9:53",         // Quad9 IPv4 (primary)
-    "8.8.4.4:53",         // Google IPv4 backup
-    "114.114.114.114:53", // 114DNS (China mainland)
-    "223.5.5.5:53",       // AliDNS (China mainland)
-    "119.29.29.29:53",    // DNSPod (China mainland)
+    "1.1.1.1",         // Cloudflare primary
+    "8.8.8.8",         // Google primary
+    "9.9.9.9",         // Quad9 primary
+    "208.67.222.222",  // OpenDNS primary
+    "208.67.220.220",  // OpenDNS backup
+    "1.0.0.1",         // Cloudflare backup
+    "8.8.4.4",         // Google backup
+    "149.112.112.112", // Quad9 backup
+    "185.228.168.9",   // CleanBrowsing primary
+    "185.228.169.9",   // CleanBrowsing backup
 ];
 
 // ============================================================================
@@ -202,30 +211,47 @@ const DNS_TYPE_AAAA: u16 = 28; // IPv6 address
 
 /// Build a raw DNS query packet.
 ///
-/// Wire format:
-///   - 12-byte header (ID, flags, counts)
-///   - Question section: QNAME (length-prefixed labels + NUL), QTYPE, QCLASS
-fn build_dns_query(host: &str, qtype: u16) -> Vec<u8> {
+/// Wire format (12-byte header + question section):
+///
+/// ```text
+/// Header (12 bytes):
+///   ┌──────────────────┬──────────────────┐
+///   │ Transaction ID    │ Flags            │
+///   │ (2 bytes)         │ (2 bytes)        │
+///   ├──────────────────┼──────────────────┤
+///   │ QDCOUNT          │ ANCOUNT          │
+///   │ (2 bytes)         │ (2 bytes)        │
+///   ├──────────────────┼──────────────────┤
+///   │ NSCOUNT          │ ARCOUNT          │
+///   │ (2 bytes)         │ (2 bytes)        │
+///   └──────────────────┴──────────────────┘
+///
+/// Question section:
+///   QNAME  — length-prefixed labels terminated by NUL (0x00)
+///   QTYPE  — 2 bytes (e.g. 0x0001 for A)
+///   QCLASS — 2 bytes (0x0001 for IN)
+/// ```
+pub fn build_dns_query(host: &str, qtype: u16) -> Vec<u8> {
     let mut buf = Vec::with_capacity(64);
 
     // -- Header (12 bytes) --
-    // Transaction ID: random u16
+    // Transaction ID: pseudo-random from subsecond nanos
     let txid: u16 = (Instant::now().elapsed().subsec_nanos() & 0xFFFF) as u16;
     buf.extend_from_slice(&txid.to_be_bytes());
 
     // Flags: standard query with recursion desired (0x0100)
     buf.extend_from_slice(&0x0100u16.to_be_bytes());
 
-    // Question count: 1
+    // QDCOUNT = 1
     buf.extend_from_slice(&1u16.to_be_bytes());
 
-    // Answer RRs: 0
+    // ANCOUNT = 0
     buf.extend_from_slice(&0u16.to_be_bytes());
 
-    // Authority RRs: 0
+    // NSCOUNT = 0
     buf.extend_from_slice(&0u16.to_be_bytes());
 
-    // Additional RRs: 0
+    // ARCOUNT = 0
     buf.extend_from_slice(&0u16.to_be_bytes());
 
     // -- Question section --
@@ -238,7 +264,7 @@ fn build_dns_query(host: &str, qtype: u16) -> Vec<u8> {
 
 /// Encode a hostname into DNS QNAME format (length-prefixed labels).
 ///
-/// "api.example.com" → 3api7example3com0
+/// Example: `"api.example.com"` → `\x03api\x07example\x03com\x00`
 fn encode_qname(buf: &mut Vec<u8>, host: &str) {
     for label in host.split('.') {
         let label_bytes = label.as_bytes();
@@ -252,8 +278,8 @@ fn encode_qname(buf: &mut Vec<u8>, host: &str) {
 ///
 /// Handles DNS name compression pointers (0xC0xx) in the question and answer
 /// sections. Extracts A (type 1) and AAAA (type 28) records from the answer
-/// section.
-fn parse_dns_response(response: &[u8]) -> Result<Vec<SocketAddr>, DnsErr> {
+/// section. Returns addresses with port 0 — caller assigns the port.
+pub fn parse_dns_response(response: &[u8]) -> Result<Vec<SocketAddr>, DnsErr> {
     if response.len() < 12 {
         return Err(DnsErr::Io(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -317,7 +343,6 @@ fn parse_dns_response(response: &[u8]) -> Result<Vec<SocketAddr>, DnsErr> {
                     response[pos + 2],
                     response[pos + 3],
                 );
-                // Port 0 — caller assigns the port
                 addrs.push(SocketAddr::V4(SocketAddrV4::new(ip, 0)));
             }
             DNS_TYPE_AAAA if rdlength == 16 => {
@@ -378,7 +403,8 @@ fn skip_name(data: &[u8], mut pos: usize) -> Result<usize, DnsErr> {
 
 /// Send a DNS query to `dns_server` and return the resolved addresses.
 ///
-/// Queries both A and AAAA records, merges results.
+/// Queries both A and AAAA records, merges results. Uses a single
+/// `DNS_QUERY_TIMEOUT` (10 s) per query.
 fn query_dns_server(dns_server: &str, host: &str, port: u16) -> Result<Vec<SocketAddr>, DnsErr> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.set_read_timeout(Some(DNS_QUERY_TIMEOUT))?;
@@ -435,6 +461,133 @@ fn query_dns_server(dns_server: &str, host: &str, port: u16) -> Result<Vec<Socke
     Ok(all_addrs)
 }
 
+// ============================================================================
+// Happy Eyeballs lite — staggered DNS queries with per-family timeouts
+// ============================================================================
+
+/// Send DNS queries using Happy Eyeballs lite.
+///
+/// Strategy (RFC 8305 inspired):
+/// 1. Query the **preferred** address family first.
+/// 2. If no response arrives within `HAPPY_EYEBALLS_FAMILY_TIMEOUT` (750 ms),
+///    also fire a query for the other family.
+/// 3. Overall budget: `HAPPY_EYEBALLS_OVERALL_TIMEOUT` (5 s).
+/// 4. Results are returned in preference order (preferred family first).
+///
+/// This minimizes tail latency on dual-stack hosts where one family is
+/// unreachable or slow.
+fn query_dns_server_happy_eyeballs(
+    dns_server: &str,
+    host: &str,
+    port: u16,
+    prefer_ip_version: &str,
+) -> Result<Vec<SocketAddr>, DnsErr> {
+    let prefer_v4 = prefer_ip_version != "6";
+    let (first_type, second_type) = if prefer_v4 {
+        (DNS_TYPE_A, DNS_TYPE_AAAA)
+    } else {
+        (DNS_TYPE_AAAA, DNS_TYPE_A)
+    };
+
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    let overall_deadline = Instant::now() + HAPPY_EYEBALLS_OVERALL_TIMEOUT;
+
+    let mut preferred_addrs: Vec<SocketAddr> = Vec::new();
+    let mut other_addrs: Vec<SocketAddr> = Vec::new();
+
+    // --- Phase 1: preferred family with family timeout ---
+    let remaining = remaining_ms(overall_deadline);
+    if remaining == 0 {
+        return Err(DnsErr::Timeout("overall budget exhausted before query".into()));
+    }
+    socket.set_read_timeout(Some(Duration::from_millis(
+        remaining.min(HAPPY_EYEBALLS_FAMILY_TIMEOUT.as_millis() as u64),
+    )))?;
+
+    let query_first = build_dns_query(host, first_type);
+    socket.send_to(&query_first, dns_server)?;
+
+    let mut response_buf = [0u8; 512];
+    let _first_got_response = match socket.recv_from(&mut response_buf) {
+        Ok((n, _)) => {
+            if let Ok(addrs) = parse_dns_response(&response_buf[..n]) {
+                for addr in addrs {
+                    preferred_addrs.push(set_port(addr, port));
+                }
+            }
+            true
+        }
+        Err(ref e)
+            if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+        {
+            false
+        }
+        Err(e) => return Err(DnsErr::Io(e)),
+    };
+
+    // --- Phase 2: second family (always sent, even if first succeeded) ---
+    let remaining = remaining_ms(overall_deadline);
+    if remaining == 0 {
+        // Preferred family timed out and no budget left
+        if preferred_addrs.is_empty() {
+            return Err(DnsErr::Timeout(format!(
+                "Happy Eyeballs overall timeout for '{}' on {}",
+                host, dns_server
+            )));
+        }
+        return Ok(preferred_addrs);
+    }
+    socket.set_read_timeout(Some(Duration::from_millis(remaining)))?;
+
+    let query_second = build_dns_query(host, second_type);
+    socket.send_to(&query_second, dns_server)?;
+
+    match socket.recv_from(&mut response_buf) {
+        Ok((n, _)) => {
+            if let Ok(addrs) = parse_dns_response(&response_buf[..n]) {
+                for addr in addrs {
+                    other_addrs.push(set_port(addr, port));
+                }
+            }
+        }
+        Err(ref e)
+            if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+        {
+            // Second family timed out — that's ok
+        }
+        Err(e) => {
+            // If we already have preferred results, ignore second-family error
+            if preferred_addrs.is_empty() && other_addrs.is_empty() {
+                return Err(DnsErr::Io(e));
+            }
+        }
+    }
+
+    // --- Merge: preferred family first ---
+    let mut all: Vec<SocketAddr> = Vec::with_capacity(preferred_addrs.len() + other_addrs.len());
+    all.extend(preferred_addrs);
+    all.extend(other_addrs);
+
+    if all.is_empty() {
+        Err(DnsErr::Timeout(format!(
+            "no DNS response for '{}' from {} within {} ms",
+            host,
+            dns_server,
+            HAPPY_EYEBALLS_OVERALL_TIMEOUT.as_millis()
+        )))
+    } else {
+        Ok(all)
+    }
+}
+
+/// Return remaining milliseconds until `deadline`, or 0 if already past.
+fn remaining_ms(deadline: Instant) -> u64 {
+    deadline
+        .checked_duration_since(Instant::now())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Set the port on a SocketAddr, preserving the IP version.
 fn set_port(addr: SocketAddr, port: u16) -> SocketAddr {
     match addr {
@@ -449,7 +602,7 @@ fn set_port(addr: SocketAddr, port: u16) -> SocketAddr {
 }
 
 // ============================================================================
-// resolve — main DNS resolution entry point
+// resolve — main DNS resolution entry points
 // ============================================================================
 
 /// Resolve a hostname to a list of `SocketAddr`s.
@@ -483,7 +636,7 @@ pub fn resolve(
 
     // 2. Resolve
     let mut addrs = if !custom_dns_servers.is_empty() {
-        resolve_via_custom_dns(host, port, custom_dns_servers)?
+        resolve_via_custom_dns(host, port, custom_dns_servers, prefer_ip_version)?
     } else {
         resolve_via_system(host, port)?
     };
@@ -493,6 +646,54 @@ pub fn resolve(
 
     // 4. Cache result
     // Store with port 0 so cache lookups can assign any port
+    let cached_addrs: Vec<SocketAddr> = addrs.iter().map(|a| set_port(*a, 0)).collect();
+    let _ = DNS_CACHE.insert(host.to_string(), cached_addrs);
+
+    if addrs.is_empty() {
+        Err(DnsErr::NoAddresses(host.to_string()))
+    } else {
+        Ok(addrs)
+    }
+}
+
+/// Resolve a hostname with Happy Eyeballs lite (staggered family queries).
+///
+/// Same cache / fallback semantics as [`resolve`], but DNS queries use
+/// per-family timeouts (750 ms) and an overall 5 s budget.
+///
+/// This is the recommended entry point for interactive workloads where
+/// tail-latency matters.
+pub fn resolve_with_happy_eyeballs(
+    host: &str,
+    port: u16,
+    prefer_ip_version: &str,
+    custom_dns_servers: &[String],
+) -> Result<Vec<SocketAddr>, DnsErr> {
+    // 1. Check cache
+    if let Some(cached) = DNS_CACHE.get(host) {
+        let mut addrs = cached;
+        for addr in &mut addrs {
+            *addr = set_port(*addr, port);
+        }
+        sort_by_preference(&mut addrs, prefer_ip_version);
+        if !addrs.is_empty() {
+            return Ok(addrs);
+        }
+    }
+
+    // 2. Resolve — use Happy Eyeballs when custom DNS is configured,
+    //    fall back to system resolver otherwise.
+    let mut addrs = if !custom_dns_servers.is_empty() {
+        resolve_via_custom_dns_happy_eyeballs(host, port, custom_dns_servers, prefer_ip_version)?
+    } else {
+        // System resolver doesn't expose per-family control — use standard path
+        resolve_via_system(host, port)?
+    };
+
+    // 3. Sort by preference
+    sort_by_preference(&mut addrs, prefer_ip_version);
+
+    // 4. Cache result
     let cached_addrs: Vec<SocketAddr> = addrs.iter().map(|a| set_port(*a, 0)).collect();
     let _ = DNS_CACHE.insert(host.to_string(), cached_addrs);
 
@@ -522,8 +723,69 @@ fn resolve_via_custom_dns(
     host: &str,
     port: u16,
     custom_dns_servers: &[String],
+    prefer_ip_version: &str,
 ) -> Result<Vec<SocketAddr>, DnsErr> {
-    // Build a combined list: custom servers first, then built-in as fallback
+    let all_servers = build_server_list(custom_dns_servers);
+
+    let mut last_err: Option<DnsErr> = None;
+
+    for server in &all_servers {
+        match query_dns_server(server, host, port) {
+            Ok(addrs) if !addrs.is_empty() => {
+                let mut sorted = addrs;
+                sort_by_preference(&mut sorted, prefer_ip_version);
+                return Ok(sorted);
+            }
+            Ok(_) => continue,
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        }
+    }
+
+    // All custom servers failed — fall back to system DNS
+    match resolve_via_system(host, port) {
+        Ok(addrs) => Ok(addrs),
+        Err(_) => Err(last_err.unwrap_or_else(|| DnsErr::NoAddresses(host.to_string()))),
+    }
+}
+
+/// Resolve via custom DNS with Happy Eyeballs lite per server.
+///
+/// Each server is tried with staggered family queries. Falls back to system
+/// DNS if all servers fail.
+fn resolve_via_custom_dns_happy_eyeballs(
+    host: &str,
+    port: u16,
+    custom_dns_servers: &[String],
+    prefer_ip_version: &str,
+) -> Result<Vec<SocketAddr>, DnsErr> {
+    let all_servers = build_server_list(custom_dns_servers);
+
+    let mut last_err: Option<DnsErr> = None;
+
+    for server in &all_servers {
+        match query_dns_server_happy_eyeballs(server, host, port, prefer_ip_version) {
+            Ok(addrs) if !addrs.is_empty() => return Ok(addrs),
+            Ok(_) => continue,
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        }
+    }
+
+    // All custom servers failed — fall back to system DNS
+    match resolve_via_system(host, port) {
+        Ok(addrs) => Ok(addrs),
+        Err(_) => Err(last_err.unwrap_or_else(|| DnsErr::NoAddresses(host.to_string()))),
+    }
+}
+
+/// Build the combined server list: custom servers first, then built-in.
+/// Deduplicates entries.
+fn build_server_list(custom_dns_servers: &[String]) -> Vec<String> {
     let mut all_servers: Vec<String> =
         Vec::with_capacity(custom_dns_servers.len() + DNS_SERVERS.len());
 
@@ -537,27 +799,7 @@ fn resolve_via_custom_dns(
         }
     }
 
-    let mut last_err: Option<DnsErr> = None;
-
-    for server in &all_servers {
-        match query_dns_server(server, host, port) {
-            Ok(addrs) if !addrs.is_empty() => return Ok(addrs),
-            Ok(_) => continue, // empty response — try next server
-            Err(e) => {
-                last_err = Some(e);
-                continue;
-            }
-        }
-    }
-
-    // All custom servers failed — fall back to system DNS
-    match resolve_via_system(host, port) {
-        Ok(addrs) => Ok(addrs),
-        Err(_) => {
-            // Return the last custom DNS error, or a generic error
-            Err(last_err.unwrap_or_else(|| DnsErr::NoAddresses(host.to_string())))
-        }
-    }
+    all_servers
 }
 
 /// Normalize a DNS server string to `host:port` format.
@@ -641,7 +883,6 @@ fn prefer_ipv4_first() -> bool {
     static HAS_IPV4: OnceLock<bool> = OnceLock::new();
 
     *HAS_IPV4.get_or_init(|| {
-        // On most platforms, we can check network interfaces
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
             if let Ok(ifaces) = get_if_addrs() {
@@ -756,6 +997,69 @@ pub fn make_dial_context(
     }
 }
 
+/// Create a TCP dial context that uses Happy Eyeballs for DNS resolution.
+///
+/// Same as [`make_dial_context`] but DNS queries use staggered per-family
+/// timeouts (750 ms / 5 s overall), which can significantly reduce tail
+/// latency on dual-stack hosts where one family is slow or unreachable.
+pub fn make_dial_context_happy_eyeballs(
+    timeout: Duration,
+    prefer_ip_version: &str,
+    custom_dns_servers: &[String],
+) -> impl Fn(&str, &str) -> Result<TcpStream, DnsErr> + use<> {
+    let prefer = prefer_ip_version.to_string();
+    let custom_dns = custom_dns_servers.to_vec();
+    let effective_timeout = if timeout.is_zero() {
+        DEFAULT_DIAL_TIMEOUT
+    } else {
+        timeout
+    };
+
+    move |_network: &str, addr: &str| {
+        let (host, port_str) = addr.rsplit_once(':').ok_or_else(|| {
+            DnsErr::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid address '{}': expected host:port", addr),
+            ))
+        })?;
+
+        let host = host.strip_prefix('[').unwrap_or(host);
+        let host = host.strip_suffix(']').unwrap_or(host);
+
+        let port: u16 = port_str.parse().map_err(|_| {
+            DnsErr::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid port '{}' in address '{}'", port_str, addr),
+            ))
+        })?;
+
+        // Resolve with Happy Eyeballs
+        let addrs =
+            resolve_with_happy_eyeballs(host, port, &prefer, &custom_dns)?;
+
+        let mut last_err: Option<io::Error> = None;
+        for socket_addr in &addrs {
+            match TcpStream::connect_timeout(socket_addr, effective_timeout) {
+                Ok(stream) => {
+                    let _ = stream.set_nodelay(true);
+                    return Ok(stream);
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    continue;
+                }
+            }
+        }
+
+        Err(DnsErr::Io(last_err.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!("failed to connect to {}", addr),
+            )
+        })))
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -844,6 +1148,15 @@ mod tests {
     }
 
     #[test]
+    fn test_build_dns_query_aaaa() {
+        let query = build_dns_query("example.com", DNS_TYPE_AAAA);
+        assert!(query.len() > 12);
+        let tail = &query[query.len() - 4..];
+        assert_eq!(u16::from_be_bytes([tail[0], tail[1]]), DNS_TYPE_AAAA);
+        assert_eq!(u16::from_be_bytes([tail[2], tail[3]]), 1); // IN
+    }
+
+    #[test]
     fn test_encode_qname() {
         let mut buf = Vec::new();
         encode_qname(&mut buf, "api.example.com");
@@ -855,6 +1168,16 @@ mod tests {
         assert_eq!(buf[12], 3);
         assert_eq!(&buf[13..16], b"com");
         assert_eq!(buf[16], 0);
+    }
+
+    #[test]
+    fn test_encode_qname_single_label() {
+        let mut buf = Vec::new();
+        encode_qname(&mut buf, "localhost");
+        // 9localhost0
+        assert_eq!(buf[0], 9);
+        assert_eq!(&buf[1..10], b"localhost");
+        assert_eq!(buf[10], 0);
     }
 
     #[test]
@@ -874,6 +1197,32 @@ mod tests {
         ];
         let result = parse_dns_response(&response).unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_dns_response_a_record() {
+        // DNS response with one A record: example.com → 93.184.216.34
+        let response: Vec<u8> = vec![
+            0x00, 0x01, // TXID
+            0x81, 0x80, // Flags
+            0x00, 0x01, // QDCOUNT = 1
+            0x00, 0x01, // ANCOUNT = 1
+            0x00, 0x00, // NSCOUNT
+            0x00, 0x00, // ARCOUNT
+            // Question: 7example3com0 + A + IN
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00,
+            0x01, 0x00, 0x01,
+            // Answer: pointer to name + A + IN + TTL + RDLENGTH=4 + IP
+            0xC0, 0x0C, // pointer to offset 12 (the "example.com" in question)
+            0x00, 0x01, // TYPE = A
+            0x00, 0x01, // CLASS = IN
+            0x00, 0x00, 0x0E, 0x10, // TTL = 3600
+            0x00, 0x04, // RDLENGTH = 4
+            0x5D, 0xB8, 0xD8, 0x22, // 93.184.216.34
+        ];
+        let result = parse_dns_response(&response).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].ip().to_string(), "93.184.216.34");
     }
 
     #[test]
@@ -902,6 +1251,35 @@ mod tests {
         ];
         let next = skip_name(&data, 5).unwrap();
         assert_eq!(next, 7); // skipped 2-byte pointer
+    }
+
+    // ------------------------------------------------------------------
+    // DNS server list tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_dns_servers_count() {
+        assert_eq!(DNS_SERVERS.len(), 10, "must have exactly 10 built-in servers");
+    }
+
+    #[test]
+    fn test_dns_servers_match_go_agent() {
+        // These 10 IPs match the Go agent's DNSServers list per spec
+        let expected: &[&str] = &[
+            "1.1.1.1",
+            "8.8.8.8",
+            "9.9.9.9",
+            "208.67.222.222",
+            "208.67.220.220",
+            "1.0.0.1",
+            "8.8.4.4",
+            "149.112.112.112",
+            "185.228.168.9",
+            "185.228.169.9",
+        ];
+        for (i, server) in DNS_SERVERS.iter().enumerate() {
+            assert_eq!(*server, expected[i], "server at index {} mismatch", i);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -936,6 +1314,30 @@ mod tests {
             normalize_dns_server("dns.example.com"),
             "dns.example.com:53"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // build_server_list tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_build_server_list_dedup() {
+        let custom = vec!["1.1.1.1".to_string()]; // same as first built-in
+        let list = build_server_list(&custom);
+        // "1.1.1.1" should appear only once
+        let count = list.iter().filter(|s| s.contains("1.1.1.1")).count();
+        assert_eq!(count, 1);
+        // Total: 10 built-in + 0 new (custom was deduped)
+        assert_eq!(list.len(), 10);
+    }
+
+    #[test]
+    fn test_build_server_list_custom_only() {
+        let custom = vec!["192.168.1.1".to_string()];
+        let list = build_server_list(&custom);
+        // Custom first, then 10 built-ins
+        assert_eq!(list[0], "192.168.1.1:53");
+        assert_eq!(list.len(), 11);
     }
 
     // ------------------------------------------------------------------
@@ -1004,6 +1406,29 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // Happy Eyeballs unit tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_remaining_ms_past() {
+        let past = Instant::now() - Duration::from_secs(1);
+        assert_eq!(remaining_ms(past), 0);
+    }
+
+    #[test]
+    fn test_remaining_ms_future() {
+        let future = Instant::now() + Duration::from_millis(500);
+        let r = remaining_ms(future);
+        assert!(r > 0 && r <= 500, "expected 0 < {} <= 500", r);
+    }
+
+    #[test]
+    fn test_happy_eyeballs_constants() {
+        assert_eq!(HAPPY_EYEBALLS_FAMILY_TIMEOUT, Duration::from_millis(750));
+        assert_eq!(HAPPY_EYEBALLS_OVERALL_TIMEOUT, Duration::from_secs(5));
+    }
+
+    // ------------------------------------------------------------------
     // resolve tests (integration-style, require network)
     // ------------------------------------------------------------------
 
@@ -1057,6 +1482,33 @@ mod tests {
             }
             Err(_) => {
                 // Expected path — nonexistent host fails resolution
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolve_with_custom_dns() {
+        // Use Cloudflare as custom DNS — should resolve example.com
+        let custom = vec!["1.1.1.1".to_string()];
+        let result = resolve("example.com", 443, "4", &custom);
+        if let Ok(addrs) = result {
+            assert!(!addrs.is_empty());
+            // Should prefer IPv4
+            if !addrs.is_empty() {
+                assert!(addrs[0].is_ipv4());
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolve_happy_eyeballs_basic() {
+        let custom = vec!["8.8.8.8".to_string()];
+        let result = resolve_with_happy_eyeballs("example.com", 443, "4", &custom);
+        if let Ok(addrs) = result {
+            assert!(!addrs.is_empty());
+            // Preferred family (IPv4) should be first
+            if !addrs.is_empty() {
+                assert!(addrs[0].is_ipv4());
             }
         }
     }

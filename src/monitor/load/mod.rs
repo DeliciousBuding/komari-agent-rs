@@ -15,6 +15,8 @@ pub mod linux;
 pub mod windows;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "freebsd")]
+pub mod freebsd;
 
 /// Collect system load average. Returns zeros on unsupported platforms.
 pub fn collect() -> Result<LoadInfo, io::Error> {
@@ -30,7 +32,11 @@ pub fn collect() -> Result<LoadInfo, io::Error> {
     {
         return macos::collect();
     }
-    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+    #[cfg(target_os = "freebsd")]
+    {
+        return freebsd::collect();
+    }
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
     {
         Ok(LoadInfo::default())
     }

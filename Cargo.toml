@@ -8,13 +8,14 @@ repository = "https://github.com/DeliciousBuding/komari-agent-rs"
 
 [dependencies]
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+ring = { version = "0.17", optional = true }
 
 [features]
 default = []
 gpu-detection = []
 terminal = []
 ping = []
-self-update = []
+self-update = ["dep:ring"]
 full = ["gpu-detection", "terminal", "ping", "self-update"]
 
 [profile.release]

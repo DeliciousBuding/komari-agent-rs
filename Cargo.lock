@@ -39,6 +39,7 @@ dependencies = [
 name = "komari-agent-rs"
 version = "0.1.0"
 dependencies = [
+ "ring",
  "rustls",
 ]
 

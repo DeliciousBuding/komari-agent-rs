@@ -22,6 +22,7 @@ use crate::http::{http_post, HttpErr};
 use crate::monitor::{generate_report, Monitor};
 use crate::protocol::fsm::{FailureKind, ProtocolFsm, ProtocolMode};
 use crate::protocol::v2;
+use crate::server::cf_access::CfAccess;
 use crate::ws::{WsConnection, WsErr, WsMessage};
 use super::backoff::Backoff;
 use std::sync::Arc;
@@ -153,17 +154,28 @@ fn connect_with_fsm(
     config: &Config,
     tls_cfg: &Arc<rustls::ClientConfig>,
 ) -> Result<Connection, WsErr> {
+    let cf_access = CfAccess::from_config(config);
+
     match fsm.mode() {
         ProtocolMode::WsV2 => {
+            let mut ws_headers: Vec<(String, String)> = Vec::new();
+            if let Some(ref cf) = cf_access {
+                cf.inject_ws_headers(&mut ws_headers);
+            }
             let conn = WsConnection::connect(
                 &config.endpoint, &config.token,
                 Arc::clone(tls_cfg), Duration::from_secs(30),
+                &ws_headers,
             )?;
             Ok(Connection::Ws(conn))
         }
         ProtocolMode::HttpV2 | ProtocolMode::HttpV1 => {
             let url = build_http_url(config, fsm.mode());
-            http_post(&url, b"{}", "application/json", None, cf_headers(config), tls_cfg)
+            let mut http_headers: Vec<(String, String)> = Vec::new();
+            if let Some(ref cf) = cf_access {
+                cf.inject_http_headers(&mut http_headers);
+            }
+            http_post(&url, b"{}", "application/json", None, &http_headers, tls_cfg)
                 .map_err(|e| WsErr::Io(format!("HTTP probe failed: {}", e)))?;
             Ok(Connection::Http)
         }
@@ -180,12 +192,14 @@ fn build_http_url(config: &Config, mode: ProtocolMode) -> String {
     format!("{}{}?token={}", base, path, crate::ws::url_encode(&config.token))
 }
 
-fn cf_headers<'a>(config: &'a Config) -> Option<(&'a str, &'a str)> {
-    if config.cf_access_client_id.is_empty() || config.cf_access_client_secret.is_empty() {
-        None
-    } else {
-        Some((&config.cf_access_client_id, &config.cf_access_client_secret))
+/// Build the CF Access extra headers Vec for HTTP requests.
+/// Returns empty Vec when CF Access is not configured.
+fn build_http_cf_headers(config: &Config) -> Vec<(String, String)> {
+    let mut headers: Vec<(String, String)> = Vec::new();
+    if let Some(ref cf) = CfAccess::from_config(config) {
+        cf.inject_http_headers(&mut headers);
     }
+    headers
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -216,14 +230,14 @@ fn run_tick_loop(
                 let req = v2::new_request("0", v2::METHOD_AGENT_REPORT, report);
                 let resp = http_post(
                     &build_http_url(config, ProtocolMode::HttpV2),
-                    &req, "application/json", None, cf_headers(config), tls_cfg,
+                    &req, "application/json", None, &build_http_cf_headers(config), tls_cfg,
                 )?;
                 if !resp.body.is_empty() { dispatch_server_message(&resp.body, config); }
             }
             (Connection::Http, ProtocolMode::HttpV1) => {
                 let resp = http_post(
                     &build_http_url(config, ProtocolMode::HttpV1),
-                    report, "application/json", None, cf_headers(config), tls_cfg,
+                    report, "application/json", None, &build_http_cf_headers(config), tls_cfg,
                 )?;
                 if !resp.body.is_empty() { dispatch_server_message(&resp.body, config); }
             }

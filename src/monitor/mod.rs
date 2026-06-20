@@ -29,6 +29,7 @@ pub mod ip;
 pub mod load;
 pub mod mem;
 pub mod net;
+pub mod netstatic;
 pub mod os;
 pub mod process;
 pub mod uptime;
