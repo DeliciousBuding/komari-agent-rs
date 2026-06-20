@@ -1,0 +1,31 @@
+[package]
+name = "komari-agent-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Featherweight Komari monitoring agent — sync single-threaded, <1MB binary, <3MB RSS"
+license = "MIT"
+repository = "https://github.com/DeliciousBuding/komari-agent-rs"
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+
+[features]
+default = []
+gpu-detection = []
+terminal = []
+ping = []
+self-update = []
+full = ["gpu-detection", "terminal", "ping", "self-update"]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false
+overflow-checks = false
+
+[profile.release.package."*"]
+opt-level = "z"

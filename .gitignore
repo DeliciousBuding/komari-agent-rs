@@ -1,0 +1,18 @@
+# Rust build artifacts
+target/
+*.rlib
+*.pdb
+*.o
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Old Go reference (not part of this repo)
+komari-agent-go/
