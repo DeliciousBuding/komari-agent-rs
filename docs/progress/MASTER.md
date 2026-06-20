@@ -41,12 +41,12 @@
 
 | Phase | Milestone | GitHub | 任务数 | 状态 |
 |------|------|------|:-----:|:----:|
-| P1 | Foundation + Handshake | [M1]() | 10 | ⬜ |
-| P2 | Linux Metrics + Zero-Alloc | [M2]() | 12 | ⬜ |
-| P3 | Protocol FSM + Fallback | [M3]() | 7 | ⬜ |
-| P4 | Cross-Platform + GPU | [M4]() | 7 | ⬜ |
-| P5 | Terminal + Ping + Tools | [M5]() | 9 | ⬜ |
-| P6 | Polish + Packaging | [M6]() | 6 | ⬜ |
+| P1 | Foundation + Handshake | [M1](https://github.com/DeliciousBuding/komari-agent-rs/milestone/1) | 10 (#1-#10) | ⬜ |
+| P2 | Linux Metrics + Zero-Alloc | [M2](https://github.com/DeliciousBuding/komari-agent-rs/milestone/2) | 12 (#11-#22) | ⬜ |
+| P3 | Protocol FSM + Fallback | [M3](https://github.com/DeliciousBuding/komari-agent-rs/milestone/3) | 7 (#23-#29) | ⬜ |
+| P4 | Cross-Platform + GPU | [M4](https://github.com/DeliciousBuding/komari-agent-rs/milestone/4) | 7 (#30-#36) | ⬜ |
+| P5 | Terminal + Ping + Tools | [M5](https://github.com/DeliciousBuding/komari-agent-rs/milestone/5) | 9 (#37-#45) | ⬜ |
+| P6 | Polish + Packaging | [M6](https://github.com/DeliciousBuding/komari-agent-rs/milestone/6) | 6 (#46-#51) | ⬜ |
 | **Total** | | | **51** | |
 
 ## 快速状态命令
