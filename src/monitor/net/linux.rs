@@ -44,7 +44,7 @@ impl NetInfo {
 ///
 /// Interface names are stored inline as `[u8; 16]`.  A single timestamp covers
 /// the whole snapshot — all interfaces are sampled atomically from `/proc/net/dev`.
-pub(crate) struct PrevNetSnapshot {
+pub struct PrevNetSnapshot {
     names: [[u8; 16]; MAX_NETWORKS],
     name_lens: [u8; MAX_NETWORKS],
     rx: [u64; MAX_NETWORKS],

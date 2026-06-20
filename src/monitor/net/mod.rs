@@ -5,7 +5,10 @@
 //! first call to [`update`](Delta::update) the return value is 0 — there is
 //! no previous sample to compute a delta from.
 
-pub(crate) mod linux;
+pub mod linux;
+
+#[allow(unused_imports)]
+pub use linux::{collect, NetInfo, PrevNetSnapshot};
 
 use std::time::Instant;
 
