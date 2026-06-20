@@ -6,6 +6,8 @@ pub mod linux;
 pub mod windows;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "freebsd")]
+pub mod freebsd;
 
 #[cfg(target_os = "linux")]
 pub use linux::{collect_process_count, MetricErr};
@@ -13,12 +15,14 @@ pub use linux::{collect_process_count, MetricErr};
 pub use windows::collect_process_count;
 #[cfg(target_os = "macos")]
 pub use macos::{collect_process_count, MetricErr};
+#[cfg(target_os = "freebsd")]
+pub use freebsd::{collect_process_count, MetricErr};
 
-// ── Stub for unsupported platforms (FreeBSD, etc.) ──────────────────────────
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+// ── Stub for unsupported platforms ──────────────────────────────────────────
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
 pub use stub::{collect_process_count, MetricErr};
 
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
 mod stub {
     use std::io;
 

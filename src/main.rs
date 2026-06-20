@@ -2,6 +2,7 @@ mod arena;
 mod config;
 mod crypto;
 mod dns;
+mod gzip;
 mod http;
 mod json;
 mod monitor;
@@ -9,6 +10,12 @@ mod protocol;
 mod server;
 mod tls;
 mod ws;
+
+#[cfg(feature = "terminal")]
+mod terminal;
+
+#[cfg(feature = "self-update")]
+mod update;
 
 use std::env;
 use std::process;

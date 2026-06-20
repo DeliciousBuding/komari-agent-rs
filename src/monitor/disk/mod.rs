@@ -6,6 +6,8 @@ pub mod linux;
 pub mod windows;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "freebsd")]
+pub mod freebsd;
 
 #[cfg(target_os = "linux")]
 pub use linux::{collect, aggregate, DiskInfo};
@@ -13,12 +15,14 @@ pub use linux::{collect, aggregate, DiskInfo};
 pub use windows::{collect, aggregate};
 #[cfg(target_os = "macos")]
 pub use macos::{collect, aggregate, DiskInfo};
+#[cfg(target_os = "freebsd")]
+pub use freebsd::{collect, aggregate, DiskInfo};
 
-// ── Stub for unsupported platforms (FreeBSD, etc.) ──────────────────────────
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+// ── Stub for unsupported platforms ──────────────────────────────────────────
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
 pub use stub::{collect, aggregate, DiskInfo};
 
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
 mod stub {
     use crate::arena::{SmallVec, MAX_DISKS};
     use crate::config::Config;

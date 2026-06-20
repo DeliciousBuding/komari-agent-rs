@@ -7,6 +7,8 @@ pub mod linux;
 pub mod windows;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "freebsd")]
+pub mod freebsd;
 
 #[cfg(target_os = "linux")]
 pub use linux::{collect_cpu, CpuInfo, MetricErr, PrevCpu};
@@ -14,12 +16,14 @@ pub use linux::{collect_cpu, CpuInfo, MetricErr, PrevCpu};
 pub use windows::{collect_cpu, CpuInfo, PrevCpu};
 #[cfg(target_os = "macos")]
 pub use macos::{collect_cpu, CpuInfo, MetricErr, PrevCpu};
+#[cfg(target_os = "freebsd")]
+pub use freebsd::{collect_cpu, CpuInfo, MetricErr, PrevCpu};
 
-// ── Stub for unsupported platforms (FreeBSD, etc.) ──────────────────────────
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+// ── Stub for unsupported platforms ──────────────────────────────────────────
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
 pub use stub::{collect_cpu, CpuInfo, PrevCpu};
 
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos", target_os = "freebsd")))]
 mod stub {
     use crate::arena::ScratchArena;
     use std::io;
