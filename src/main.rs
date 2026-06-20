@@ -1,24 +1,34 @@
-// komari-agent-rs — featherweight Komari monitoring agent.
-//
-// Foundation phase (M1): all spine modules declared but not yet wired.
-// `#[allow(dead_code)]` on each module is intentional — these are
-// foundation modules whose public API will be consumed in later phases.
-
-#[allow(dead_code)]
 mod arena;
-
-#[allow(dead_code)]
 mod config;
-
-#[allow(dead_code)]
 mod crypto;
-
-#[allow(dead_code)]
+mod dns;
+mod http;
 mod json;
-
-#[allow(dead_code)]
+mod monitor;
 mod protocol;
+mod server;
+mod tls;
+mod ws;
+
+use std::env;
+use std::process;
 
 fn main() {
-    // M1: Foundation + Handshake — entry point placeholder
+    let args: Vec<String> = env::args().collect();
+    let mut config = config::Config::default();
+
+    if let Err(e) = config::parse_args(&mut config, &args) {
+        eprintln!("Error parsing arguments: {:?}", e);
+        eprintln!("Usage: komari-agent --endpoint <url> --token <token> [options]");
+        process::exit(1);
+    }
+
+    config::load_env(&mut config);
+
+    if let Err(e) = config::validate(&config) {
+        eprintln!("Configuration error: {:?}", e);
+        process::exit(1);
+    }
+
+    server::run(&config);
 }

@@ -31,10 +31,7 @@ pub enum ConfigErr {
     /// The config file path does not exist.
     FileNotFound(String),
     /// The config file could not be read.
-    FileReadError {
-        path: String,
-        error: String,
-    },
+    FileReadError { path: String, error: String },
     /// The config file contains invalid JSON.
     JsonError(String),
     /// Post-load validation failed (e.g. missing required fields).
@@ -76,19 +73,19 @@ pub struct Config {
     pub token: String,    // AGENT_TOKEN,    --token / -t
 
     // -- Timing --
-    pub interval: f64,             // AGENT_INTERVAL,             --interval / -i,          default 1.0
+    pub interval: f64, // AGENT_INTERVAL,             --interval / -i,          default 1.0
     pub info_report_interval: u64, // AGENT_INFO_REPORT_INTERVAL, --info-report-interval,   default 5 (min)
-    pub reconnect_interval: u64,   // AGENT_RECONNECT_INTERVAL,   --reconnect-interval / -c, default 5 (sec)
-    pub max_retries: u64,          // AGENT_MAX_RETRIES,          --max-retries / -r,       default 10
+    pub reconnect_interval: u64, // AGENT_RECONNECT_INTERVAL,   --reconnect-interval / -c, default 5 (sec)
+    pub max_retries: u64,        // AGENT_MAX_RETRIES,          --max-retries / -r,       default 10
 
     // -- Feature toggles --
-    pub disable_web_ssh: bool,    // AGENT_DISABLE_WEB_SSH,    --disable-web-ssh,         default true
+    pub disable_web_ssh: bool, // AGENT_DISABLE_WEB_SSH,    --disable-web-ssh,         default true
     pub disable_auto_update: bool, // AGENT_DISABLE_AUTO_UPDATE, --disable-auto-update,     default true
     pub disable_compression: bool, // AGENT_DISABLE_COMPRESSION, --disable-compression,     default false
-    pub enable_gpu: bool,          // AGENT_ENABLE_GPU,          --gpu,                     default false
-    pub ignore_unsafe_cert: bool,  // AGENT_IGNORE_UNSAFE_CERT,  --ignore-unsafe-cert / -u, default false
-    pub debug_log: bool,           // AGENT_DEBUG_LOG,           --debug-log,               default false
-    pub show_warning: bool,        // AGENT_SHOW_WARNING,        --show-warning,            default false
+    pub enable_gpu: bool, // AGENT_ENABLE_GPU,          --gpu,                     default false
+    pub ignore_unsafe_cert: bool, // AGENT_IGNORE_UNSAFE_CERT,  --ignore-unsafe-cert / -u, default false
+    pub debug_log: bool, // AGENT_DEBUG_LOG,           --debug-log,               default false
+    pub show_warning: bool, // AGENT_SHOW_WARNING,        --show-warning,            default false
     pub get_ip_addr_from_nic: bool, // AGENT_GET_IP_ADDR_FROM_NIC, --get-ip-addr-from-nic,  default false
     pub memory_include_cache: bool, // AGENT_MEMORY_INCLUDE_CACHE, --memory-include-cache,  default false
     pub memory_report_raw_used: bool, // AGENT_MEMORY_REPORT_RAW_USED, --memory-report-raw-used / --memory-exclude-bcf, default false
@@ -99,24 +96,24 @@ pub struct Config {
     pub prefer_ip_version: String, // AGENT_PREFER_IP_VERSION, --prefer-ip-version,       default ""
     pub custom_ipv4: String,       // AGENT_CUSTOM_IPV4,       --custom-ipv4,             default ""
     pub custom_ipv6: String,       // AGENT_CUSTOM_IPV6,       --custom-ipv6,             default ""
-    pub custom_dns: Vec<String>,   // AGENT_CUSTOM_DNS,        --custom-dns,              default [] (comma-sep)
+    pub custom_dns: Vec<String>, // AGENT_CUSTOM_DNS,        --custom-dns,              default [] (comma-sep)
 
     // -- Cloudflare Access --
-    pub cf_access_client_id: String,     // AGENT_CF_ACCESS_CLIENT_ID,     --cf-access-client-id,     default ""
+    pub cf_access_client_id: String, // AGENT_CF_ACCESS_CLIENT_ID,     --cf-access-client-id,     default ""
     pub cf_access_client_secret: String, // AGENT_CF_ACCESS_CLIENT_SECRET, --cf-access-client-secret, default ""
 
     // -- Lists (Go uses comma/semicolon-separated strings; we store as Vec) --
-    pub include_nics: Vec<String>,        // AGENT_INCLUDE_NICS,        --include-nics,        default [] (comma-sep)
-    pub exclude_nics: Vec<String>,        // AGENT_EXCLUDE_NICS,        --exclude-nics,        default [] (comma-sep)
+    pub include_nics: Vec<String>, // AGENT_INCLUDE_NICS,        --include-nics,        default [] (comma-sep)
+    pub exclude_nics: Vec<String>, // AGENT_EXCLUDE_NICS,        --exclude-nics,        default [] (comma-sep)
     pub include_mountpoints: Vec<String>, // AGENT_INCLUDE_MOUNTPOINTS, --include-mountpoints, default [] (semicolon-sep)
     pub exclude_mountpoints: Vec<String>, // AGENT_EXCLUDE_MOUNTPOINTS, --exclude-mountpoints, default [] (semicolon-sep)
 
     // -- Other --
-    pub protocol_version: u8,     // AGENT_PROTOCOL_VERSION, --protocol-version,       default 2
-    pub month_rotate: u8,         // AGENT_MONTH_ROTATE,     --month-rotate,           default 0
+    pub protocol_version: u8, // AGENT_PROTOCOL_VERSION, --protocol-version,       default 2
+    pub month_rotate: u8,     // AGENT_MONTH_ROTATE,     --month-rotate,           default 0
     pub auto_discovery_key: String, // AGENT_AUTO_DISCOVERY_KEY, --auto-discovery,     default ""
-    pub host_proc: String,        // HOST_PROC,              --host-proc,              default ""
-    pub config_file: String,      // AGENT_CONFIG_FILE,      --config,                 default ""
+    pub host_proc: String,    // HOST_PROC,              --host-proc,              default ""
+    pub config_file: String,  // AGENT_CONFIG_FILE,      --config,                 default ""
 }
 
 // ============================================================================
@@ -316,49 +313,45 @@ pub fn parse_args(config: &mut Config, args: &[String]) -> Result<(), ConfigErr>
 }
 
 /// Dispatch a long flag name (e.g. "endpoint", "disable-web-ssh") with an optional value.
-fn apply_long_flag(
-    config: &mut Config,
-    name: &str,
-    val: Option<&str>,
-) -> Result<(), ConfigErr> {
+fn apply_long_flag(config: &mut Config, name: &str, val: Option<&str>) -> Result<(), ConfigErr> {
     match name {
         // -- Required strings
         "endpoint" => config.endpoint = require_val("--endpoint", val)?.to_string(),
         "token" => config.token = require_val("--token", val)?.to_string(),
 
         // -- f64
-        "interval" => {
-            config.interval = parse_f64("--interval", require_val("--interval", val)?)?
-        }
+        "interval" => config.interval = parse_f64("--interval", require_val("--interval", val)?)?,
 
         // -- u64
         "info-report-interval" => {
-            config.info_report_interval =
-                parse_u64("--info-report-interval", require_val("--info-report-interval", val)?)?
+            config.info_report_interval = parse_u64(
+                "--info-report-interval",
+                require_val("--info-report-interval", val)?,
+            )?
         }
         "reconnect-interval" => {
-            config.reconnect_interval =
-                parse_u64("--reconnect-interval", require_val("--reconnect-interval", val)?)?
+            config.reconnect_interval = parse_u64(
+                "--reconnect-interval",
+                require_val("--reconnect-interval", val)?,
+            )?
         }
         "max-retries" => {
-            config.max_retries =
-                parse_u64("--max-retries", require_val("--max-retries", val)?)?
+            config.max_retries = parse_u64("--max-retries", require_val("--max-retries", val)?)?
         }
 
         // -- u8
         "protocol-version" => {
-            config.protocol_version =
-                parse_u8("--protocol-version", require_val("--protocol-version", val)?)?
+            config.protocol_version = parse_u8(
+                "--protocol-version",
+                require_val("--protocol-version", val)?,
+            )?
         }
         "month-rotate" => {
-            config.month_rotate =
-                parse_u8("--month-rotate", require_val("--month-rotate", val)?)?
+            config.month_rotate = parse_u8("--month-rotate", require_val("--month-rotate", val)?)?
         }
 
         // -- Bool flags (--flag → true, --flag=value → parsed)
-        "disable-web-ssh" => {
-            config.disable_web_ssh = parse_bool_opt("--disable-web-ssh", val)?
-        }
+        "disable-web-ssh" => config.disable_web_ssh = parse_bool_opt("--disable-web-ssh", val)?,
         "disable-auto-update" => {
             config.disable_auto_update = parse_bool_opt("--disable-auto-update", val)?
         }
@@ -378,59 +371,39 @@ fn apply_long_flag(
             config.memory_include_cache = parse_bool_opt("--memory-include-cache", val)?
         }
         "memory-report-raw-used" | "memory-exclude-bcf" => {
-            config.memory_report_raw_used =
-                parse_bool_opt("--memory-report-raw-used", val)?
+            config.memory_report_raw_used = parse_bool_opt("--memory-report-raw-used", val)?
         }
 
         // -- Strings with defaults
         "prefer-ip-version" => {
-            config.prefer_ip_version =
-                require_val("--prefer-ip-version", val)?.to_string()
+            config.prefer_ip_version = require_val("--prefer-ip-version", val)?.to_string()
         }
-        "custom-ipv4" => {
-            config.custom_ipv4 = require_val("--custom-ipv4", val)?.to_string()
-        }
-        "custom-ipv6" => {
-            config.custom_ipv6 = require_val("--custom-ipv6", val)?.to_string()
-        }
+        "custom-ipv4" => config.custom_ipv4 = require_val("--custom-ipv4", val)?.to_string(),
+        "custom-ipv6" => config.custom_ipv6 = require_val("--custom-ipv6", val)?.to_string(),
         "cf-access-client-id" => {
-            config.cf_access_client_id =
-                require_val("--cf-access-client-id", val)?.to_string()
+            config.cf_access_client_id = require_val("--cf-access-client-id", val)?.to_string()
         }
         "cf-access-client-secret" => {
             config.cf_access_client_secret =
                 require_val("--cf-access-client-secret", val)?.to_string()
         }
         "auto-discovery" => {
-            config.auto_discovery_key =
-                require_val("--auto-discovery", val)?.to_string()
+            config.auto_discovery_key = require_val("--auto-discovery", val)?.to_string()
         }
-        "host-proc" => {
-            config.host_proc = require_val("--host-proc", val)?.to_string()
-        }
-        "config" => {
-            config.config_file = require_val("--config", val)?.to_string()
-        }
+        "host-proc" => config.host_proc = require_val("--host-proc", val)?.to_string(),
+        "config" => config.config_file = require_val("--config", val)?.to_string(),
 
         // -- Vec<String> fields (comma-separated)
-        "custom-dns" => {
-            config.custom_dns = split_comma(require_val("--custom-dns", val)?)
-        }
-        "include-nics" => {
-            config.include_nics = split_comma(require_val("--include-nics", val)?)
-        }
-        "exclude-nics" => {
-            config.exclude_nics = split_comma(require_val("--exclude-nics", val)?)
-        }
+        "custom-dns" => config.custom_dns = split_comma(require_val("--custom-dns", val)?),
+        "include-nics" => config.include_nics = split_comma(require_val("--include-nics", val)?),
+        "exclude-nics" => config.exclude_nics = split_comma(require_val("--exclude-nics", val)?),
 
         // -- Vec<String> fields (semicolon-separated — matching Go)
         "include-mountpoints" | "include-mountpoint" => {
-            config.include_mountpoints =
-                split_semicolon(require_val(name, val)?)
+            config.include_mountpoints = split_semicolon(require_val(name, val)?)
         }
         "exclude-mountpoints" | "exclude-mountpoint" => {
-            config.exclude_mountpoints =
-                split_semicolon(require_val(name, val)?)
+            config.exclude_mountpoints = split_semicolon(require_val(name, val)?)
         }
 
         // Unknown flags: silently ignored (Go UnknownFlags = true)
@@ -818,18 +791,11 @@ fn tokenize_string(input: &[u8], pos: usize) -> Result<(String, usize), ConfigEr
                         let hex = std::str::from_utf8(&input[i + 1..i + 5]).map_err(|_| {
                             ConfigErr::JsonError("invalid UTF-8 in \\u escape".to_string())
                         })?;
-                        let codepoint =
-                            u32::from_str_radix(hex, 16).map_err(|_| {
-                                ConfigErr::JsonError(format!(
-                                    "invalid \\u escape: \\u{}",
-                                    hex
-                                ))
-                            })?;
+                        let codepoint = u32::from_str_radix(hex, 16).map_err(|_| {
+                            ConfigErr::JsonError(format!("invalid \\u escape: \\u{}", hex))
+                        })?;
                         let c = char::from_u32(codepoint).ok_or_else(|| {
-                            ConfigErr::JsonError(format!(
-                                "invalid unicode codepoint: \\u{}",
-                                hex
-                            ))
+                            ConfigErr::JsonError(format!("invalid unicode codepoint: \\u{}", hex))
                         })?;
                         result.push(c);
                         i += 4;
@@ -907,13 +873,10 @@ fn tokenize_number(input: &[u8], pos: usize) -> Result<(f64, usize), ConfigErr> 
         }
     }
 
-    let num_str =
-        std::str::from_utf8(&input[pos..i]).map_err(|_| {
-            ConfigErr::JsonError("invalid UTF-8 in number".to_string())
-        })?;
-    let n = f64::from_str(num_str).map_err(|_| {
-        ConfigErr::JsonError(format!("invalid number: {}", num_str))
-    })?;
+    let num_str = std::str::from_utf8(&input[pos..i])
+        .map_err(|_| ConfigErr::JsonError("invalid UTF-8 in number".to_string()))?;
+    let n = f64::from_str(num_str)
+        .map_err(|_| ConfigErr::JsonError(format!("invalid number: {}", num_str)))?;
 
     Ok((n, i))
 }
@@ -934,9 +897,10 @@ impl Parser {
     }
 
     fn advance(&mut self) -> Result<&Token, ConfigErr> {
-        let tok = self.tokens.get(self.pos).ok_or_else(|| {
-            ConfigErr::JsonError("unexpected end of JSON input".to_string())
-        })?;
+        let tok = self
+            .tokens
+            .get(self.pos)
+            .ok_or_else(|| ConfigErr::JsonError("unexpected end of JSON input".to_string()))?;
         self.pos += 1;
         Ok(tok)
     }
@@ -993,9 +957,7 @@ impl Parser {
                 let arr = self.parse_array()?;
                 Ok(JsonValue::Array(arr))
             }
-            None => Err(ConfigErr::JsonError(
-                "unexpected end of input".to_string(),
-            )),
+            None => Err(ConfigErr::JsonError("unexpected end of input".to_string())),
             _ => Err(ConfigErr::JsonError(format!(
                 "unexpected token: {:?}",
                 self.peek()
@@ -1088,11 +1050,10 @@ impl Parser {
 // ============================================================================
 
 pub fn load_json_config(config: &mut Config, path: &str) -> Result<(), ConfigErr> {
-    let bytes =
-        fs::read(path).map_err(|e| ConfigErr::FileReadError {
-            path: path.to_string(),
-            error: e.to_string(),
-        })?;
+    let bytes = fs::read(path).map_err(|e| ConfigErr::FileReadError {
+        path: path.to_string(),
+        error: e.to_string(),
+    })?;
 
     let tokens = tokenize(&bytes)?;
     let mut parser = Parser::new(tokens);
@@ -1338,12 +1299,7 @@ mod tests {
     #[test]
     fn test_parse_endpoint_and_token() {
         let mut c = Config::default();
-        let args = args_vec(&[
-            "--endpoint",
-            "https://example.com",
-            "--token",
-            "secret123",
-        ]);
+        let args = args_vec(&["--endpoint", "https://example.com", "--token", "secret123"]);
         parse_args(&mut c, &args).unwrap();
         assert_eq!(c.endpoint, "https://example.com");
         assert_eq!(c.token, "secret123");
@@ -1362,12 +1318,18 @@ mod tests {
     fn test_parse_short_flags() {
         let mut c = Config::default();
         let args = args_vec(&[
-            "-e", "https://e.com",
-            "-t", "tok",
-            "-i", "2.5",
-            "-u", "true",
-            "-r", "5",
-            "-c", "10",
+            "-e",
+            "https://e.com",
+            "-t",
+            "tok",
+            "-i",
+            "2.5",
+            "-u",
+            "true",
+            "-r",
+            "5",
+            "-c",
+            "10",
         ]);
         parse_args(&mut c, &args).unwrap();
         assert_eq!(c.endpoint, "https://e.com");
@@ -1384,8 +1346,10 @@ mod tests {
         // disable-web-ssh defaults to true; --disable-web-ssh without value → true
         // gpu defaults to false; --gpu without value → true
         let args = args_vec(&[
-            "--endpoint", "x",
-            "--token", "x",
+            "--endpoint",
+            "x",
+            "--token",
+            "x",
             "--gpu",
             "--debug-log",
             "--disable-compression=true",
@@ -1402,11 +1366,16 @@ mod tests {
     fn test_parse_vec_fields() {
         let mut c = Config::default();
         let args = args_vec(&[
-            "--endpoint", "x",
-            "--token", "x",
-            "--custom-dns", "8.8.8.8,1.1.1.1",
-            "--include-nics", "eth0, eth1",
-            "--include-mountpoints", "/mnt/data;/mnt/backup",
+            "--endpoint",
+            "x",
+            "--token",
+            "x",
+            "--custom-dns",
+            "8.8.8.8,1.1.1.1",
+            "--include-nics",
+            "eth0, eth1",
+            "--include-mountpoints",
+            "/mnt/data;/mnt/backup",
         ]);
         parse_args(&mut c, &args).unwrap();
         assert_eq!(c.custom_dns, vec!["8.8.8.8", "1.1.1.1"]);

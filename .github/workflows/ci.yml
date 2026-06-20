@@ -1,0 +1,23 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings 2>&1 || true
+  build-linux-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - run: ls -lh target/x86_64-unknown-linux-musl/release/komari-agent-rs

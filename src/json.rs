@@ -23,46 +23,46 @@ pub struct JsonErr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     // --- System ---
-    Cpu,          // "cpu"
-    Ram,          // "ram"
-    Disk,         // "disk"
-    Net,          // "network"
-    Gpu,          // "gpu"
-    Load,         // "load"
-    Connections,  // "connections"
-    Process,      // "process"
-    Uptime,       // "uptime"
-    Os,           // "os"
-    Arch,         // "arch"
+    Cpu,         // "cpu"
+    Ram,         // "ram"
+    Disk,        // "disk"
+    Net,         // "network"
+    Gpu,         // "gpu"
+    Load,        // "load"
+    Connections, // "connections"
+    Process,     // "process"
+    Uptime,      // "uptime"
+    Os,          // "os"
+    Arch,        // "arch"
 
     // --- Protocol ---
-    Version,      // "version"
-    Token,        // "token"
-    MessageType,  // "type"
-    Timestamp,    // "timestamp"
-    Count,        // "count"
-    Name,         // "name"
-    Error,        // "error"
-    Message,      // "message"
-    Code,         // "code"
-    Data,         // "data"
-    Id,           // "id"
+    Version,     // "version"
+    Token,       // "token"
+    MessageType, // "type"
+    Timestamp,   // "timestamp"
+    Count,       // "count"
+    Name,        // "name"
+    Error,       // "error"
+    Message,     // "message"
+    Code,        // "code"
+    Data,        // "data"
+    Id,          // "id"
 
     // --- Metrics ---
-    Usage,        // "usage"
-    Total,        // "total"
-    Used,         // "used"
-    Up,           // "up"
-    Down,         // "down"
-    TotalUp,      // "totalUp"
-    TotalDown,    // "totalDown"
-    Swap,         // "swap"
-    Tcp,          // "tcp"
-    Udp,          // "udp"
-    Load1,        // "load1"
-    Load5,        // "load5"
-    Load15,       // "load15"
-    Cores,        // "cores"
+    Usage,     // "usage"
+    Total,     // "total"
+    Used,      // "used"
+    Up,        // "up"
+    Down,      // "down"
+    TotalUp,   // "totalUp"
+    TotalDown, // "totalDown"
+    Swap,      // "swap"
+    Tcp,       // "tcp"
+    Udp,       // "udp"
+    Load1,     // "load1"
+    Load5,     // "load5"
+    Load15,    // "load15"
+    Cores,     // "cores"
 }
 
 impl Field {
@@ -70,42 +70,42 @@ impl Field {
     #[inline]
     pub const fn as_bytes(&self) -> &'static [u8] {
         match self {
-            Field::Cpu          => b"cpu",
-            Field::Ram          => b"ram",
-            Field::Disk         => b"disk",
-            Field::Net          => b"network",
-            Field::Gpu          => b"gpu",
-            Field::Load         => b"load",
-            Field::Connections  => b"connections",
-            Field::Process      => b"process",
-            Field::Uptime       => b"uptime",
-            Field::Os           => b"os",
-            Field::Arch         => b"arch",
-            Field::Version      => b"version",
-            Field::Token        => b"token",
-            Field::MessageType  => b"type",
-            Field::Timestamp    => b"timestamp",
-            Field::Count        => b"count",
-            Field::Name         => b"name",
-            Field::Error        => b"error",
-            Field::Message      => b"message",
-            Field::Code         => b"code",
-            Field::Data         => b"data",
-            Field::Id           => b"id",
-            Field::Usage        => b"usage",
-            Field::Total        => b"total",
-            Field::Used         => b"used",
-            Field::Up           => b"up",
-            Field::Down         => b"down",
-            Field::TotalUp      => b"totalUp",
-            Field::TotalDown    => b"totalDown",
-            Field::Swap         => b"swap",
-            Field::Tcp          => b"tcp",
-            Field::Udp          => b"udp",
-            Field::Load1        => b"load1",
-            Field::Load5        => b"load5",
-            Field::Load15       => b"load15",
-            Field::Cores        => b"cores",
+            Field::Cpu => b"cpu",
+            Field::Ram => b"ram",
+            Field::Disk => b"disk",
+            Field::Net => b"network",
+            Field::Gpu => b"gpu",
+            Field::Load => b"load",
+            Field::Connections => b"connections",
+            Field::Process => b"process",
+            Field::Uptime => b"uptime",
+            Field::Os => b"os",
+            Field::Arch => b"arch",
+            Field::Version => b"version",
+            Field::Token => b"token",
+            Field::MessageType => b"type",
+            Field::Timestamp => b"timestamp",
+            Field::Count => b"count",
+            Field::Name => b"name",
+            Field::Error => b"error",
+            Field::Message => b"message",
+            Field::Code => b"code",
+            Field::Data => b"data",
+            Field::Id => b"id",
+            Field::Usage => b"usage",
+            Field::Total => b"total",
+            Field::Used => b"used",
+            Field::Up => b"up",
+            Field::Down => b"down",
+            Field::TotalUp => b"totalUp",
+            Field::TotalDown => b"totalDown",
+            Field::Swap => b"swap",
+            Field::Tcp => b"tcp",
+            Field::Udp => b"udp",
+            Field::Load1 => b"load1",
+            Field::Load5 => b"load5",
+            Field::Load15 => b"load15",
+            Field::Cores => b"cores",
         }
     }
 }
@@ -320,6 +320,16 @@ impl<'a> JsonBuf<'a> {
         }
     }
 
+    /// Begin a named object field: writes `"field_name":{` and pushes a new
+    /// comma-tracking level for the object contents.  Pair with `end_obj()`.
+    pub fn begin_obj_field(&mut self, field: Field) -> Result<(), JsonErr> {
+        self.comma()?;
+        self.push_byte(b'"')?;
+        self.push_bytes(field.as_bytes())?;
+        self.push_bytes(b"\":{")?;
+        self.push_depth()
+    }
+
     /// Begin a named array field: writes `"field_name":[` and pushes a new
     /// comma-tracking level for the array contents.  Pair with `end_arr()`.
     pub fn begin_arr_field(&mut self, field: Field) -> Result<(), JsonErr> {
@@ -359,7 +369,7 @@ pub fn push_json_str(buf: &mut JsonBuf, s: &str) -> Result<(), JsonErr> {
     buf.push_byte(b'"')?;
     for &b in s.as_bytes() {
         match b {
-            b'"'  => buf.push_bytes(b"\\\"")?,
+            b'"' => buf.push_bytes(b"\\\"")?,
             b'\\' => buf.push_bytes(b"\\\\")?,
             b'\n' => buf.push_bytes(b"\\n")?,
             b'\r' => buf.push_bytes(b"\\r")?,
