@@ -166,9 +166,7 @@ fn bypass_list_matches(target_host: &str, no_proxy_list: &str) -> bool {
 
     // Normalise the host: strip a bracketed IPv6 form and any :port suffix.
     // We keep the original for domain matching but also try parsing as IP.
-    let host = target_host
-        .trim_start_matches('[')
-        .trim_end_matches(']');
+    let host = target_host.trim_start_matches('[').trim_end_matches(']');
     let host = host.rsplit_once(':').map_or(host, |(h, p)| {
         // Only strip a trailing :port if the remainder parses as u16; this
         // avoids mangling a bare IPv6 address.
@@ -199,9 +197,10 @@ fn host_matches_entry(host: &str, host_ip: Option<IpAddr>, entry: &str) -> bool 
     if let Some(slash) = entry.find('/') {
         if let Some(ip) = host_ip {
             if let Ok(net) = entry[..slash].parse::<IpAddr>() {
-                let prefix: u8 = entry[slash + 1..]
-                    .parse()
-                    .unwrap_or(if net.is_ipv4() { 32 } else { 128 });
+                let prefix: u8 =
+                    entry[slash + 1..]
+                        .parse()
+                        .unwrap_or(if net.is_ipv4() { 32 } else { 128 });
                 return ip_in_cidr(ip, net, prefix);
             }
         }
@@ -319,7 +318,10 @@ pub fn parse_proxy_url(proxy: &str) -> Result<ProxySpec, std::io::Error> {
     // [::1]:1080 or [::1].
     let (host, port) = split_host_port(hostport, scheme.default_port())?;
 
-    let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
     if host.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -346,10 +348,7 @@ impl ProxyScheme {
 
 /// Split `host:port` (or bracketed IPv6) using `default_port` when absent.
 /// Returns an error when a `:port` suffix is present but does not parse.
-fn split_host_port(
-    hostport: &str,
-    default_port: u16,
-) -> Result<(String, u16), std::io::Error> {
+fn split_host_port(hostport: &str, default_port: u16) -> Result<(String, u16), std::io::Error> {
     // Bracketed IPv6: [::1] or [::1]:1080
     if hostport.starts_with('[') {
         if let Some(end) = hostport.find(']') {
@@ -449,9 +448,9 @@ pub fn establish_tunnel(
 fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, NetErr> {
     let addr_str = format!("{host}:{port}");
     let mut addrs = addr_str.to_socket_addrs()?;
-    let sock_addr = addrs.next().ok_or_else(|| {
-        NetErr::Proxy(format!("proxy DNS returned no addresses: {addr_str}"))
-    })?;
+    let sock_addr = addrs
+        .next()
+        .ok_or_else(|| NetErr::Proxy(format!("proxy DNS returned no addresses: {addr_str}")))?;
     let sock = TcpStream::connect_timeout(&sock_addr, timeout)?;
     sock.set_read_timeout(Some(timeout))?;
     sock.set_write_timeout(Some(timeout))?;
@@ -560,8 +559,7 @@ fn socks5_handshake(
         0x02 => {
             // Username/password sub-negotiation (RFC 1929).
             let (user, pass) = auth.expect("server picked user/pass but none offered");
-            let mut req =
-                Vec::with_capacity(3 + user.len() + pass.len());
+            let mut req = Vec::with_capacity(3 + user.len() + pass.len());
             req.push(0x01);
             push_socks_field(&mut req, user.as_bytes());
             push_socks_field(&mut req, pass.as_bytes());
@@ -632,8 +630,8 @@ fn socks5_handshake(
     }
     // Drain the bound-address field so the stream is left at clean framing.
     let bnd_len = match head[3] {
-        0x01 => 4,        // IPv4
-        0x04 => 16,       // IPv6
+        0x01 => 4,  // IPv4
+        0x04 => 16, // IPv6
         0x03 => {
             let mut lenbuf = [0u8; 1];
             read_exact_proxy(sock, &mut lenbuf)?;
@@ -766,7 +764,8 @@ impl Dialer {
             return establish_tunnel(&proxy_url, host, port, timeout);
         }
 
-        let dial = crate::dns::make_dial_context(timeout, &self.prefer_ip_version, &self.custom_dns);
+        let dial =
+            crate::dns::make_dial_context(timeout, &self.prefer_ip_version, &self.custom_dns);
         let addr = format!("{host}:{port}");
         dial("tcp", &addr).map_err(NetErr::Dns)
     }
@@ -777,8 +776,7 @@ impl Dialer {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn base64_encode_var(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
     let mut i = 0;
     while i + 2 < input.len() {
@@ -1037,7 +1035,10 @@ mod tests {
     #[test]
     fn base64_userpass() {
         // "Aladdin:OpenSesame" — the RFC 2617 canonical example.
-        assert_eq!(base64_encode_var(b"Aladdin:OpenSesame"), "QWxhZGRpbjpPcGVuU2VzYW1l");
+        assert_eq!(
+            base64_encode_var(b"Aladdin:OpenSesame"),
+            "QWxhZGRpbjpPcGVuU2VzYW1l"
+        );
     }
 
     // ── ProxySpec default ports ───────────────────────────────────────────
