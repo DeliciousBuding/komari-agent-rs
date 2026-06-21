@@ -1,5 +1,13 @@
 [target.x86_64-unknown-linux-musl]
 rustflags = ["-C", "link-arg=-s"]
 
+[target.x86_64-unknown-freebsd]
+# libkvm.so (swap stats via kvm_getswapinfo in mem/freebsd.rs) has versioned
+# undefined references to libelf's elf_*@R1.0 symbols. A native FreeBSD ld
+# resolves them via libkvm.so's NEEDED entry, but the cross-toolchain's ld
+# (freebsd12 gcc 6.4.0) cannot. --allow-shlib-undefined lets the cross link
+# succeed; the symbols resolve at runtime on the real FreeBSD host.
+rustflags = ["-C", "link-arg=-Wl,--allow-shlib-undefined"]
+
 [target.x86_64-pc-windows-msvc]
 # Windows strip via profile
