@@ -29,6 +29,7 @@ fn main() {
     if let Err(e) = config::parse_args(&mut config, &args) {
         eprintln!("Error parsing arguments: {:?}", e);
         eprintln!("Usage: komari-agent --endpoint <url> --token <token> [options]");
+        eprintln!("Run 'komari-agent --help' for the full list of options.");
         process::exit(1);
     }
 

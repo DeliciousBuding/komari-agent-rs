@@ -262,11 +262,86 @@ fn split_semicolon(raw: &str) -> Vec<String> {
 //
 // Unknown flags are silently ignored (matching Go's UnknownFlags = true).
 
+/// Full `--help` text. Kept as a pure function (no I/O, no exit) so it can be
+/// unit-tested for completeness — `parse_args` prints it and exits on `-h`/`--help`.
+pub fn help_text() -> &'static str {
+    "komari-agent-rs — lightweight Rust Komari monitoring agent\n\
+     \n\
+     Usage:\n  \
+     komari-agent --endpoint <url> --token <token> [options]\n  \
+     komari-agent --config <file>                 [options]\n\
+     \n\
+     Required (unless --config provides them):\n  \
+     --endpoint <url>        Komari server URL (wss:// or https://), e.g. https://status.example.com\n  \
+     --token <token>         Client token from the Komari console\n\
+     \n\
+     Connection & protocol:\n  \
+     --config <file>                 JSON config file (highest priority; overrides flags + env)\n  \
+     --interval <sec>                Report interval in seconds (default 1.0)\n  \
+     --info-report-interval <sec>    basicInfo upload interval (default 5)\n  \
+     --reconnect-interval <sec>      Reconnect backoff (default 5)\n  \
+     --max-retries <n>               Max retries before downshift (default 5)\n  \
+     --protocol-version <1|2>        Force protocol version (default 2)\n  \
+     --http-only                     DPI/middlebox escape hatch: report over HTTP POST only, never WS\n  \
+     --ignore-unsafe-cert            Skip TLS certificate verification (insecure)\n\
+     \n\
+     Network / dialer:\n  \
+     --custom-dns <ip;ip>            Override resolver addresses\n  \
+     --prefer-ip-version <4|6>       Prefer IPv4 or IPv6 (Happy Eyeballs still races both)\n  \
+     --custom-ipv4 <ip>              Override reported public IPv4\n  \
+     --custom-ipv6 <ip>              Override reported public IPv6\n  \
+     --include-nics <name,name>      Only report these NICs\n  \
+     --exclude-nics <name,name>      Drop these NICs\n  \
+     --include-mountpoints <mp;mp>   Only report these mountpoints\n  \
+     --exclude-mountpoints <mp;mp>   Drop these mountpoints\n  \
+     --get-ip-addr-from-nic          Derive public IP from a NIC instead of an external service\n\
+     \n\
+     Metrics:\n  \
+     --gpu                           Enable GPU collector\n  \
+     --memory-include-cache          Include OS cache/buffers in memory usage\n  \
+     --memory-report-raw-used        Report raw used memory (alias: --memory-exclude-bcf)\n  \
+     --month-rotate <1-28>           Day of month network counters reset (default 1)\n\
+     \n\
+     Behavior:\n  \
+     --disable-web-ssh               Disable remote terminal (WebSSH)\n  \
+     --disable-auto-update           Disable GitHub Releases self-update\n  \
+     --disable-compression           Disable gzip (HTTP) and permessage-deflate (WS)\n  \
+     --debug-log                     Verbose debug logging\n  \
+     --show-warning                  Show non-fatal warnings\n  \
+     --host-proc <path>              Host /proc path (for container host mode)\n  \
+     --cf-access-client-id <id>      Cloudflare Access client ID\n  \
+     --cf-access-client-secret <sec> Cloudflare Access client secret\n  \
+     --auto-discovery <key>          Auto-discovery shared key\n\
+     \n\
+     Meta:\n  \
+     -h, --help                      Show this help and exit\n  \
+     -V, --version                   Show version and exit\n\
+     \n\
+     Environment: every flag has an AGENT_<NAME> equivalent (e.g. AGENT_HTTP_ONLY=1).\n\
+     Unknown flags are ignored (Go-compatible).\n"
+}
+
+/// `--version` text.
+pub fn version_text() -> String {
+    format!("komari-agent-rs {}", env!("CARGO_PKG_VERSION"))
+}
+
 pub fn parse_args(config: &mut Config, args: &[String]) -> Result<(), ConfigErr> {
     let mut i = 1; // skip program name (args[0])
 
     while i < args.len() {
         let arg = &args[i];
+
+        // Meta flags: handled before any value-flag logic so that e.g.
+        // `--help` is not mistaken for a value flag needing an argument.
+        if arg == "--help" || arg == "-h" {
+            println!("{}", help_text());
+            std::process::exit(0);
+        }
+        if arg == "--version" || arg == "-V" {
+            println!("{}", version_text());
+            std::process::exit(0);
+        }
 
         // -- terminates flag parsing
         if arg == "--" {
@@ -1289,6 +1364,43 @@ mod tests {
             .chain(args.iter().copied())
             .map(String::from)
             .collect()
+    }
+
+    #[test]
+    fn help_text_lists_key_flags() {
+        // Every user-facing flag must be discoverable from --help. This guards
+        // against adding a flag in apply_long_flag but forgetting help_text().
+        let h = help_text();
+        for flag in [
+            "--endpoint",
+            "--token",
+            "--config",
+            "--interval",
+            "--http-only",
+            "--protocol-version",
+            "--custom-dns",
+            "--prefer-ip-version",
+            "--gpu",
+            "--disable-auto-update",
+            "--disable-web-ssh",
+            "--disable-compression",
+            "--memory-include-cache",
+            "--month-rotate",
+            "--ignore-unsafe-cert",
+            "--include-nics",
+            "--exclude-nics",
+            "--include-mountpoints",
+            "-h, --help",
+            "-V, --version",
+            "AGENT_",
+        ] {
+            assert!(h.contains(flag), "help_text() missing {}", flag);
+        }
+    }
+
+    #[test]
+    fn version_text_has_package_version() {
+        assert!(version_text().contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]
