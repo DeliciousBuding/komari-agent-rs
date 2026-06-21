@@ -13,7 +13,7 @@
 # Download and run (Linux)
 curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-linux-amd64 -o komari-agent
 chmod +x komari-agent
-./komari-agent --token YOUR_TOKEN --endpoint wss://your-komari-server/ws
+./komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 ```
 
 One binary. No runtime deps. No OpenSSL.
@@ -72,7 +72,7 @@ The binary is **TLS-bound**: rustls + ring + webpki (~70%) is the irreducible co
 curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-linux-amd64 -o komari-agent
 chmod +x komari-agent
 sudo mv komari-agent /usr/local/bin/
-komari-agent --token YOUR_TOKEN --endpoint wss://your-server/ws
+komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 ```
 
 ### macOS
@@ -81,7 +81,7 @@ komari-agent --token YOUR_TOKEN --endpoint wss://your-server/ws
 curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-darwin-amd64 -o komari-agent
 chmod +x komari-agent
 sudo mv komari-agent /usr/local/bin/
-komari-agent --token YOUR_TOKEN --endpoint wss://your-server/ws
+komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 ```
 
 ### Windows
@@ -97,7 +97,7 @@ Invoke-WebRequest -Uri "https://github.com/DeliciousBuding/komari-agent-rs/relea
 fetch https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-freebsd-amd64 -o komari-agent
 chmod +x komari-agent
 mv komari-agent /usr/local/bin/
-komari-agent --token YOUR_TOKEN --endpoint wss://your-server/ws
+komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 ```
 
 ## Build from Source
@@ -125,22 +125,49 @@ cargo build --release --features self-update        # +Self-update
 
 ## Configuration
 
-| Flag | Env Var | Default | Description |
-|---|---|---|---|
-| `--token` | `KOMARI_TOKEN` | (required) | Agent authentication token |
-| `--endpoint` | `KOMARI_ENDPOINT` | `wss://127.0.0.1/ws` | Komari server WebSocket URL |
-| `--interval` | `KOMARI_INTERVAL` | `1` | Metrics reporting interval in seconds |
-| `--memory-mode` | `KOMARI_MEMORY_MODE` | `0` | Memory reporting: 0=default, 1=include-cache, 2=raw-used |
-| `--hostname` | `KOMARI_HOSTNAME` | auto | Override hostname |
-| `--config-file` | `KOMARI_CONFIG_FILE` | — | Path to JSON config file |
-| `--timeout` | `KOMARI_TIMEOUT` | `30` | Connection timeout in seconds |
-| `--retry` | `KOMARI_RETRY` | `3` | Max retry attempts |
-| `--disable-gpu` | `KOMARI_DISABLE_GPU` | `false` | Disable GPU detection |
-| `--disable-ping` | `KOMARI_DISABLE_PING` | `false` | Disable ping endpoint |
-| `--disable-terminal` | `KOMARI_DISABLE_TERMINAL` | `false` | Disable interactive terminal |
-| `--log-level` | `KOMARI_LOG_LEVEL` | `info` | Log verbosity: trace, debug, info, warn, error |
+Every option can be passed as a CLI flag, an `AGENT_*` environment variable, or a field in a JSON config file (`--config /path/to/config.json`). Precedence: CLI flags > env vars > config file.
 
-All flags can be set via environment variable or JSON config file. CLI args take highest precedence.
+### Core
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--endpoint` / `-e` | `AGENT_ENDPOINT` | — | Komari server base URL, e.g. `https://komari.example.com` (required) |
+| `--token` / `-t` | `AGENT_TOKEN` | — | Agent authentication token (required) |
+| `--config` | `AGENT_CONFIG_FILE` | — | Path to a JSON config file holding any of the options below |
+
+### Timing & protocol
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--interval` / `-i` | `AGENT_INTERVAL` | `1` | Metrics reporting interval (seconds) |
+| `--info-report-interval` | `AGENT_INFO_REPORT_INTERVAL` | `5` | Static basic-info refresh (minutes) |
+| `--reconnect-interval` / `-c` | `AGENT_RECONNECT_INTERVAL` | `5` | Reconnect base delay (seconds) |
+| `--max-retries` / `-r` | `AGENT_MAX_RETRIES` | `10` | Max reconnect attempts before giving up |
+| `--protocol-version` | `AGENT_PROTOCOL_VERSION` | `2` | `2` = JSON-RPC v2, `1` = v1 (auto-downgrades on rejection) |
+
+### Network
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--prefer-ip-version` | `AGENT_PREFER_IP_VERSION` | auto | `4` or `6` |
+| `--custom-dns` | `AGENT_CUSTOM_DNS` | — | Comma-separated custom DNS servers (e.g. `1.1.1.1,8.8.8.8`) |
+| `--include-nics` / `--exclude-nics` | `AGENT_INCLUDE_NICS` / `AGENT_EXCLUDE_NICS` | all | Comma-separated NIC description filters |
+| `--include-mountpoints` / `--exclude-mountpoints` | `AGENT_INCLUDE_MOUNTPOINTS` / `AGENT_EXCLUDE_MOUNTPOINTS` | all | Semicolon-separated mount-point filters |
+| `--ignore-unsafe-cert` / `-u` | `AGENT_IGNORE_UNSAFE_CERT` | `false` | Skip TLS certificate verification (insecure) |
+
+### Feature toggles
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--gpu` | `AGENT_ENABLE_GPU` | `false` | Enable GPU metrics (or build with `--features gpu-detection`) |
+| `--disable-web-ssh` | `AGENT_DISABLE_WEB_SSH` | `true` | Disable the web terminal (off by default) |
+| `--disable-auto-update` | `AGENT_DISABLE_AUTO_UPDATE` | `true` | Disable GitHub-Release self-update |
+| `--disable-compression` | `AGENT_DISABLE_COMPRESSION` | `false` | Disable WebSocket permessage-deflate |
+| `--memory-include-cache` | `AGENT_MEMORY_INCLUDE_CACHE` | `false` | Count filesystem cache as "used" memory |
+| `--memory-report-raw-used` | `AGENT_MEMORY_REPORT_RAW_USED` | `false` | Report raw `/proc/meminfo` MemUsed |
+| `--debug-log` | `AGENT_DEBUG_LOG` | `false` | Verbose debug logging |
+
+Outbound proxying is honoured via the standard `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment variables (HTTP CONNECT and SOCKS5 / SOCKS5h), with `NO_PROXY` bypass (domain / wildcard / CIDR / IP).
 
 ## Architecture
 
