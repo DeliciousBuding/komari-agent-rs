@@ -1,7 +1,5 @@
 // komari-agent-rs: monitor::connections — TCP/UDP connection counting.
 
-#![allow(unused_imports)]
-
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 #[cfg(target_os = "linux")]
