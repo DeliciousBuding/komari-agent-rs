@@ -110,7 +110,7 @@ struct IfData {
 #[repr(C)]
 struct IfAddrs {
     ifa_next: *mut IfAddrs,
-    ifa_name: *mut i8,
+    ifa_name: *mut core::ffi::c_char,
     ifa_flags: u32,
     _pad: u32,
     ifa_addr: *mut u8,

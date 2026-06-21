@@ -84,7 +84,7 @@ struct sockaddr_in6 {
 #[repr(C)]
 struct ifaddrs {
     ifa_next: *mut ifaddrs,
-    ifa_name: *mut i8,
+    ifa_name: *mut core::ffi::c_char,
     ifa_flags: u32,
     _pad: u32,
     ifa_addr: *mut sockaddr,

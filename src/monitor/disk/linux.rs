@@ -35,7 +35,7 @@ struct StatFs {
 }
 
 unsafe extern "C" {
-    fn statfs(path: *const i8, buf: *mut StatFs) -> i32;
+    fn statfs(path: *const core::ffi::c_char, buf: *mut StatFs) -> i32;
 }
 
 // ── DiskInfo ──────────────────────────────────────────────────────────────────
