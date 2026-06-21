@@ -59,24 +59,73 @@ impl PrevNetSnapshot {
 }
 
 // ── FFI: iphlpapi.dll — MIB_IF_ROW2 / MIB_IF_TABLE2 ─────────────────────────
-// Offsets verified against Windows 11 SDK for x86_64.
+// Offsets are the ground-truth x86_64 layout, obtained empirically via an
+// offset_of! probe against the microsoft/windows-rs `MIB_IF_ROW2` #[repr(C)]
+// definition (= SDK netioapi.h). The decisive detail: `InterfaceGuid` is
+// 4-byte aligned (its first member is a ULONG), so it sits right after
+// `InterfaceIndex` at 0x00C with NO padding — NOT at 0x010. Getting that wrong
+// shifts every subsequent field by 4 bytes and the reads come back as garbage.
+// Struct total size = 0x548 (1352 bytes).
+//
+//   InterfaceLuid              @ 0x000  u64 (8)
+//   InterfaceIndex             @ 0x008  u32 (4)
+//   InterfaceGuid              @ 0x00C  [u8;16] (4-byte aligned, no pad)
+//   Alias                      @ 0x01C  [u16;257] (514)
+//   Description                @ 0x21E  [u16;257] (514)
+//   PhysicalAddressLength      @ 0x420  u32
+//   PhysicalAddress            @ 0x424  [u8;32]
+//   PermanentPhysicalAddress   @ 0x444  [u8;32]
+//   Mtu                        @ 0x464  u32
+//   Type                       @ 0x468  u32  (IFTYPE; loopback filter)
+//   TunnelType                 @ 0x46C  u32
+//   MediaType                  @ 0x470  u32
+//   PhysicalMediumType         @ 0x474  u32
+//   AccessType                 @ 0x478  u32
+//   DirectionType              @ 0x47C  u32
+//   InterfaceAndOperStatusFlags@ 0x480  (4 bytes incl. internal pad)
+//   OperStatus                 @ 0x484  u32  (UP filter)
+//   AdminStatus                @ 0x488  u32
+//   MediaConnectState          @ 0x48C  u32  (CONNECTED filter)
+//   NetworkGuid                @ 0x490  [u8;16] (4-byte aligned)
+//   ConnectionType             @ 0x4A0  u32   +4 pad to u64 align
+//   TransmitLinkSpeed          @ 0x4A8  u64
+//   ReceiveLinkSpeed           @ 0x4B0  u64
+//   InOctets                   @ 0x4B8  u64  (-> rx / total_down)
+//   InUcastPkts..InBroadcastOctets (8x u64) @ 0x4C0..0x500
+//   OutOctets                  @ 0x500  u64  (-> tx / total_up)
+//   OutUcastPkts..OutQLen (8x u64)       @ 0x508..0x548
 
 const IF_MAX_STRING_SIZE: usize = 256;
 
 #[repr(C)]
 struct MIB_IF_ROW2 {
-    _pad0: [u8; 0x222],                         // InterfaceGuid..Alias
-    description: [u16; IF_MAX_STRING_SIZE + 1], // offset 0x222, size 514
-    _pad1: [u8; 0x474 - 0x424],                 // PhysicalAddressLength..MediaType
-    if_type: u32,                               // offset 0x474 (IFTYPE)
-    _pad2: [u8; 0x490 - 0x478],                 // TunnelType..IfAndOperStatusFlags
-    oper_status: u32,                           // offset 0x490
-    admin_status: u32,                          // offset 0x494
-    media_connect_state: u32,                   // offset 0x498
-    _pad3: [u8; 0x4C0 - 0x49C],                 // NetworkGuid..ReceiveLinkSpeed
-    in_octets: u64,                             // offset 0x4C0
-    _pad4: [u8; 0x508 - 0x4C8],                 // InUcastPkts..InBroadcastOctets
-    out_octets: u64,                            // offset 0x508
+    // 0x000..0x01C: InterfaceLuid(8) + InterfaceIndex(4) + InterfaceGuid(16, 4-byte aligned) = 28
+    _pad0: [u8; 0x1C],
+    // 0x01C..0x21E: Alias [u16;257] = 514 bytes
+    _alias: [u16; IF_MAX_STRING_SIZE + 1],          // offset 0x01C, size 514
+    description: [u16; IF_MAX_STRING_SIZE + 1],      // offset 0x21E, size 514
+    // 0x420..0x468: PhysicalAddressLength(4) + PhysicalAddress(32) +
+    //                PermanentPhysicalAddress(32) + Mtu(4) = 72 bytes
+    _pad1: [u8; 0x468 - 0x420],
+    if_type: u32,                                    // offset 0x468 (IFTYPE)
+    // 0x46C..0x480: TunnelType..DirectionType (5x u32) = 20 bytes
+    _pad2: [u8; 0x480 - 0x46C],
+    // 0x480..0x484: InterfaceAndOperStatusFlags (4 bytes incl. internal pad)
+    _pad3: [u8; 0x484 - 0x480],
+    oper_status: u32,                                // offset 0x484
+    admin_status: u32,                               // offset 0x488
+    media_connect_state: u32,                        // offset 0x48C
+    // 0x490..0x4B8: NetworkGuid(16) + ConnectionType(4) + 4 pad + TransmitLinkSpeed(8) + ReceiveLinkSpeed(8) = 40 bytes
+    _pad4: [u8; 0x4B8 - 0x490],
+    in_octets: u64,                                  // offset 0x4B8
+    // 0x4C0..0x500: InUcastPkts..InBroadcastOctets (8x u64) = 64 bytes
+    _pad5: [u8; 0x500 - 0x4C0],
+    out_octets: u64,                                 // offset 0x500
+    // 0x508..0x548: OutUcastPkts..OutQLen (8x u64) = 64 bytes — MUST be
+    // included so that sizeof(MIB_IF_ROW2) == 0x548 (1352), matching the SDK
+    // row stride. Without this tail padding every adapter after the first is
+    // read from a misaligned address.
+    _pad6: [u8; 0x548 - 0x508],
 }
 
 #[repr(C)]
@@ -215,4 +264,50 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     prev.len = nc;
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    /// Regression for the MIB_IF_ROW2 byte-offset fix.
+    ///
+    /// The struct's `InterfaceGuid` field is 4-byte aligned (its first member
+    /// is a ULONG), so it lands at 0x00C, not 0x010. Hand-rolling the struct
+    /// with 8-byte GUID alignment shifts every field after it by 4 bytes; the
+    /// Up+Connected+non-loopback filter then rejects every adapter and
+    /// `total_up`/`total_down` read as 0 even on hosts with heavy traffic. On
+    /// any active Windows host at least one qualifying adapter must report
+    /// nonzero cumulative octets — if everything aggregates to 0 the offsets
+    /// have regressed again. (Virtual / disconnected adapters legitimately
+    /// report 0; this passes because a real NIC like WLAN carries traffic.)
+    #[test]
+    fn net_offsets_read_nonzero_octets() {
+        let config = Config::default();
+        let mut prev = PrevNetSnapshot::new();
+        let nets = collect(&config, &mut prev);
+
+        for n in nets.iter() {
+            eprintln!(
+                "  {} total_up={} total_down={}",
+                n.name(),
+                n.total_up,
+                n.total_down
+            );
+        }
+        let total_down: u64 = nets.iter().map(|n| n.total_down).sum();
+        let total_up: u64 = nets.iter().map(|n| n.total_up).sum();
+        eprintln!(
+            "aggregated: {} adapters passed filter, total_up={}, total_down={}",
+            nets.len(),
+            total_up,
+            total_down
+        );
+
+        assert!(
+            total_down > 0 || total_up > 0,
+            "MIB_IF_ROW2 offsets regressed: every adapter reports 0 octets"
+        );
+    }
 }
