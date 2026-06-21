@@ -107,20 +107,27 @@ struct IfData {
 
 // Minimal ifaddrs — only the fields we actually read
 #[repr(C)]
+struct SockAddr {
+    sa_len: u8,
+    sa_family: u8,
+    _sa_data: [u8; 14],
+}
+
+#[repr(C)]
 struct IfAddrs {
     ifa_next: *mut IfAddrs,
     ifa_name: *mut core::ffi::c_char,
     ifa_flags: u32,
     _pad: u32,
-    ifa_addr: *mut u8, // actually *mut sockaddr, but we only need family
-    ifa_netmask: *mut u8,
-    ifa_dstaddr: *mut u8,
+    ifa_addr: *mut SockAddr,
+    ifa_netmask: *mut SockAddr,
+    ifa_dstaddr: *mut SockAddr,
     ifa_data: *mut IfData,
 }
 
 unsafe extern "C" {
-    fn getifaddrs_net(ifap: *mut *mut IfAddrs) -> i32;
-    fn freeifaddrs_net(ifa: *mut IfAddrs);
+    fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
+    fn freeifaddrs(ifa: *mut IfAddrs);
 }
 
 // ── Interface filtering ─────────────────────────────────────────────────────
@@ -156,7 +163,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     let now = Instant::now();
 
     let mut ifa_head: *mut IfAddrs = std::ptr::null_mut();
-    let ret = unsafe { getifaddrs_net(&mut ifa_head) };
+    let ret = unsafe { getifaddrs(&mut ifa_head) };
     if ret != 0 {
         return out;
     }
@@ -200,8 +207,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
             cur = ifa.ifa_next;
             continue;
         }
-        // macOS/BSD sockaddr has sa_len at offset 0, sa_family at offset 1
-        let family = unsafe { *(ifa.ifa_addr.add(1)) } as u16;
+        let family = unsafe { (*(ifa.ifa_addr)).sa_family as u16 };
         if family != AF_LINK {
             cur = ifa.ifa_next;
             continue;
@@ -258,7 +264,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
         cur = ifa.ifa_next;
     }
 
-    unsafe { freeifaddrs_net(ifa_head) };
+    unsafe { freeifaddrs(ifa_head) };
 
     // Commit the new snapshot for the next call
     prev.names = nn;
