@@ -58,8 +58,8 @@ struct In6Addr {
 
 #[repr(C)]
 pub(super) struct SockAddr {
-    sa_family: u16,
-    sa_data: [u8; 14],
+    pub(super) sa_family: u16,
+    pub(super) sa_data: [u8; 14],
 }
 
 #[repr(C)]
@@ -81,14 +81,14 @@ struct SockAddrIn6 {
 
 #[repr(C)]
 pub(super) struct IfAddrs {
-    ifa_next: *mut IfAddrs,
-    ifa_name: *mut core::ffi::c_char,
-    ifa_flags: u32,
-    _pad: u32,
-    ifa_addr: *mut SockAddr,
-    ifa_netmask: *mut SockAddr,
-    ifa_dstaddr: *mut SockAddr,
-    ifa_data: *mut u8,
+    pub(super) ifa_next: *mut IfAddrs,
+    pub(super) ifa_name: *mut core::ffi::c_char,
+    pub(super) ifa_flags: u32,
+    pub(super) _pad: u32,
+    pub(super) ifa_addr: *mut SockAddr,
+    pub(super) ifa_netmask: *mut SockAddr,
+    pub(super) ifa_dstaddr: *mut SockAddr,
+    pub(super) ifa_data: *mut u8,
 }
 
 unsafe extern "C" {
