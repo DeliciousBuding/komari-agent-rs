@@ -48,30 +48,26 @@ const XINPCB_N_SIZE: usize = 464; // struct xinpcb_n (used for UDP pcblist)
 unsafe fn count_pcblist(name: &str, entry_size: usize) -> u32 {
     // First call: get required buffer size
     let mut len: usize = 0;
-    let ret = unsafe {
-        sysctlbyname(
-            name.as_ptr(),
-            std::ptr::null_mut(),
-            &mut len,
-            std::ptr::null(),
-            0,
-        )
-    };
+    let ret = sysctlbyname(
+        name.as_ptr(),
+        std::ptr::null_mut(),
+        &mut len,
+        std::ptr::null(),
+        0,
+    );
     if ret != 0 || len == 0 {
         return 0;
     }
 
     // Allocate and fetch
     let mut buf: Vec<u8> = vec![0u8; len];
-    let ret = unsafe {
-        sysctlbyname(
-            name.as_ptr(),
-            buf.as_mut_ptr(),
-            &mut len,
-            std::ptr::null(),
-            0,
-        )
-    };
+    let ret = sysctlbyname(
+        name.as_ptr(),
+        buf.as_mut_ptr(),
+        &mut len,
+        std::ptr::null(),
+        0,
+    );
     if ret != 0 || len < entry_size {
         return 0;
     }
