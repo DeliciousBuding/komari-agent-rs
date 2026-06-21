@@ -30,11 +30,11 @@ pub fn collect() -> Result<LoadInfo, io::Error> {
     }
     #[cfg(target_os = "macos")]
     {
-        return macos::collect();
+        macos::collect()
     }
     #[cfg(target_os = "freebsd")]
     {
-        return freebsd::collect();
+        freebsd::collect()
     }
     #[cfg(not(any(
         target_os = "linux",

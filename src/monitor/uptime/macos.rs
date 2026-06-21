@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS system uptime — sysctlbyname kern.boottime.
 #![cfg(target_os = "macos")]
 

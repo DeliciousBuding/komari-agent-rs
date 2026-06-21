@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS network metrics — getifaddrs AF_LINK + delta.
 #![cfg(target_os = "macos")]
 

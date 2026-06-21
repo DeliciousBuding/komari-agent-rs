@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS connection counts — sysctlbyname net.inet.tcp.pcblist.
 #![cfg(target_os = "macos")]
 

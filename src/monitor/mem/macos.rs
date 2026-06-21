@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS memory metrics — host_statistics64 + sysctlbyname FFI.
 #![cfg(target_os = "macos")]
 

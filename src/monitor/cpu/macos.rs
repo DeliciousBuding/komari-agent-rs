@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS CPU metrics — host_processor_info + sysctlbyname FFI.
 #![cfg(target_os = "macos")]
 
