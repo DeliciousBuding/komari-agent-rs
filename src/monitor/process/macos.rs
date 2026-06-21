@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS process count — sysctlbyname kern.proc.all.
 #![cfg(target_os = "macos")]
 

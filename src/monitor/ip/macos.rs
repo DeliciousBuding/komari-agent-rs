@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS IP detection — getifaddrs FFI + external HTTP APIs.
 #![cfg(target_os = "macos")]
 
@@ -91,8 +92,8 @@ struct IfAddrs {
 }
 
 unsafe extern "C" {
-    fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
-    fn freeifaddrs(ifa: *mut IfAddrs);
+    fn getifaddrs_ip(ifap: *mut *mut IfAddrs) -> i32;
+    fn freeifaddrs_ip(ifa: *mut IfAddrs);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -129,11 +130,12 @@ pub fn collect_ip(config: &Config) -> Result<(Option<String>, Option<String>), M
     }
 
     // 4. Cloudflare trace fallback
-    if ipv4.is_none() && ipv6.is_none() {
-        if let Some((v4, v6)) = fetch_cf_trace() {
-            ipv4 = v4;
-            ipv6 = v6;
-        }
+    if ipv4.is_none()
+        && ipv6.is_none()
+        && let Some((v4, v6)) = fetch_cf_trace()
+    {
+        ipv4 = v4;
+        ipv6 = v6;
     }
 
     Ok((ipv4, ipv6))
@@ -145,7 +147,7 @@ pub fn collect_ip(config: &Config) -> Result<(Option<String>, Option<String>), M
 
 fn ip_from_nic(include: &[String], exclude: &[String]) -> (Option<String>, Option<String>) {
     let mut ifa_head: *mut IfAddrs = std::ptr::null_mut();
-    let ret = unsafe { getifaddrs(&mut ifa_head) };
+    let ret = unsafe { getifaddrs_ip(&mut ifa_head) };
     if ret != 0 {
         return (None, None);
     }
@@ -163,8 +165,8 @@ fn ip_from_nic(include: &[String], exclude: &[String]) -> (Option<String>, Optio
 
         // Filter: skip if include list is non-empty and NIC not in it;
         // skip if NIC is in exclude list.
-        let included = include.is_empty() || include.iter().any(|n| *n == name);
-        let excluded = exclude.iter().any(|n| *n == name);
+        let included = include.is_empty() || include.contains(&name);
+        let excluded = exclude.contains(&name);
         if !included || excluded {
             cur = ifa.ifa_next;
             continue;
@@ -217,7 +219,7 @@ fn ip_from_nic(include: &[String], exclude: &[String]) -> (Option<String>, Optio
         cur = ifa.ifa_next;
     }
 
-    unsafe { freeifaddrs(ifa_head) };
+    unsafe { freeifaddrs_ip(ifa_head) };
     (ipv4, ipv6)
 }
 
@@ -297,10 +299,10 @@ fn fetch_ipv4_http() -> Option<String> {
         "http://ipv4.icanhazip.com",
     ];
     for url in &apis {
-        if let Some(body) = http_get(url) {
-            if let Some(ip) = extract_ipv4(&body) {
-                return Some(ip);
-            }
+        if let Some(body) = http_get(url)
+            && let Some(ip) = extract_ipv4(&body)
+        {
+            return Some(ip);
         }
     }
     None
@@ -313,10 +315,10 @@ fn fetch_ipv6_http() -> Option<String> {
         "http://ipv6.icanhazip.com",
     ];
     for url in &apis {
-        if let Some(body) = http_get(url) {
-            if let Some(ip) = extract_ipv6(&body) {
-                return Some(ip);
-            }
+        if let Some(body) = http_get(url)
+            && let Some(ip) = extract_ipv6(&body)
+        {
+            return Some(ip);
         }
     }
     None
@@ -373,7 +375,7 @@ fn extract_ipv4(s: &str) -> Option<String> {
                 let candidate = &s[start..i];
                 if candidate
                     .split('.')
-                    .all(|o| o.parse::<u16>().map_or(false, |n| n <= 255))
+                    .all(|o| o.parse::<u16>().is_ok_and(|n| n <= 255))
                 {
                     return Some(candidate.to_string());
                 }
@@ -422,7 +424,7 @@ fn extract_ipv6(s: &str) -> Option<String> {
                 }
                 i += 1;
             }
-            if ok && colons >= 2 && groups >= 1 && groups <= 8 {
+            if ok && colons >= 2 && (1..=8).contains(&groups) {
                 let candidate = &s[start..i];
                 let trimmed =
                     candidate.trim_end_matches(|c: char| !c.is_ascii_hexdigit() && c != ':');

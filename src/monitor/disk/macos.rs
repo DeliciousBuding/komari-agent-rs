@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS disk metrics — getmntinfo FFI.
 #![cfg(target_os = "macos")]
 
@@ -71,7 +72,7 @@ const EXCLUDED_FS: &[&str] = &[
 ];
 
 fn is_excluded_fs(fstype: &str) -> bool {
-    EXCLUDED_FS.iter().any(|&ex| fstype == ex)
+    EXCLUDED_FS.contains(&fstype)
 }
 
 fn matches_patterns(mp: &str, patterns: &[String]) -> bool {

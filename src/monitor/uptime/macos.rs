@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS system uptime — sysctlbyname kern.boottime.
 #![cfg(target_os = "macos")]
 
@@ -41,7 +42,7 @@ pub fn collect_uptime() -> Result<u64, io::Error> {
 
     let ret = unsafe {
         sysctlbyname(
-            "kern.boottime\0".as_ptr(),
+            c"kern.boottime".as_ptr() as *const u8,
             (&mut tv) as *mut TimeVal as *mut u8,
             &mut len,
             std::ptr::null(),

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // komari-agent-rs: macOS network metrics — getifaddrs AF_LINK + delta.
 #![cfg(target_os = "macos")]
 
@@ -118,8 +119,8 @@ struct IfAddrs {
 }
 
 unsafe extern "C" {
-    fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
-    fn freeifaddrs(ifa: *mut IfAddrs);
+    fn getifaddrs_net(ifap: *mut *mut IfAddrs) -> i32;
+    fn freeifaddrs_net(ifa: *mut IfAddrs);
 }
 
 // ── Interface filtering ─────────────────────────────────────────────────────
@@ -155,7 +156,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     let now = Instant::now();
 
     let mut ifa_head: *mut IfAddrs = std::ptr::null_mut();
-    let ret = unsafe { getifaddrs(&mut ifa_head) };
+    let ret = unsafe { getifaddrs_net(&mut ifa_head) };
     if ret != 0 {
         return out;
     }
@@ -257,7 +258,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
         cur = ifa.ifa_next;
     }
 
-    unsafe { freeifaddrs(ifa_head) };
+    unsafe { freeifaddrs_net(ifa_head) };
 
     // Commit the new snapshot for the next call
     prev.names = nn;

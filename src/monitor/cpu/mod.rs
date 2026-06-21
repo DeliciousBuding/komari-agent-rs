@@ -1,6 +1,8 @@
 // komari-agent-rs: CPU metrics module.
 // Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/cpu.go
 
+#![allow(unused_imports)]
+
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 #[cfg(target_os = "linux")]
