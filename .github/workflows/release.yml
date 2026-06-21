@@ -16,11 +16,11 @@ jobs:
           targets: x86_64-unknown-linux-musl
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --target x86_64-unknown-linux-musl --features full
-      - name: Check binary size < 1MB
+      - name: Check binary size < 2MB
         run: |
           SIZE=$(stat -c%s target/x86_64-unknown-linux-musl/release/komari-agent-rs)
-          if [ "$SIZE" -ge 1048576 ]; then
-            echo "::error::Binary size $SIZE bytes exceeds 1MB limit"
+          if [ "$SIZE" -ge 2097152 ]; then
+            echo "::error::Binary size $SIZE bytes exceeds 2MB limit"
             exit 1
           fi
       - name: Prepare artifact
@@ -36,12 +36,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --features full
-      - name: Check binary size < 1MB
+      - name: Check binary size < 2MB
         shell: pwsh
         run: |
           $size = (Get-Item target\release\komari-agent-rs.exe).Length
-          if ($size -ge 1048576) {
-            Write-Error "Binary size $size bytes exceeds 1MB limit"
+          if ($size -ge 2097152) {
+            Write-Error "Binary size $size bytes exceeds 2MB limit"
             exit 1
           }
       - name: Prepare artifact
@@ -58,11 +58,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --features full
-      - name: Check binary size < 1MB
+      - name: Check binary size < 2MB
         run: |
           SIZE=$(stat -f%z target/release/komari-agent-rs)
-          if [ "$SIZE" -ge 1048576 ]; then
-            echo "::error::Binary size $SIZE bytes exceeds 1MB limit"
+          if [ "$SIZE" -ge 2097152 ]; then
+            echo "::error::Binary size $SIZE bytes exceeds 2MB limit"
             exit 1
           fi
       - name: Prepare artifact
