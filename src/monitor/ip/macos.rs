@@ -57,7 +57,7 @@ struct In6Addr {
 }
 
 #[repr(C)]
-struct SockAddr {
+pub(super) struct SockAddr {
     sa_family: u16,
     sa_data: [u8; 14],
 }
@@ -80,7 +80,7 @@ struct SockAddrIn6 {
 }
 
 #[repr(C)]
-struct IfAddrs {
+pub(super) struct IfAddrs {
     ifa_next: *mut IfAddrs,
     ifa_name: *mut core::ffi::c_char,
     ifa_flags: u32,

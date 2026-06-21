@@ -105,30 +105,8 @@ struct IfData {
                          // remaining fields (recvtiming, xmittiming, lastchange) not needed
 }
 
-// Minimal ifaddrs — only the fields we actually read
-#[repr(C)]
-struct SockAddr {
-    sa_len: u8,
-    sa_family: u8,
-    _sa_data: [u8; 14],
-}
-
-#[repr(C)]
-struct IfAddrs {
-    ifa_next: *mut IfAddrs,
-    ifa_name: *mut core::ffi::c_char,
-    ifa_flags: u32,
-    _pad: u32,
-    ifa_addr: *mut SockAddr,
-    ifa_netmask: *mut SockAddr,
-    ifa_dstaddr: *mut SockAddr,
-    ifa_data: *mut IfData,
-}
-
-unsafe extern "C" {
-    fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
-    fn freeifaddrs(ifa: *mut IfAddrs);
-}
+use crate::monitor::ip::macos::IfAddrs;
+// getifaddrs/freeifaddrs extern is declared in ip::macos
 
 // ── Interface filtering ─────────────────────────────────────────────────────
 
