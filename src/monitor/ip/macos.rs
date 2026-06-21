@@ -92,8 +92,8 @@ pub(crate) struct IfAddrs {
 }
 
 unsafe extern "C" {
-    fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
-    fn freeifaddrs(ifa: *mut IfAddrs);
+    pub(crate) fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
+    pub(crate) fn freeifaddrs(ifa: *mut IfAddrs);
 }
 
 // ═══════════════════════════════════════════════════════════════════
