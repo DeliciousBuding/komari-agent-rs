@@ -88,7 +88,7 @@ komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-windows-amd64.exe" -OutFile "komari-agent.exe"
-.\komari-agent.exe --token YOUR_TOKEN --endpoint wss://your-server/ws
+.\komari-agent.exe --token YOUR_TOKEN --endpoint https://your-komari-server
 ```
 
 ### FreeBSD
