@@ -14,9 +14,8 @@ jobs:
           components: rustfmt, clippy
       - name: fmt (enforced)
         run: cargo fmt --check
-      - name: clippy (ubuntu enforced; macos/windows diagnostic — see #56)
+      - name: clippy (enforced all platforms)
         run: cargo clippy --release -- -D warnings
-        continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
       - name: test (default features)
         run: cargo test
       - name: test (all features)
