@@ -191,7 +191,7 @@ pub fn generate_report<'a>(
     // Return ONLY the report slice. During encode_report, collect_cpu and
     // collect_ip allocate CPU name / IP strings into this same arena BEFORE
     // the report bytes; arena.as_bytes() would prepend those strings and
-    // corrupt the JSON (observed as server "Invalid JSON" on us3).
+    // corrupt the JSON (observed as a server "Invalid JSON" error in production).
     &report[..]
 }
 
