@@ -225,7 +225,7 @@ fn ip_from_interfaces(nic_names: &[String]) -> (Option<String>, Option<String>) 
         }
 
         // FreeBSD/BSD sockaddr has sa_len at offset 0, sa_family at offset 1
-        let family = unsafe { (*(ifa.ifa_addr as *const u8).add(1)) };
+        let family = unsafe { *(ifa.ifa_addr as *const u8).add(1) };
         match family {
             AF_INET if ipv4.is_none() => {
                 // sin_addr starts at offset 4 in struct sockaddr_in (BSD layout: len=1, family=1, port=2)
@@ -247,7 +247,9 @@ fn ip_from_interfaces(nic_names: &[String]) -> (Option<String>, Option<String>) 
                     cur = ifa.ifa_next;
                     continue;
                 }
-                ipv6 = Some(format_ipv6(a));
+                // a is &[u8] (length 16); format_ipv6 expects &[u8; 16].
+                let arr: &[u8; 16] = a.try_into().expect("sin6_addr slice must be 16 bytes");
+                ipv6 = Some(format_ipv6(arr));
             }
             _ => {}
         }
