@@ -195,14 +195,14 @@ fn bypass_list_matches(target_host: &str, no_proxy_list: &str) -> bool {
 fn host_matches_entry(host: &str, host_ip: Option<IpAddr>, entry: &str) -> bool {
     // CIDR / IP entry → only meaningful against an IP host.
     if let Some(slash) = entry.find('/') {
-        if let Some(ip) = host_ip {
-            if let Ok(net) = entry[..slash].parse::<IpAddr>() {
-                let prefix: u8 =
-                    entry[slash + 1..]
-                        .parse()
-                        .unwrap_or(if net.is_ipv4() { 32 } else { 128 });
-                return ip_in_cidr(ip, net, prefix);
-            }
+        if let Some(ip) = host_ip
+            && let Ok(net) = entry[..slash].parse::<IpAddr>()
+        {
+            let prefix: u8 =
+                entry[slash + 1..]
+                    .parse()
+                    .unwrap_or(if net.is_ipv4() { 32 } else { 128 });
+            return ip_in_cidr(ip, net, prefix);
         }
         return false;
     }
@@ -213,9 +213,9 @@ fn host_matches_entry(host: &str, host_ip: Option<IpAddr>, entry: &str) -> bool 
     // Domain matching.
     let entry = entry.to_ascii_lowercase();
     let host = host.to_ascii_lowercase();
-    if entry.starts_with('.') {
+    if let Some(suffix) = entry.strip_prefix('.') {
         // ".example.com" matches subdomains only.
-        return host == &entry[1..] || host.ends_with(&entry);
+        return host == suffix || host.ends_with(&entry);
     }
     // Bare "example.com" matches itself or any subdomain.
     host == entry || host.ends_with(&format!(".{entry}"))
@@ -350,21 +350,21 @@ impl ProxyScheme {
 /// Returns an error when a `:port` suffix is present but does not parse.
 fn split_host_port(hostport: &str, default_port: u16) -> Result<(String, u16), std::io::Error> {
     // Bracketed IPv6: [::1] or [::1]:1080
-    if hostport.starts_with('[') {
-        if let Some(end) = hostport.find(']') {
-            let host = &hostport[..=end];
-            let rest = &hostport[end + 1..];
-            if let Some(port_str) = rest.strip_prefix(':') {
-                let p = port_str.parse::<u16>().map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("invalid proxy port in: {hostport}"),
-                    )
-                })?;
-                return Ok((host.to_string(), p));
-            }
-            return Ok((host.to_string(), default_port));
+    if hostport.starts_with('[')
+        && let Some(end) = hostport.find(']')
+    {
+        let host = &hostport[..=end];
+        let rest = &hostport[end + 1..];
+        if let Some(port_str) = rest.strip_prefix(':') {
+            let p = port_str.parse::<u16>().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid proxy port in: {hostport}"),
+                )
+            })?;
+            return Ok((host.to_string(), p));
         }
+        return Ok((host.to_string(), default_port));
     }
     match hostport.rfind(':') {
         Some(idx) => {
@@ -714,7 +714,7 @@ pub fn connect_via_proxy(
 fn io_from_net(e: NetErr) -> std::io::Error {
     match e {
         NetErr::Io(e) => e,
-        other => std::io::Error::new(std::io::ErrorKind::Other, other.to_string()),
+        other => std::io::Error::other(other.to_string()),
     }
 }
 
@@ -777,7 +777,7 @@ impl Dialer {
 
 fn base64_encode_var(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 2 < input.len() {
         let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | input[i + 2] as u32;

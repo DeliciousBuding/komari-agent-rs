@@ -344,7 +344,7 @@ pub fn deflate_raw(data: &[u8]) -> Vec<u8> {
 pub fn permessage_deflate_encode(data: &[u8]) -> Vec<u8> {
     let mut out = deflate_raw(data);
     // RFC 7692 §7.2.1: strip a trailing sync-flush marker if present.
-    if out.len() >= 4 && &out[out.len() - 4..] == &[0x00, 0x00, 0xFF, 0xFF] {
+    if out.len() >= 4 && out[out.len() - 4..] == [0x00, 0x00, 0xFF, 0xFF] {
         out.truncate(out.len() - 4);
     }
     out

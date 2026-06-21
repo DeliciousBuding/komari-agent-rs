@@ -322,6 +322,7 @@ impl WsConnection {
     /// 6. Send HTTP upgrade request (GET + headers + WebSocket key).
     /// 7. Read and verify HTTP 101 response + `Sec-WebSocket-Accept`.
     /// 8. Return ready `WsConnection`.
+    #[allow(clippy::too_many_arguments)] // WS connect genuinely needs all these
     pub fn connect(
         endpoint: &str,
         ws_path: &str,

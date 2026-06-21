@@ -1,13 +1,44 @@
+<div align="center">
+
 # komari-agent-rs
 
-[![CI](https://github.com/DeliciousBuding/komari-agent-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliciousBuding/komari-agent-rs/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Latest Release](https://img.shields.io/github/v/release/DeliciousBuding/komari-agent-rs?color=green)](https://github.com/DeliciousBuding/komari-agent-rs/releases/latest)
-[![Changelog](https://img.shields.io/badge/changelog-CHANGELOG.md-blue)](CHANGELOG.md)
+**Featherweight Komari monitoring agent**
 
-**Featherweight Komari monitoring agent — sync single-threaded Rust, ~1.5 MB binary (196 KB our code + ~1 MB mandatory TLS stack), &lt;3 MB RSS.**
+Rust · sync single-threaded · ~1.5 MB binary · &lt;3 MB RSS · **10× less memory than the Go agent**
+
+[![CI](https://github.com/DeliciousBuding/komari-agent-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliciousBuding/komari-agent-rs/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/DeliciousBuding/komari-agent-rs?color=green&label=release)](https://github.com/DeliciousBuding/komari-agent-rs/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Platforms](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows%20%7C%20freebsd-blueviolet)](#installation)
+[![Stars](https://img.shields.io/github/stars/DeliciousBuding/komari-agent-rs?style=social)](https://github.com/DeliciousBuding/komari-agent-rs/stargazers)
+
+`komari` · `rust` · `rustls` · `monitoring` · `lightweight` · `single-threaded`
+
+📦 **[Releases](https://github.com/DeliciousBuding/komari-agent-rs/releases)** · 📖 **[Docs](#documentation)** · 💬 **[Discussions](https://github.com/DeliciousBuding/komari-agent-rs/discussions)** · 📋 **[Changelog](CHANGELOG.md)**
+
+**[English](README.md)** · **[简体中文](README.zh-CN.md)**
+
+</div>
+
+---
 
 > Rust rewrite of [`komari-monitor/komari-agent`](https://github.com/komari-monitor/komari-agent) (Go) for the [`komari-monitor/komari`](https://github.com/komari-monitor/komari) server-monitoring tool. Wire-compatible with the official Go agent — register a node on a Komari server, point this agent at it, done.
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [Comparison](#comparison) — vs Go / Zig agent, binary & RSS
+- [Installation](#installation) — Linux / macOS / Windows / FreeBSD
+- [Build from Source](#build-from-source)
+- [Configuration](#configuration) — CLI / env / JSON config
+- [Architecture](#architecture)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
 
 ## Quick Start
 
@@ -216,6 +247,22 @@ Full blueprint: **[docs/plan/architecture-reference.md](docs/plan/architecture-r
 - **OS-native TLS root certificates** — `/etc/ssl/certs` on Linux, CryptoAPI on Windows, Security.framework on macOS
 - **cfg-gated platform dispatch** — compile-time type selection, no vtable overhead
 - **Explicit config passing** — no globals, fully testable without environment setup
+
+## Documentation
+
+- 📐 **[docs/plan/spec.md](docs/plan/spec.md)** — full design spec (DD1–DD6 design decisions)
+- 🏛️ **[docs/plan/architecture-reference.md](docs/plan/architecture-reference.md)** — 13 parallel design documents, the architecture blueprint
+- ⚖️ **[docs/COMPARISON.md](docs/COMPARISON.md)** — Go / Zig / Rust agent comparison + benchmarks
+- 🧪 **[docs/TESTING.md](docs/TESTING.md)** — test strategy + three-platform validation
+- 📋 **[CHANGELOG.md](CHANGELOG.md)** — release history (v0.1.0 → v0.1.6)
+
+## Contributing
+
+Contributions welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for dev setup, the featherweight philosophy (no deps in the hot path), commit style, and test requirements.
+
+- 🐛 **[Issues](https://github.com/DeliciousBuding/komari-agent-rs/issues)** — bug reports & feature requests
+- 💬 **[Discussions](https://github.com/DeliciousBuding/komari-agent-rs/discussions)** — Q&A and ideas
+- 🔒 **[SECURITY.md](SECURITY.md)** — vulnerability disclosure
 
 ## License
 
