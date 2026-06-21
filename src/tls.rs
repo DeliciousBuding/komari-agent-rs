@@ -135,10 +135,17 @@ pub fn make_tls_config(config: &Config) -> Result<rustls::ClientConfig, TlsErr> 
 
     // Unsafe cert mode: skip all verification.
     if config.ignore_unsafe_cert {
-        let client_config = rustls::ClientConfig::builder()
+        let mut client_config = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoServerVerification))
             .with_no_client_auth();
+        // ALPN: negotiate HTTP/1.1 only. WebSocket's RFC 6455 Upgrade mechanism
+        // is an HTTP/1.1 feature — nginx serves status.vectorcontrol.tech over
+        // HTTP/2 by default and silently drops the `Upgrade` header over h2,
+        // returning the SPA index.html (200) instead of 101 Switching Protocols.
+        // Pinning ALPN to h1 makes the WS handshake succeed (parity with Go's
+        // gorilla/websocket, which also negotiates http/1.1).
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
         return Ok(client_config);
     }
 
@@ -150,9 +157,12 @@ pub fn make_tls_config(config: &Config) -> Result<rustls::ClientConfig, TlsErr> 
         return Err(TlsErr::NoCertsFound);
     }
 
-    let config = rustls::ClientConfig::builder()
+    let mut config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
+    // ALPN: negotiate HTTP/1.1 only — see note above (WS Upgrade needs h1; nginx
+    // over h2 drops the Upgrade header and returns the SPA index as 200).
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
     Ok(config)
 }

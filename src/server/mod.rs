@@ -97,22 +97,21 @@ pub(super) fn update_basic_info(
     let base = config.endpoint.trim_end_matches('/');
     let encoded_token = crate::ws::url_encode(&config.token);
 
-    // Build the endpoint URL + a body builder closure for the active protocol.
-    let is_v2 = config.protocol_version >= 2;
-    let url = if is_v2 {
-        format!("{}/api/clients/v2/rpc?token={}", base, encoded_token)
+    // Protocol + payload ladder.
+    //
+    // Protocol: try v2 first (if configured), then v1. Some Komari forks
+    // (e.g. v1.1.9) lack the v2/rpc HTTP route entirely (POST → 404), so we
+    // descend to the v1 uploadBasicInfo endpoint — mirroring the WS FSM's
+    // WsV2→WsV1 downshift. This keeps the agent working across both v2-capable
+    // and v1-only Komari deployments.
+    //
+    // Payload: within each protocol, try the full payload (extended fields
+    // kernel_version / cpu_physical_cores) then a compat payload; older
+    // servers reject the extended fields and need the compat retry.
+    let protos: &[bool] = if config.protocol_version >= 2 {
+        &[true, false]
     } else {
-        format!(
-            "{}/api/clients/uploadBasicInfo?token={}",
-            base, encoded_token
-        )
-    };
-    let build = |extended: bool| -> Vec<u8> {
-        if is_v2 {
-            build_basic_info_v2(config, extended)
-        } else {
-            build_basic_info_v1(config, extended)
-        }
+        &[false]
     };
 
     let cf_access = crate::server::cf_access::CfAccess::from_config(config);
@@ -121,62 +120,60 @@ pub(super) fn update_basic_info(
         cf.inject_http_headers(&mut extra_headers);
     }
 
-    // One POST attempt → status code (transport errors returned as Err).
-    let post = |body: &[u8]| -> Result<u16, String> {
-        match crate::http::http_post(
-            &url,
-            body,
-            "application/json",
-            None,
-            &extra_headers,
-            tls_cfg,
-            dial,
-        ) {
-            Ok(resp) => Ok(resp.status_code),
-            Err(e) => Err(format!("basic info upload transport error: {e}")),
-        }
-    };
-
-    // Attempt 1: full payload (includes kernel_version + cpu_physical_cores).
-    let body_full = build(true);
-    match post(&body_full) {
-        Ok(200) => {
-            info!("Basic info uploaded successfully");
-            return Ok(());
-        }
-        Ok(code) => {
-            // Older Komari servers (<= 1.0.2 / <= 1.2.0, and the v1.1.9 fork)
-            // reject the payload when the extended fields are present. Retry
-            // without them — mirrors Go `uploadBasicInfo` fallback.
-            warn!(
-                "basic info HTTP {} with extended fields, retrying compat payload",
-                code
-            );
-        }
-        Err(e) => {
-            warn!("{}", e);
-            return Err(e);
-        }
-    }
-
-    // Attempt 2: compat payload (no kernel_version / cpu_physical_cores).
-    let body_compat = build(false);
-    match post(&body_compat) {
-        Ok(200) => {
-            info!("Basic info uploaded (compat payload)");
-            Ok(())
-        }
-        Ok(code) => {
-            let msg = format!("Basic info upload returned HTTP {}", code);
-            warn!("{}", msg);
-            Err(msg)
-        }
-        Err(e) => {
-            let msg = format!("Basic info upload failed: {}", e);
-            warn!("{}", msg);
-            Err(msg)
+    let mut last_code: u16 = 0;
+    'outer: for &is_v2 in protos {
+        let url = if is_v2 {
+            format!("{}/api/clients/v2/rpc?token={}", base, encoded_token)
+        } else {
+            format!("{}/api/clients/uploadBasicInfo?token={}", base, encoded_token)
+        };
+        for &extended in &[true, false] {
+            let body = if is_v2 {
+                build_basic_info_v2(config, extended)
+            } else {
+                build_basic_info_v1(config, extended)
+            };
+            match crate::http::http_post(
+                &url,
+                &body,
+                "application/json",
+                None,
+                &extra_headers,
+                tls_cfg,
+                dial,
+            ) {
+                Ok(resp) if resp.status_code == 200 => {
+                    info!(
+                        "Basic info uploaded (v{}, {})",
+                        if is_v2 { 2 } else { 1 },
+                        if extended { "full" } else { "compat" }
+                    );
+                    return Ok(());
+                }
+                Ok(resp) => {
+                    last_code = resp.status_code;
+                    // v2 route missing on this server → abandon v2 payloads and
+                    // fall through to the v1 endpoint on the next outer iter.
+                    if is_v2 && resp.status_code == 404 {
+                        warn!("v2 basicInfo endpoint missing (HTTP 404), falling back to v1");
+                        continue 'outer;
+                    }
+                    warn!(
+                        "basic info HTTP {} (v{}, {})",
+                        resp.status_code,
+                        if is_v2 { 2 } else { 1 },
+                        if extended { "full, retrying compat" } else { "compat" }
+                    );
+                }
+                Err(e) => {
+                    warn!("basic info transport error: {}", e);
+                }
+            }
         }
     }
+    let msg = format!("Basic info upload returned HTTP {}", last_code);
+    warn!("{}", msg);
+    Err(msg)
 }
 
 /// Collect static system identification from every collector and encode as
