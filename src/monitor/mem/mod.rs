@@ -1,5 +1,7 @@
 //! Memory and swap metrics — Linux via `/proc/meminfo`, Windows via GlobalMemoryStatusEx.
 
+#![allow(unused_imports)]
+
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 #[cfg(target_os = "linux")]
