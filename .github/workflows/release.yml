@@ -86,8 +86,54 @@ jobs:
           name: freebsd
           path: komari-agent-rs-freebsd-x86_64
 
+  build-linux-musl-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: taiki-e/install-action@cross
+      - run: cross build --release --target aarch64-unknown-linux-musl --features full
+      - name: Check binary size < 2MB
+        run: |
+          SIZE=$(stat -c%s target/aarch64-unknown-linux-musl/release/komari-agent-rs)
+          if [ "$SIZE" -ge 2097152 ]; then
+            echo "::error::Binary size $SIZE bytes exceeds 2MB limit"
+            exit 1
+          fi
+      - name: Prepare artifact
+        run: cp target/aarch64-unknown-linux-musl/release/komari-agent-rs komari-agent-rs-linux-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-musl-arm64
+          path: komari-agent-rs-linux-arm64
+
+  build-macos-arm64:
+    # macos-latest is Apple Silicon (M1) — native aarch64 build, no cross needed.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - run: cargo build --release --target aarch64-apple-darwin --features full
+      - name: Check binary size < 2MB
+        run: |
+          SIZE=$(stat -f%z target/aarch64-apple-darwin/release/komari-agent-rs)
+          if [ "$SIZE" -ge 2097152 ]; then
+            echo "::error::Binary size $SIZE bytes exceeds 2MB limit"
+            exit 1
+          fi
+      - name: Prepare artifact
+        run: cp target/aarch64-apple-darwin/release/komari-agent-rs komari-agent-rs-macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: komari-agent-rs-macos-arm64
+
   create-release:
-    needs: [build-linux-musl, build-windows, build-macos, build-freebsd]
+    needs: [build-linux-musl, build-linux-musl-arm64, build-windows, build-macos, build-macos-arm64, build-freebsd]
     runs-on: ubuntu-latest
     permissions:
       contents: write
