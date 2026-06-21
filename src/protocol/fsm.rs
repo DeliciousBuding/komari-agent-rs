@@ -60,9 +60,16 @@ pub struct ProtocolFsm {
 impl ProtocolFsm {
     pub const FALLBACK_THRESHOLD: u8 = 3;
 
-    /// Create a new FSM. Starts at WsV2 if `protocol_version >= 2`, else WsV1.
-    pub fn new(protocol_version: u8) -> Self {
-        let initial = if protocol_version >= 2 {
+    /// Create a new FSM. Starts at `HttpV1` if `http_only`, else `WsV2` if
+    /// `protocol_version >= 2`, else `WsV1`.
+    ///
+    /// `http_only` is an escape hatch for networks where a DPI / middlebox
+    /// breaks the WebSocket upgrade (the agent reports over plain HTTP POST
+    /// and never attempts WS). `HttpV1` is terminal, so the FSM stays there.
+    pub fn new(protocol_version: u8, http_only: bool) -> Self {
+        let initial = if http_only {
+            ProtocolMode::HttpV1
+        } else if protocol_version >= 2 {
             ProtocolMode::WsV2
         } else {
             ProtocolMode::WsV1
@@ -147,7 +154,7 @@ impl ProtocolFsm {
 
 impl Default for ProtocolFsm {
     fn default() -> Self {
-        Self::new(2)
+        Self::new(2, false)
     }
 }
 
@@ -248,13 +255,13 @@ mod tests {
 
     #[test]
     fn starts_at_ws_v2() {
-        let fsm = ProtocolFsm::new(2);
+        let fsm = ProtocolFsm::new(2, false);
         assert_eq!(fsm.mode(), ProtocolMode::WsV2);
     }
 
     #[test]
     fn three_strikes_ws_v2_to_ws_v1() {
-        let mut fsm = ProtocolFsm::new(2);
+        let mut fsm = ProtocolFsm::new(2, false);
         assert!(!fsm.on_failure(FailureKind::WsConnect));
         assert!(!fsm.on_failure(FailureKind::WsConnect));
         assert!(fsm.on_failure(FailureKind::WsConnect));
@@ -264,7 +271,7 @@ mod tests {
 
     #[test]
     fn full_chain_ws_v2_to_http_v1() {
-        let mut fsm = ProtocolFsm::new(2);
+        let mut fsm = ProtocolFsm::new(2, false);
         // Each stage needs 3 strikes to downshift.
         for _ in 0..3 {
             fsm.on_failure(FailureKind::WsConnect);
@@ -282,7 +289,7 @@ mod tests {
 
     #[test]
     fn reconnect_resets_to_ws_v2() {
-        let mut fsm = ProtocolFsm::new(2);
+        let mut fsm = ProtocolFsm::new(2, false);
         // Walk all the way to HttpV1 (9 failures across 3 stages).
         for _ in 0..9 {
             fsm.on_failure(FailureKind::HttpPost);

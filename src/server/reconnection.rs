@@ -90,7 +90,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
     // accept basicInfo updates, so uploading eagerly here yields HTTP 500.
     let dial = crate::proxy::Dialer::from_config(config);
 
-    let mut fsm = ProtocolFsm::new(config.protocol_version);
+    let mut fsm = ProtocolFsm::new(config.protocol_version, config.http_only);
     let mut backoff = Backoff::new(config.max_retries, config.reconnect_interval);
     let mut monitor = Monitor::new_with_config(config);
     let mut arena = ScratchArena::new();
@@ -316,7 +316,14 @@ fn run_tick_loop(
                     tls_cfg,
                     dial,
                 )?;
-                if !resp.body.is_empty() {
+                // The v1 report response is normally a bare ack like
+                // {"status":"success"}; only dispatch if it looks like a real
+                // server-pushed message (task/exec/ping carry a "method" or
+                // "id" field), to avoid log noise from the ack every tick.
+                let body_str = std::str::from_utf8(&resp.body).unwrap_or("");
+                if !body_str.is_empty()
+                    && (body_str.contains("\"method\"") || body_str.contains("\"id\""))
+                {
                     dispatch_server_message(&resp.body, config, dial, tls_cfg, None, fsm.mode());
                 }
             }

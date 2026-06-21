@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-06-21
+
+### Added
+- **`--http-only` / `AGENT_HTTP_ONLY`**: escape hatch for networks where a DPI / middlebox breaks the WebSocket upgrade (observed behind some cloud middleboxes and TUN proxies — WS handshake returns the SPA `200` instead of `101`). Forces the protocol FSM to start and stay at `HttpV1`: the agent reports over plain HTTP POST and never attempts WS, sidestepping the interference entirely. Wire-compatible — the v1 report endpoint accepts the same payload the WS v1 path sends (verified `status=200 {"status":"success"}`).
+
+### Changed
+- `HttpV1` report tick no longer dispatches the bare `{"status":"success"}` ack as a server message (it was logging "unhandled v1 message" every tick); only responses carrying a `method`/`id` field (real task/exec/ping pushes) are dispatched.
+
+### Fixed
+- `ProtocolFsm::new` now takes an `http_only` flag (`Default` impl + tests updated).
+
 ## [0.1.3] - 2026-06-21
 
 ### Documentation & repo hygiene (no binary behavior change)
@@ -45,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Compression**: gzip for HTTP POST reports, `permessage-deflate` (RFC 7692) for WebSocket.
 - Memory footprint roughly 10× smaller than the Go agent (~3 MB vs 18–32 MB RSS on Linux).
 
+[0.1.4]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.4
 [0.1.3]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.3
 [0.1.2]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.2
 [0.1.1]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.1
