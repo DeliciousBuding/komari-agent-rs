@@ -89,6 +89,7 @@ pub struct Config {
     pub disable_web_ssh: bool, // AGENT_DISABLE_WEB_SSH,    --disable-web-ssh,         default true
     pub disable_auto_update: bool, // AGENT_DISABLE_AUTO_UPDATE, --disable-auto-update,     default true
     pub disable_compression: bool, // AGENT_DISABLE_COMPRESSION, --disable-compression,     default false
+    pub http_only: bool, // AGENT_HTTP_ONLY, --http-only, default false (DPI/middlebox escape hatch: skip WS, report over HTTP only)
     pub enable_gpu: bool, // AGENT_ENABLE_GPU,          --gpu,                     default false
     pub ignore_unsafe_cert: bool, // AGENT_IGNORE_UNSAFE_CERT,  --ignore-unsafe-cert / -u, default false
     pub debug_log: bool, // AGENT_DEBUG_LOG,           --debug-log,               default false
@@ -139,6 +140,7 @@ impl Default for Config {
             disable_web_ssh: true,
             disable_auto_update: true,
             disable_compression: false,
+            http_only: false,
             enable_gpu: false,
             ignore_unsafe_cert: false,
             debug_log: false,
@@ -363,6 +365,7 @@ fn apply_long_flag(config: &mut Config, name: &str, val: Option<&str>) -> Result
         "disable-compression" => {
             config.disable_compression = parse_bool_opt("--disable-compression", val)?
         }
+        "http-only" => config.http_only = parse_bool_opt("--http-only", val)?,
         "gpu" => config.enable_gpu = parse_bool_opt("--gpu", val)?,
         "ignore-unsafe-cert" => {
             config.ignore_unsafe_cert = parse_bool_opt("--ignore-unsafe-cert", val)?
@@ -438,6 +441,7 @@ fn is_bool_flag(name: &str) -> bool {
         "disable-web-ssh"
             | "disable-auto-update"
             | "disable-compression"
+            | "http-only"
             | "gpu"
             | "ignore-unsafe-cert"
             | "debug-log"
@@ -520,6 +524,11 @@ pub fn load_env(config: &mut Config) {
         && let Ok(b) = parse_bool("AGENT_DISABLE_COMPRESSION", &v)
     {
         config.disable_compression = b;
+    }
+    if let Ok(v) = env::var("AGENT_HTTP_ONLY")
+        && let Ok(b) = parse_bool("AGENT_HTTP_ONLY", &v)
+    {
+        config.http_only = b;
     }
     if let Ok(v) = env::var("AGENT_ENABLE_GPU")
         && let Ok(b) = parse_bool("AGENT_ENABLE_GPU", &v)
@@ -1167,6 +1176,9 @@ fn apply_json_map(config: &mut Config, map: &std::collections::HashMap<String, J
     }
     if let Some(v) = get_bool("disable_compression") {
         config.disable_compression = v;
+    }
+    if let Some(v) = get_bool("http_only") {
+        config.http_only = v;
     }
     if let Some(v) = get_bool("enable_gpu") {
         config.enable_gpu = v;
