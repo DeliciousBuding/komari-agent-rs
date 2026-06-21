@@ -106,7 +106,7 @@ struct IfData {
 }
 
 use crate::monitor::ip::macos::IfAddrs;
-// getifaddrs/freeifaddrs extern is declared in ip::macos
+use crate::monitor::ip::macos::{freeifaddrs, getifaddrs};
 
 // ── Interface filtering ─────────────────────────────────────────────────────
 
@@ -196,7 +196,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
             cur = ifa.ifa_next;
             continue;
         }
-        let ifd = unsafe { &*ifa.ifa_data };
+        let ifd = unsafe { &*(ifa.ifa_data as *const IfData) };
         let rx = ifd.ifi_ibytes;
         let tx = ifd.ifi_obytes;
 
