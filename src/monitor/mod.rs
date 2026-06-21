@@ -320,8 +320,12 @@ fn encode_report(
         0
     });
 
-    // ── IP: NIC + HTTP APIs (collected for basicInfo, not in monitoring JSON) ──
-    let (_ipv4, _ipv6) = ip::collect_ip(config).unwrap_or((None, None));
+    // ── IP: DISABLED 2026-06-21 — collect_ip ran every 1s tick but its result
+    // was discarded (_ipv4/_ipv6 unused, not in monitoring JSON), opening up to
+    // 7 outbound HTTP dials per tick (~420/min) to IP-echo services, violating
+    // the <3MB-RSS / daemon goal. Re-enable only if basicInfo actually needs
+    // live IPs, and then cache once at startup, not per-tick.
+    // let (_ipv4, _ipv6) = ip::collect_ip(config).unwrap_or((None, None));
 
     // ══════════════════════════════════════════════════════════════════════
     // Build JSON matching Go komari-agent wire format exactly.

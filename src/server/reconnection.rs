@@ -134,10 +134,9 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
                 );
                 if backoff.exhausted() {
                     eprintln!(
-                        "[komari] ERROR: max retries ({}) exhausted -- exiting",
+                        "[komari] WARN: max retries ({}) exhausted -- continue retry loop (Go parity: agent never exits)",
                         backoff.max_retries
                     );
-                    std::process::exit(1);
                 }
                 std::thread::sleep(backoff.next_delay());
                 continue;
@@ -166,10 +165,9 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
 
         if backoff.exhausted() {
             eprintln!(
-                "[komari] ERROR: max retries ({}) exhausted -- exiting",
+                "[komari] WARN: max retries ({}) exhausted -- continue retry loop (Go parity: agent never exits)",
                 backoff.max_retries
             );
-            std::process::exit(1);
         }
         std::thread::sleep(backoff.next_delay());
     }
