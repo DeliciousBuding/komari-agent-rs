@@ -10,7 +10,7 @@
 
 | 实现 | binary | 外部依赖 | 稳态 RSS | 运行模型 |
 |------|:------:|:--------:|:--------:|----------|
-| **komari-agent-rs（我们）** | **1.2 MB** | **2**（rustls+ring） | **3.1 MB**（Win）/ 4.6 MB（us3） | sync 单线程 |
+| **komari-agent-rs（我们）** | **1.2 MB** | **2**（rustls+ring） | **3.1 MB**（Win）/ 4.6 MB（Linux） | sync 单线程 |
 | komari-zig-agent | 1.93 MB | **0**（纯 stdlib） | ~8.5 MB* | threaded（std.Thread） |
 | komari-monitor-rs（Rust 第三方） | 3.63 MB | **316** transitive crates | ~10+ MB*（tokio） | tokio multi-thread |
 | komari-agent（Go 官方） | 10.4 MB | 13 direct + 14 indirect | 18-32 MB | threaded（goroutine） |
@@ -87,5 +87,5 @@ cd komari-agent-rs && cargo build --release   # profile 已 opt-level=z + fat LT
 ## 5. 数据来源
 
 - binary/依赖/功能：workflower 并行编译 + 源码分析（Windows 工具链 go1.26 / zig0.16 / cargo）。
-- 我们的 RSS：WSL/Windows/us3 实测（见 TESTING.md）。
+- 我们的 RSS：WSL/Windows/Linux 实测（见 TESTING.md）。
 - Zig/Go RSS：历史测量记忆；Rust-第三方未实测（tokio 基线已知偏高）。
