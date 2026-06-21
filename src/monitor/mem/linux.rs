@@ -132,21 +132,21 @@ fn mode_2() -> Option<MemInfo> {
 /// 4. Fallback when /proc/meminfo unavailable → mode 2 (`free -b`)
 pub fn collect(config: &Config) -> MemInfo {
     // 1. memory_include_cache: used = total - free (includes cache/buffer)
-    if config.memory_include_cache {
-        if let Some(m) = read_proc_meminfo() {
-            return MemInfo {
-                total: m.total,
-                used: m.total.saturating_sub(m.free),
-                swap_total: m.swap_total,
-                swap_used: swap_used(&m),
-            };
-        }
+    if config.memory_include_cache
+        && let Some(m) = read_proc_meminfo()
+    {
+        return MemInfo {
+            total: m.total,
+            used: m.total.saturating_sub(m.free),
+            swap_total: m.swap_total,
+            swap_used: swap_used(&m),
+        };
     }
     // 2. memory_report_raw_used: htop-like (total - free - buffers - cached - sreclaimable)
-    if config.memory_report_raw_used {
-        if let Some(m) = read_proc_meminfo() {
-            return mode_0(&m);
-        }
+    if config.memory_report_raw_used
+        && let Some(m) = read_proc_meminfo()
+    {
+        return mode_0(&m);
     }
     // 3. Default: gopsutil-like (total - MemAvailable)
     if let Some(m) = read_proc_meminfo() {

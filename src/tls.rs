@@ -231,10 +231,8 @@ fn parse_pem_certs(pem: &str) -> Vec<CertificateDer<'static>> {
             in_cert = true;
             b64_buf.clear();
         } else if trimmed == "-----END CERTIFICATE-----" {
-            if in_cert {
-                if let Some(der_bytes) = base64_decode_strip(&b64_buf) {
-                    certs.push(CertificateDer::from(der_bytes));
-                }
+            if in_cert && let Some(der_bytes) = base64_decode_strip(&b64_buf) {
+                certs.push(CertificateDer::from(der_bytes));
             }
             in_cert = false;
         } else if in_cert {
@@ -436,7 +434,7 @@ fn base64_decode_strip(input: &str) -> Option<Vec<u8>> {
     }
 
     // Output size: every 4 base64 chars → 3 bytes (minus padding).
-    let quad_count = (end + 3) / 4;
+    let quad_count = end.div_ceil(4);
     let mut out = Vec::with_capacity(quad_count * 3);
 
     let mut i = 0;
