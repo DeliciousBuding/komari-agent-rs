@@ -125,7 +125,10 @@ pub(super) fn update_basic_info(
         let url = if is_v2 {
             format!("{}/api/clients/v2/rpc?token={}", base, encoded_token)
         } else {
-            format!("{}/api/clients/uploadBasicInfo?token={}", base, encoded_token)
+            format!(
+                "{}/api/clients/uploadBasicInfo?token={}",
+                base, encoded_token
+            )
         };
         for &extended in &[true, false] {
             let body = if is_v2 {
@@ -162,7 +165,11 @@ pub(super) fn update_basic_info(
                         "basic info HTTP {} (v{}, {})",
                         resp.status_code,
                         if is_v2 { 2 } else { 1 },
-                        if extended { "full, retrying compat" } else { "compat" }
+                        if extended {
+                            "full, retrying compat"
+                        } else {
+                            "compat"
+                        }
                     );
                 }
                 Err(e) => {
