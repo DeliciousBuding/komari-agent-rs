@@ -48,6 +48,41 @@ impl From<io::Error> for HttpErr {
     }
 }
 
+// ── MaybeTls — unified TLS (rustls) and plain TCP stream ─────────────────
+//
+// Supports `http://` endpoints (local server self-monitoring, no TLS needed).
+// `https://` → rustls TLS stream, `http://` → plain TcpStream. Both impl
+// Read+Write so http_post/ws can treat them uniformly.
+
+enum MaybeTls {
+    Tls(rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>),
+    Plain(std::net::TcpStream),
+}
+
+impl Read for MaybeTls {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            MaybeTls::Tls(s) => s.read(buf),
+            MaybeTls::Plain(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for MaybeTls {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            MaybeTls::Tls(s) => s.write(buf),
+            MaybeTls::Plain(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            MaybeTls::Tls(s) => s.flush(),
+            MaybeTls::Plain(s) => s.flush(),
+        }
+    }
+}
+
 // ── http_post ────────────────────────────────────────────────────────────
 
 pub fn http_post(
@@ -60,7 +95,7 @@ pub fn http_post(
     dial: &crate::proxy::Dialer,
 ) -> Result<HttpResponse, HttpErr> {
     // 1. Parse URL → host, port, path, query
-    let (host, port, path, query) = parse_https_url(url)?;
+    let (host, port, path, query) = parse_url(url)?;
 
     // 2. TCP connect via the unified Dialer.
     //
@@ -80,13 +115,17 @@ pub fn http_post(
     tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
     tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
 
-    // 3. TLS wrap with rustls
-    let server_name = rustls::pki_types::ServerName::try_from(host.as_str())
-        .map_err(|e| HttpErr::Tls(format!("invalid SNI: {e}")))?
-        .to_owned();
-    let conn = rustls::ClientConnection::new(Arc::clone(tls_cfg), server_name)
-        .map_err(|e| HttpErr::Tls(format!("TLS: {e}")))?;
-    let mut stream = rustls::StreamOwned::new(conn, tcp);
+    // 3. Wrap stream: https:// → TLS (rustls), http:// → plain TCP (local server).
+    let mut stream = if url.starts_with("https://") {
+        let server_name = rustls::pki_types::ServerName::try_from(host.as_str())
+            .map_err(|e| HttpErr::Tls(format!("invalid SNI: {e}")))?
+            .to_owned();
+        let conn = rustls::ClientConnection::new(Arc::clone(tls_cfg), server_name)
+            .map_err(|e| HttpErr::Tls(format!("TLS: {e}")))?;
+        MaybeTls::Tls(rustls::StreamOwned::new(conn, tcp))
+    } else {
+        MaybeTls::Plain(tcp)
+    };
 
     // 4. Build HTTP request (manual HTTP/1.1 formatting — no alloc for path in
     //    the common no-query-string case)
@@ -120,13 +159,19 @@ pub fn http_post(
 
 // ── URL parsing ──────────────────────────────────────────────────────────
 //
-// Parses "https://host[:port][/path][?query]" into its components.
-// Defaults: port 443, path "/", query "".
+// Parses "https://host[:port][/path][?query]" (port 443) or
+//         "http://host[:port][/path][?query]"  (port 80) into its components.
 
-fn parse_https_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or_else(|| HttpErr::Parse("URL must start with https://".into()))?;
+fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
+    let (rest, default_port) = if let Some(s) = url.strip_prefix("https://") {
+        (s, 443u16)
+    } else if let Some(s) = url.strip_prefix("http://") {
+        (s, 80u16)
+    } else {
+        return Err(HttpErr::Parse(
+            "URL must start with http:// or https://".into(),
+        ));
+    };
 
     // Split host from path/query
     let (host_part, path_part) = match rest.find('/') {
@@ -143,7 +188,7 @@ fn parse_https_url(url: &str) -> Result<(String, u16, String, String), HttpErr> 
                 .map_err(|_| HttpErr::Parse(format!("invalid port in URL: {url}")))?;
             (h, p)
         }
-        None => (host_part.to_string(), 443),
+        None => (host_part.to_string(), default_port),
     };
 
     // Split query from path
@@ -211,7 +256,7 @@ mod tests {
     #[test]
     fn test_parse_url_standard() {
         let (host, port, path, query) =
-            parse_https_url("https://example.com:8443/api/report?key=val").unwrap();
+            parse_url("https://example.com:8443/api/report?key=val").unwrap();
         assert_eq!(host, "example.com");
         assert_eq!(port, 8443);
         assert_eq!(path, "/api/report");
@@ -220,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_parse_url_default_port_no_path() {
-        let (host, port, path, query) = parse_https_url("https://example.com").unwrap();
+        let (host, port, path, query) = parse_url("https://example.com").unwrap();
         assert_eq!(host, "example.com");
         assert_eq!(port, 443);
         assert_eq!(path, "/");
@@ -229,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_parse_url_path_no_query() {
-        let (host, port, path, query) = parse_https_url("https://example.com/api/v1").unwrap();
+        let (host, port, path, query) = parse_url("https://example.com/api/v1").unwrap();
         assert_eq!(host, "example.com");
         assert_eq!(port, 443);
         assert_eq!(path, "/api/v1");
@@ -238,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_parse_url_root_path_with_query() {
-        let (host, port, path, query) = parse_https_url("https://example.com/?token=abc").unwrap();
+        let (host, port, path, query) = parse_url("https://example.com/?token=abc").unwrap();
         assert_eq!(host, "example.com");
         assert_eq!(port, 443);
         assert_eq!(path, "/");
@@ -246,8 +291,22 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_url_rejects_http() {
-        assert!(parse_https_url("http://example.com").is_err());
+    fn test_parse_url_http_default_port_80() {
+        // http:// is supported (local server self-monitoring, no TLS).
+        let (host, port, path, query) = parse_url("http://127.0.0.1:25774").unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 25774);
+        assert_eq!(path, "/");
+        assert_eq!(query, "");
+        let (_, p80, _, _) = parse_url("http://example.com").unwrap();
+        assert_eq!(p80, 80);
+        let _ = (host, port, path, query);
+    }
+
+    #[test]
+    fn test_parse_url_rejects_no_scheme() {
+        assert!(parse_url("example.com").is_err());
+        assert!(parse_url("ftp://example.com").is_err());
     }
 
     #[test]

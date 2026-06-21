@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-06-21
+
+### Added
+- **`http://` endpoint support**: the agent now accepts plain-HTTP endpoints (e.g. `http://127.0.0.1:25774`), enabling agent + Komari server on the same host with the server bound to localhost — no TLS needed. Previously the URL parser rejected anything other than `https://`, which forced a public-https round-trip (via Cloudflare/nginx) just to self-monitor a co-located server. Implementation: a `MaybeTls` enum unifies rustls TLS streams and plain `TcpStream` behind a single `Read`+`Write` impl; `parse_https_url` → `parse_url` handles both schemes (default port 80 for `http://`, 443 for `https://`).
+- **Auto `--http-only` for `http://`**: plain HTTP cannot do a `wss://` WebSocket upgrade, so an `http://` endpoint automatically forces HTTP POST reporting (with a startup notice). WS-over-plain-HTTP remains unsupported by design — use `https://` + WS, or `http://` + HTTP POST.
+
+### Changed
+- `parse_https_url` renamed to `parse_url` (now scheme-aware).
+
 ## [0.1.5] - 2026-06-21
 
 ### Added
@@ -65,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Compression**: gzip for HTTP POST reports, `permessage-deflate` (RFC 7692) for WebSocket.
 - Memory footprint roughly 10× smaller than the Go agent (~3 MB vs 18–32 MB RSS on Linux).
 
+[0.1.6]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.6
 [0.1.5]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.5
 [0.1.4]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.4
 [0.1.3]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.3

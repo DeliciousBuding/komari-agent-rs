@@ -50,6 +50,16 @@ fn main() {
         process::exit(1);
     }
 
+    // http:// endpoint → auto --http-only. Plain HTTP has no TLS so WS upgrade
+    // (wss) is impossible; force HTTP POST report. Typical case: agent + server
+    // on the same host, server bound to 127.0.0.1 (Go used http://127.0.0.1:PORT).
+    if config.endpoint.starts_with("http://") && !config.http_only {
+        eprintln!(
+            "[komari] http:// endpoint -> auto-enabling --http-only (no TLS, HTTP POST only)"
+        );
+        config.http_only = true;
+    }
+
     // Self-update check (feature-gated). Runs once at startup when auto-update
     // is enabled; a successful replacement re-execs and the new binary takes
     // over. Failure is non-fatal — we proceed with the current binary.
