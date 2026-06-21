@@ -11,15 +11,13 @@ fn main() {
 
     #[cfg(target_os = "freebsd")]
     {
-        // libkvm provides kvm_getswapinfo (swap stats in mem/freebsd.rs).
-        // libkvm internally depends on libelf (elf_begin/elf_end/elf_kind) to
-        // parse the running kernel's ELF headers. A native FreeBSD ld pulls
-        // libelf in transitively via libkvm.so's NEEDED entries, but the
-        // cross-toolchain (cross's freebsd12 gcc 6.4.0 / ld) does not resolve
-        // the versioned elf_*@R1.0 symbols without an explicit -lelf, failing
-        // the release CI's freebsd cross build. Link both explicitly so the
-        // artifact is identical whether built natively or via cross.
+        // libkvm provides kvm_getswapinfo (swap stats in mem/freebsd.rs). It
+        // transitively depends on libelf's versioned elf_*@R1.0 symbols, which
+        // the cross-toolchain (freebsd12 gcc 6.4.0) cannot resolve at link
+        // time. We link kvm explicitly here; the unresolved elf_* symbols are
+        // handled by `--allow-shlib-undefined` in .cargo/config.toml (they
+        // resolve at runtime on a real FreeBSD host via libkvm.so's NEEDED
+        // entry pulling in libelf).
         println!("cargo:rustc-link-lib=kvm");
-        println!("cargo:rustc-link-lib=elf");
     }
 }
