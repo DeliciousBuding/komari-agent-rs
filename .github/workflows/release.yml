@@ -25,7 +25,7 @@ jobs:
           fi
       - name: Prepare artifact
         run: cp target/x86_64-unknown-linux-musl/release/komari-agent-rs komari-agent-rs-linux-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-musl
           path: komari-agent-rs-linux-x86_64
@@ -47,7 +47,7 @@ jobs:
       - name: Prepare artifact
         shell: bash
         run: cp target/release/komari-agent-rs.exe komari-agent-rs-windows-x86_64.exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-msvc
           path: komari-agent-rs-windows-x86_64.exe
@@ -67,7 +67,7 @@ jobs:
           fi
       - name: Prepare artifact
         run: cp target/release/komari-agent-rs komari-agent-rs-macos-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: komari-agent-rs-macos-x86_64
@@ -81,7 +81,7 @@ jobs:
       - run: cross build --release --target x86_64-unknown-freebsd --features full
       - name: Prepare artifact
         run: cp target/x86_64-unknown-freebsd/release/komari-agent-rs komari-agent-rs-freebsd-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: freebsd
           path: komari-agent-rs-freebsd-x86_64
@@ -104,7 +104,7 @@ jobs:
           fi
       - name: Prepare artifact
         run: cp target/aarch64-unknown-linux-musl/release/komari-agent-rs komari-agent-rs-linux-arm64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-musl-arm64
           path: komari-agent-rs-linux-arm64
@@ -127,7 +127,7 @@ jobs:
           fi
       - name: Prepare artifact
         run: cp target/aarch64-apple-darwin/release/komari-agent-rs komari-agent-rs-macos-arm64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-arm64
           path: komari-agent-rs-macos-arm64
