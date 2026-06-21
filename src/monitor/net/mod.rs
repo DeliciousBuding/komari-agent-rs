@@ -5,6 +5,8 @@
 //! first call to [`update`](Delta::update) the return value is 0 — there is
 //! no previous sample to compute a delta from.
 
+#![allow(unused_imports)]
+
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 #[cfg(target_os = "linux")]
