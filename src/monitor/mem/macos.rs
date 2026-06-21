@@ -90,44 +90,38 @@ unsafe extern "C" {
 unsafe fn sysctl_u64(name: &str) -> Option<u64> {
     let mut val: u64 = 0;
     let mut len = std::mem::size_of::<u64>();
-    let ret = unsafe {
-        sysctlbyname(
-            name.as_ptr(),
-            (&mut val) as *mut u64 as *mut u8,
-            &mut len,
-            std::ptr::null(),
-            0,
-        )
-    };
+    let ret = sysctlbyname(
+        name.as_ptr(),
+        (&mut val) as *mut u64 as *mut u8,
+        &mut len,
+        std::ptr::null(),
+        0,
+    );
     if ret == 0 { Some(val) } else { None }
 }
 
 unsafe fn sysctl_u32(name: &str) -> Option<u32> {
     let mut val: u32 = 0;
     let mut len = std::mem::size_of::<u32>();
-    let ret = unsafe {
-        sysctlbyname(
-            name.as_ptr(),
-            (&mut val) as *mut u32 as *mut u8,
-            &mut len,
-            std::ptr::null(),
-            0,
-        )
-    };
+    let ret = sysctlbyname(
+        name.as_ptr(),
+        (&mut val) as *mut u32 as *mut u8,
+        &mut len,
+        std::ptr::null(),
+        0,
+    );
     if ret == 0 { Some(val) } else { None }
 }
 
 unsafe fn sysctl_struct<T>(name: &str, out: &mut T) -> bool {
     let mut len = std::mem::size_of::<T>();
-    let ret = unsafe {
-        sysctlbyname(
-            name.as_ptr(),
-            out as *mut T as *mut u8,
-            &mut len,
-            std::ptr::null(),
-            0,
-        )
-    };
+    let ret = sysctlbyname(
+        name.as_ptr(),
+        out as *mut T as *mut u8,
+        &mut len,
+        std::ptr::null(),
+        0,
+    );
     ret == 0
 }
 
