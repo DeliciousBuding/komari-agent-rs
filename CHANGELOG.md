@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-06-21
+
+### Documentation & repo hygiene (no binary behavior change)
+- **README**: rebuilt the Configuration table from the actual `Config` struct — the old table listed flags and a `KOMARI_*` env prefix that do not exist in the code (real prefix is `AGENT_*`, real flag is `--config`).
+- **README**: fixed all download asset names to match the release artifacts (`komari-agent-rs-{platform}-{arch}`, e.g. `komari-agent-rs-linux-x86_64` — the old names 404'd).
+- **README**: added upstream references ([`komari-monitor/komari`](https://github.com/komari-monitor/komari) + [`komari-monitor/komari-agent`](https://github.com/komari-monitor/komari-agent)) and switched endpoint examples to `https://`.
+- Added `CHANGELOG.md` (Keep a Changelog) and the **MIT `LICENSE` file** — the README badge declared MIT but no file existed.
+- Scrubbed operator-specific hostnames and local paths from the public repo (`src/tls.rs` comment, `docs/TESTING.md`, `docs/COMPARISON.md`).
+
+### Tests / CI
+- `cargo fmt --check` now passes (it was red-flagging the v0.1.2 commit).
+- `net_offsets_read_nonzero_octets` regression test made CI-stable: asserts that ≥1 adapter passes the Up+Connected filter rather than hard-asserting octets > 0, so a momentarily-quiet CI NIC doesn't flake. The core regression (offsets shifted 4 bytes → zero adapters) is still caught.
+
 ## [0.1.2] - 2026-06-21
 
 ### Fixed
@@ -32,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Compression**: gzip for HTTP POST reports, `permessage-deflate` (RFC 7692) for WebSocket.
 - Memory footprint roughly 10× smaller than the Go agent (~3 MB vs 18–32 MB RSS on Linux).
 
+[0.1.3]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.3
 [0.1.2]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.2
 [0.1.1]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.1
 [0.1.0]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.0
