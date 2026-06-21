@@ -42,7 +42,7 @@ pub fn collect_uptime() -> Result<u64, io::Error> {
 
     let ret = unsafe {
         sysctlbyname(
-            c"kern.boottime".as_ptr(),
+            c"kern.boottime".as_ptr() as *const u8,
             (&mut tv) as *mut TimeVal as *mut u8,
             &mut len,
             std::ptr::null(),
