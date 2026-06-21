@@ -111,13 +111,12 @@ fn parse_cpuinfo(data: &str) -> (String, u32, u32) {
         if let Some(v) = line
             .strip_prefix("physical id")
             .and_then(|r| r.strip_prefix("\t: "))
+            && let Ok(id) = v.trim().parse::<u32>()
         {
-            if let Ok(id) = v.trim().parse::<u32>() {
-                let used = &phys[..phys_n as usize];
-                if !used.contains(&id) && (phys_n as usize) < phys.len() {
-                    phys[phys_n as usize] = id;
-                    phys_n += 1;
-                }
+            let used = &phys[..phys_n as usize];
+            if !used.contains(&id) && (phys_n as usize) < phys.len() {
+                phys[phys_n as usize] = id;
+                phys_n += 1;
             }
         }
     }

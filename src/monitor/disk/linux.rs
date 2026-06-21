@@ -102,7 +102,7 @@ const EXCLUDED_FS: &[&str] = &[
 ];
 
 fn is_excluded_fs(fstype: &str) -> bool {
-    EXCLUDED_FS.iter().any(|&ex| fstype == ex)
+    EXCLUDED_FS.contains(&fstype)
 }
 
 // ── Mountpoint match helper ───────────────────────────────────────────────────

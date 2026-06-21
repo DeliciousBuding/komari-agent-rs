@@ -22,7 +22,7 @@ pub mod windows;
 pub fn collect() -> Result<LoadInfo, io::Error> {
     #[cfg(target_os = "linux")]
     {
-        return linux::collect();
+        linux::collect()
     }
     #[cfg(windows)]
     {

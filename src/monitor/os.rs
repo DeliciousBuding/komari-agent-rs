@@ -12,7 +12,7 @@ pub struct OsInfo {
 pub fn collect() -> OsInfo {
     #[cfg(target_os = "linux")]
     {
-        return linux::collect();
+        linux::collect()
     }
     #[cfg(windows)]
     {
@@ -101,7 +101,7 @@ mod linux {
         let mut pretty = None;
         let mut name = None;
         let mut version = None;
-        for line in std::io::BufReader::new(f).lines().filter_map(|l| l.ok()) {
+        for line in std::io::BufReader::new(f).lines().map_while(Result::ok) {
             if let Some(v) = line.strip_prefix("PRETTY_NAME=") {
                 pretty = Some(v.trim_matches('"').to_string());
             } else if let Some(v) = line.strip_prefix("NAME=") {
@@ -126,28 +126,27 @@ mod linux {
         if let Ok(out) = Command::new("getprop")
             .arg("ro.build.version.release")
             .output()
+            && let Ok(ver) = String::from_utf8(out.stdout)
         {
-            if let Ok(ver) = String::from_utf8(out.stdout) {
-                let ver = ver.trim().to_string();
-                if !ver.is_empty() {
-                    let model = cmd_out("getprop", &["ro.product.model"]);
-                    let brand = cmd_out("getprop", &["ro.product.brand"]);
-                    let mut s = format!("Android {}", ver);
-                    if !model.is_empty() {
-                        if !brand.is_empty() && brand != model {
-                            s.push_str(&format!(" ({} {})", brand, model));
-                        } else {
-                            s.push_str(&format!(" ({})", model));
-                        }
+            let ver = ver.trim().to_string();
+            if !ver.is_empty() {
+                let model = cmd_out("getprop", &["ro.product.model"]);
+                let brand = cmd_out("getprop", &["ro.product.brand"]);
+                let mut s = format!("Android {}", ver);
+                if !model.is_empty() {
+                    if !brand.is_empty() && brand != model {
+                        s.push_str(&format!(" ({} {})", brand, model));
+                    } else {
+                        s.push_str(&format!(" ({})", model));
                     }
-                    return Some(s);
                 }
+                return Some(s);
             }
         }
         // 2. /system/build.prop
         if let Ok(f) = fs::File::open("/system/build.prop") {
             let mut ver = String::new();
-            for line in std::io::BufReader::new(f).lines().filter_map(|l| l.ok()) {
+            for line in std::io::BufReader::new(f).lines().map_while(Result::ok) {
                 if let Some(v) = line.strip_prefix("ro.build.version.release=") {
                     ver = v.to_string();
                     break;
@@ -186,7 +185,7 @@ mod linux {
         let v = version?;
         // Try to read VERSION_CODENAME from /etc/os-release for codename
         let codename = fs::File::open("/etc/os-release").ok().and_then(|f| {
-            for line in std::io::BufReader::new(f).lines().filter_map(|l| l.ok()) {
+            for line in std::io::BufReader::new(f).lines().map_while(Result::ok) {
                 if let Some(c) = line.strip_prefix("VERSION_CODENAME=") {
                     return Some(c.trim_matches('"').to_string());
                 }
@@ -206,7 +205,7 @@ mod linux {
             if let Ok(f) = fs::File::open(path) {
                 let mut unique = String::new();
                 let mut dsm_ver = String::new();
-                for line in std::io::BufReader::new(f).lines().filter_map(|l| l.ok()) {
+                for line in std::io::BufReader::new(f).lines().map_while(Result::ok) {
                     if let Some(v) = line.trim().strip_prefix("unique=") {
                         unique = v.trim_matches('"').to_string();
                     } else if let Some(v) = line.trim().strip_prefix("udc_check_state=") {
