@@ -353,8 +353,14 @@ pub fn execute_exec(command: &str, disable_web_ssh: bool) -> ExecResult {
 
     #[cfg(unix)]
     {
-        use std::io::Write;
+        use std::io::{Read, Write};
         use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        // Parity with Go's exec context: bound execution so a hanging command
+        // (e.g. `sleep infinity`, a stuck REPL) cannot stall the single-threaded
+        // tick loop forever. 30 s matches Go's default.
+        const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
+
         let mut child = match Command::new("sh")
             .arg("-s")
             .stdin(Stdio::piped())
@@ -365,14 +371,56 @@ pub fn execute_exec(command: &str, disable_web_ssh: bool) -> ExecResult {
             Ok(c) => c,
             Err(e) => return ExecResult::new(format!("failed to spawn shell: {e}"), -1),
         };
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(command.as_bytes());
+            // stdin dropped here → child sees EOF and can finish.
         }
-        // Dropping stdin happens implicitly when the borrow ends; wait_with_output
-        // closes stdin, reads stdout/stderr fully, then waits.
-        match child.wait_with_output() {
-            Ok(out) => normalize_output(&out.stdout, &out.stderr, out.status.code()),
-            Err(e) => ExecResult::new(format!("failed to wait for command: {e}"), -1),
+        let mut stdout = child.stdout.take().expect("stdout piped");
+        let mut stderr = child.stderr.take().expect("stderr piped");
+
+        // Drain stdout/stderr on worker threads so a large output cannot fill
+        // the pipe buffer and deadlock the child while we poll its status.
+        let out_handle = std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = stdout.read_to_end(&mut b);
+            b
+        });
+        let err_handle = std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = stderr.read_to_end(&mut b);
+            b
+        });
+
+        // Poll for completion with a deadline; kill + reap on timeout.
+        let deadline = Instant::now() + EXEC_TIMEOUT;
+        let result: Result<Option<i32>, &'static str> = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status.code()),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err("timeout");
+                }
+                Err(_) => break Err("wait failed"),
+            }
+        };
+
+        let stdout_buf = out_handle.join().unwrap_or_default();
+        let stderr_buf = err_handle.join().unwrap_or_default();
+
+        match result {
+            Ok(code) => normalize_output(&stdout_buf, &stderr_buf, code),
+            Err("timeout") => {
+                let mut r = normalize_output(&stdout_buf, &stderr_buf, None);
+                r.output
+                    .push_str("\n[komari] command timed out after 30s and was killed");
+                r.exit_code = -124; // 124 = GNU `timeout` convention
+                r
+            }
+            _ => ExecResult::new("failed to wait for command".to_string(), -1),
         }
     }
 
@@ -434,20 +482,71 @@ fn exec_windows_powershell(command: &str) -> ExecResult {
     let _ = file.write_all(script.as_bytes());
     drop(file);
 
-    let out = Command::new("powershell.exe")
+    // Spawn with piped stdout/stderr, then apply the same 30 s timeout + worker
+    // reader pattern as the Unix path (parity with Go's exec context).
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
+
+    let mut child = match Command::new("powershell.exe")
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-File")
         .arg(&tmp)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output();
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return ExecResult::new(format!("failed to run powershell: {e}"), -1);
+        }
+    };
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+    let out_handle = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stdout.read_to_end(&mut b);
+        b
+    });
+    let err_handle = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stderr.read_to_end(&mut b);
+        b
+    });
+
+    let deadline = Instant::now() + EXEC_TIMEOUT;
+    let result: Result<Option<i32>, &'static str> = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status.code()),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err("timeout");
+            }
+            Err(_) => break Err("wait failed"),
+        }
+    };
     let _ = std::fs::remove_file(&tmp);
 
-    match out {
-        Ok(out) => normalize_output(&out.stdout, &out.stderr, out.status.code()),
-        Err(e) => ExecResult::new(format!("failed to run powershell: {e}"), -1),
+    let stdout_buf = out_handle.join().unwrap_or_default();
+    let stderr_buf = err_handle.join().unwrap_or_default();
+    match result {
+        Ok(code) => normalize_output(&stdout_buf, &stderr_buf, code),
+        Err("timeout") => {
+            let mut r = normalize_output(&stdout_buf, &stderr_buf, None);
+            r.output
+                .push_str("\n[komari] command timed out after 30s and was killed");
+            r.exit_code = -124;
+            r
+        }
+        _ => ExecResult::new("failed to wait for command".to_string(), -1),
     }
 }
 
