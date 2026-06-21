@@ -92,8 +92,8 @@ struct IfAddrs {
 }
 
 unsafe extern "C" {
-    fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
-    fn freeifaddrs(ifa: *mut IfAddrs);
+    fn getifaddrs_ip(ifap: *mut *mut IfAddrs) -> i32;
+    fn freeifaddrs_ip(ifa: *mut IfAddrs);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -147,7 +147,7 @@ pub fn collect_ip(config: &Config) -> Result<(Option<String>, Option<String>), M
 
 fn ip_from_nic(include: &[String], exclude: &[String]) -> (Option<String>, Option<String>) {
     let mut ifa_head: *mut IfAddrs = std::ptr::null_mut();
-    let ret = unsafe { getifaddrs(&mut ifa_head) };
+    let ret = unsafe { getifaddrs_ip(&mut ifa_head) };
     if ret != 0 {
         return (None, None);
     }
@@ -219,7 +219,7 @@ fn ip_from_nic(include: &[String], exclude: &[String]) -> (Option<String>, Optio
         cur = ifa.ifa_next;
     }
 
-    unsafe { freeifaddrs(ifa_head) };
+    unsafe { freeifaddrs_ip(ifa_head) };
     (ipv4, ipv6)
 }
 
