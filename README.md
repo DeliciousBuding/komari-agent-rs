@@ -7,11 +7,13 @@
 
 **Featherweight Komari monitoring agent — sync single-threaded Rust, ~1.5 MB binary (196 KB our code + ~1 MB mandatory TLS stack), &lt;3 MB RSS.**
 
+> Rust rewrite of [`komari-monitor/komari-agent`](https://github.com/komari-monitor/komari-agent) (Go) for the [`komari-monitor/komari`](https://github.com/komari-monitor/komari) server-monitoring tool. Wire-compatible with the official Go agent — register a node on a Komari server, point this agent at it, done.
+
 ## Quick Start
 
 ```bash
 # Download and run (Linux)
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-linux-amd64 -o komari-agent
+curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64 -o komari-agent
 chmod +x komari-agent
 ./komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 ```
@@ -69,7 +71,7 @@ The binary is **TLS-bound**: rustls + ring + webpki (~70%) is the irreducible co
 ### Linux
 
 ```bash
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-linux-amd64 -o komari-agent
+curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64 -o komari-agent
 chmod +x komari-agent
 sudo mv komari-agent /usr/local/bin/
 komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
@@ -78,7 +80,7 @@ komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 ### macOS
 
 ```bash
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-darwin-amd64 -o komari-agent
+curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-macos-x86_64 -o komari-agent
 chmod +x komari-agent
 sudo mv komari-agent /usr/local/bin/
 komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
@@ -87,14 +89,14 @@ komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 ### Windows
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-windows-amd64.exe" -OutFile "komari-agent.exe"
+Invoke-WebRequest -Uri "https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-windows-x86_64.exe" -OutFile "komari-agent.exe"
 .\komari-agent.exe --token YOUR_TOKEN --endpoint https://your-komari-server
 ```
 
 ### FreeBSD
 
 ```bash
-fetch https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-freebsd-amd64 -o komari-agent
+fetch https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-freebsd-x86_64 -o komari-agent
 chmod +x komari-agent
 mv komari-agent /usr/local/bin/
 komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
