@@ -148,9 +148,9 @@ impl Huff {
         // Incomplete codes (left > 0 at the end) are permitted: dynamic blocks
         // may carry single-symbol distance tables.
         let mut left: i32 = 1;
-        for len in 1..16 {
+        for &count in counts.iter().skip(1) {
             left <<= 1;
-            left -= counts[len] as i32;
+            left -= count as i32;
             if left < 0 {
                 return Err(InflateErr::BadCode);
             }
@@ -231,7 +231,7 @@ fn decode_stored(r: &mut BitReader<'_>, out: &mut Vec<u8>) -> Result<(), Inflate
     r.align_byte();
     let len = read_u16_le(r)? as usize;
     let nlen = read_u16_le(r)?;
-    if len != (!nlen & 0xFFFF) as usize {
+    if len != !nlen as usize {
         return Err(InflateErr::InvalidData);
     }
     for _ in 0..len {
@@ -412,7 +412,7 @@ pub fn inflate_zlib(input: &[u8], output: &mut Vec<u8>) -> Result<(), InflateErr
     // CM must be 8 (deflate); CINFO <= 7 (window size); FCHECK makes
     // (CMF*256+FLG) divisible by 31. We treat a missing FDICT as required
     // (no preset dictionary support) and skip strict checks only on failure.
-    if (cmf & 0x0F) != 8 || (cmf >> 4) > 7 || ((cmf as u16) << 8 | flg as u16) % 31 != 0 {
+    if (cmf & 0x0F) != 8 || (cmf >> 4) > 7 || !((cmf as u16) << 8 | flg as u16).is_multiple_of(31) {
         return Err(InflateErr::InvalidData);
     }
     if flg & 0x20 != 0 {

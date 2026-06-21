@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 Discussions / Q&A
+    url: https://github.com/DeliciousBuding/komari-agent-rs/discussions
+    about: For questions, ideas, and general discussion, please use Discussions instead of opening an issue.
+  - name: 🔒 Security report
+    url: https://github.com/DeliciousBuding/komari-agent-rs/security/policy
+    about: Found a security issue? See SECURITY.md — do not open a public issue.

@@ -2,7 +2,7 @@ name: CI
 on: [push, pull_request]
 
 jobs:
-  test:
+  lint-and-test:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
@@ -10,11 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test
-      - run: cargo fmt --check
-      - name: clippy
-        run: cargo clippy -- -D warnings
-        continue-on-error: true
+        with:
+          components: rustfmt, clippy
+      - name: fmt (enforced)
+        run: cargo fmt --check
+      - name: clippy (enforced, zero warnings)
+        run: cargo clippy --release -- -D warnings
+      - name: test (default features)
+        run: cargo test
+      - name: test (all features)
+        run: cargo test --all-features
 
   build-linux-musl:
     runs-on: ubuntu-latest

@@ -55,7 +55,8 @@ impl From<io::Error> for HttpErr {
 // Read+Write so http_post/ws can treat them uniformly.
 
 enum MaybeTls {
-    Tls(rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>),
+    // Boxed: rustls::StreamOwned is large; boxing keeps the enum small on the stack.
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>),
     Plain(std::net::TcpStream),
 }
 
@@ -109,7 +110,7 @@ pub fn http_post(
             crate::proxy::NetErr::Dns(d) => {
                 HttpErr::Parse(format!("DNS resolution failed for '{host}': {d}"))
             }
-            crate::proxy::NetErr::Proxy(s) => HttpErr::Io(io::Error::new(io::ErrorKind::Other, s)),
+            crate::proxy::NetErr::Proxy(s) => HttpErr::Io(io::Error::other(s)),
         })?;
 
     tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -122,7 +123,7 @@ pub fn http_post(
             .to_owned();
         let conn = rustls::ClientConnection::new(Arc::clone(tls_cfg), server_name)
             .map_err(|e| HttpErr::Tls(format!("TLS: {e}")))?;
-        MaybeTls::Tls(rustls::StreamOwned::new(conn, tcp))
+        MaybeTls::Tls(Box::new(rustls::StreamOwned::new(conn, tcp)))
     } else {
         MaybeTls::Plain(tcp)
     };
