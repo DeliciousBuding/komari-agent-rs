@@ -47,15 +47,17 @@ unsafe extern "C" {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-unsafe fn sysctl_str(name: &str, buf: &mut [u8]) -> Option<&str> {
+unsafe fn sysctl_str<'a>(name: &str, buf: &'a mut [u8]) -> Option<&'a str> {
     let mut len = buf.len();
-    let ret = sysctlbyname(
-        name.as_ptr(),
-        buf.as_mut_ptr(),
-        &mut len,
-        std::ptr::null(),
-        0,
-    );
+    let ret = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr(),
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
     if ret != 0 || len == 0 {
         return None;
     }
@@ -69,13 +71,15 @@ unsafe fn sysctl_str(name: &str, buf: &mut [u8]) -> Option<&str> {
 unsafe fn sysctl_u32(name: &str) -> Option<u32> {
     let mut val: u32 = 0;
     let mut len = std::mem::size_of::<u32>();
-    let ret = sysctlbyname(
-        name.as_ptr(),
-        (&mut val) as *mut u32 as *mut u8,
-        &mut len,
-        std::ptr::null(),
-        0,
-    );
+    let ret = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut val) as *mut u32 as *mut u8,
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
     if ret == 0 { Some(val) } else { None }
 }
 

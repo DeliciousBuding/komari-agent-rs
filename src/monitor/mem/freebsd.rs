@@ -27,26 +27,30 @@ unsafe extern "C" {
 unsafe fn sysctl_u64(name: &str) -> Option<u64> {
     let mut val: u64 = 0;
     let mut len = std::mem::size_of::<u64>();
-    let ret = sysctlbyname(
-        name.as_ptr(),
-        (&mut val) as *mut u64 as *mut u8,
-        &mut len,
-        std::ptr::null(),
-        0,
-    );
+    let ret = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut val) as *mut u64 as *mut u8,
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
     if ret == 0 { Some(val) } else { None }
 }
 
 unsafe fn sysctl_u32(name: &str) -> Option<u32> {
     let mut val: u32 = 0;
     let mut len = std::mem::size_of::<u32>();
-    let ret = sysctlbyname(
-        name.as_ptr(),
-        (&mut val) as *mut u32 as *mut u8,
-        &mut len,
-        std::ptr::null(),
-        0,
-    );
+    let ret = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut val) as *mut u32 as *mut u8,
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
     if ret == 0 { Some(val) } else { None }
 }
 
@@ -89,13 +93,15 @@ const O_RDONLY: i32 = 0x0000; // POSIX
 /// in bytes.  On failure returns (0, 0).
 unsafe fn swap_via_kvm() -> (u64, u64) {
     let mut errbuf = [0u8; 256];
-    let kd = kvm_openfiles(
-        std::ptr::null(),
-        "/dev/null\0".as_ptr(),
-        std::ptr::null(),
-        O_RDONLY,
-        errbuf.as_mut_ptr(),
-    );
+    let kd = unsafe {
+        kvm_openfiles(
+            std::ptr::null(),
+            "/dev/null\0".as_ptr(),
+            std::ptr::null(),
+            O_RDONLY,
+            errbuf.as_mut_ptr(),
+        )
+    };
     if kd.is_null() {
         return (0, 0);
     }
@@ -107,8 +113,8 @@ unsafe fn swap_via_kvm() -> (u64, u64) {
         ksw_flags: 0,
     };
 
-    let n = kvm_getswapinfo(kd, &mut kswap, 1, 0);
-    kvm_close(kd);
+    let n = unsafe { kvm_getswapinfo(kd, &mut kswap, 1, 0) };
+    unsafe { kvm_close(kd) };
 
     if n < 1 {
         return (0, 0);
