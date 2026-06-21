@@ -1,5 +1,7 @@
 // komari-agent-rs: monitor::process — process count metric.
 
+#![allow(unused_imports)]
+
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 #[cfg(target_os = "linux")]
