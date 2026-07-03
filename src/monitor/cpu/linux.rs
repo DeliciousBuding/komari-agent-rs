@@ -1,6 +1,7 @@
 // komari-agent-rs: Linux CPU metrics — /proc/stat delta + /proc/cpuinfo parsing.
 #![allow(dead_code)]
 
+use super::usage_from_ticks;
 use crate::arena::ScratchArena;
 use std::fs;
 use std::io;
@@ -41,12 +42,7 @@ pub fn collect_cpu<'a>(
     let stat = fs::read_to_string("/proc/stat")?;
     let (total, idle) = parse_stat(&stat)?;
 
-    let usage = if prev.total > 0 && total > prev.total {
-        let td = (total - prev.total) as f64;
-        ((td - (idle - prev.idle) as f64) / td) * 100.0
-    } else {
-        0.0
-    };
+    let usage = usage_from_ticks(prev.total, prev.idle, total, idle);
     prev.total = total;
     prev.idle = idle;
 

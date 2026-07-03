@@ -3,6 +3,15 @@
 
 #![allow(unused_imports)]
 
+pub(crate) fn usage_from_ticks(prev_total: u64, prev_idle: u64, total: u64, idle: u64) -> f64 {
+    let total_delta = match total.checked_sub(prev_total) {
+        Some(delta) if prev_total > 0 && delta > 0 => delta,
+        _ => return 0.0,
+    };
+    let idle_delta = idle.saturating_sub(prev_idle).min(total_delta);
+    ((total_delta - idle_delta) as f64 / total_delta as f64) * 100.0
+}
+
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 #[cfg(target_os = "linux")]
@@ -80,5 +89,22 @@ mod stub {
             arch: name,
             usage: 0.001,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usage_from_ticks;
+
+    #[test]
+    fn usage_from_ticks_bounds_normal_delta() {
+        assert_eq!(usage_from_ticks(100, 40, 200, 70), 70.0);
+    }
+
+    #[test]
+    fn usage_from_ticks_handles_counter_reset_or_idle_anomaly() {
+        assert_eq!(usage_from_ticks(100, 40, 90, 45), 0.0);
+        assert_eq!(usage_from_ticks(100, 80, 200, 60), 100.0);
+        assert_eq!(usage_from_ticks(100, 10, 200, 500), 0.0);
     }
 }

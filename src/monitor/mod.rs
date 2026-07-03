@@ -336,20 +336,22 @@ fn encode_report(
 
     // CPU
     j.begin_obj_field(Field::Cpu)?;
-    let cpu_usage = if cpu.usage <= 0.001 { 0.001 } else { cpu.usage };
+    let cpu_usage = sanitize_percent(cpu.usage).max(0.001);
     j.f64_field(Field::Usage, cpu_usage)?;
     j.end_obj()?;
 
     // RAM
+    let (ram_total, ram_used) = sanitize_used_total(mem.total, mem.used);
     j.begin_obj_field(Field::Ram)?;
-    j.u64_field(Field::Total, mem.total)?;
-    j.u64_field(Field::Used, mem.used)?;
+    j.u64_field(Field::Total, ram_total)?;
+    j.u64_field(Field::Used, ram_used)?;
     j.end_obj()?;
 
     // Swap
+    let (swap_total, swap_used) = sanitize_used_total(mem.swap_total, mem.swap_used);
     j.begin_obj_field(Field::Swap)?;
-    j.u64_field(Field::Total, mem.swap_total)?;
-    j.u64_field(Field::Used, mem.swap_used)?;
+    j.u64_field(Field::Total, swap_total)?;
+    j.u64_field(Field::Used, swap_used)?;
     j.end_obj()?;
 
     // Load
@@ -360,6 +362,7 @@ fn encode_report(
     j.end_obj()?;
 
     // Disk
+    let (disk_total, disk_used) = sanitize_used_total(disk_total, disk_used);
     j.begin_obj_field(Field::Disk)?;
     j.u64_field(Field::Total, disk_total)?;
     j.u64_field(Field::Used, disk_used)?;
@@ -397,7 +400,7 @@ fn encode_report(
                 j.u64_field(Field::Count, gpus.len() as u64)?;
 
                 // Average GPU utilisation
-                let total_util: f64 = gpus.iter().map(|g| g.utilization).sum();
+                let total_util: f64 = gpus.iter().map(|g| sanitize_percent(g.utilization)).sum();
                 let avg_usage = if gpus.is_empty() {
                     0.0
                 } else {
@@ -409,11 +412,14 @@ fn encode_report(
                 if !gpus.is_empty() {
                     j.begin_arr_field(Field::DetailedInfo)?;
                     for gpu_info in gpus.iter() {
+                        let (memory_total, memory_used) =
+                            sanitize_used_total(gpu_info.memory_total, gpu_info.memory_used);
+                        let utilization = sanitize_percent(gpu_info.utilization);
                         j.begin_obj()?;
                         j.str_field(Field::Name, &gpu_info.name)?;
-                        j.u64_field(Field::MemoryTotal, gpu_info.memory_total)?;
-                        j.u64_field(Field::MemoryUsed, gpu_info.memory_used)?;
-                        j.f64_field(Field::Utilization, gpu_info.utilization)?;
+                        j.u64_field(Field::MemoryTotal, memory_total)?;
+                        j.u64_field(Field::MemoryUsed, memory_used)?;
+                        j.f64_field(Field::Utilization, utilization)?;
                         j.u64_field(Field::Temperature, gpu_info.temperature)?;
                         j.end_obj()?;
                     }
@@ -437,4 +443,40 @@ fn encode_report(
     j.end_obj()?; // close top-level object
 
     Ok(j.finish().len())
+}
+
+fn sanitize_percent(value: f64) -> f64 {
+    if value.is_nan() {
+        return 0.0;
+    }
+    value.clamp(0.0, 100.0)
+}
+
+fn sanitize_used_total(total: u64, used: u64) -> (u64, u64) {
+    if total == 0 {
+        return (0, 0);
+    }
+    (total, used.min(total))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_percent_bounds_metric_percentages() {
+        assert_eq!(sanitize_percent(-10.0), 0.0);
+        assert_eq!(sanitize_percent(0.001), 0.001);
+        assert_eq!(sanitize_percent(42.5), 42.5);
+        assert_eq!(sanitize_percent(150.0), 100.0);
+        assert_eq!(sanitize_percent(f64::NAN), 0.0);
+        assert_eq!(sanitize_percent(f64::INFINITY), 100.0);
+    }
+
+    #[test]
+    fn sanitize_used_total_never_reports_used_above_total() {
+        assert_eq!(sanitize_used_total(100, 40), (100, 40));
+        assert_eq!(sanitize_used_total(100, 140), (100, 100));
+        assert_eq!(sanitize_used_total(0, 140), (0, 0));
+    }
 }

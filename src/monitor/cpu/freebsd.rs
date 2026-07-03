@@ -1,6 +1,7 @@
 // komari-agent-rs: FreeBSD CPU metrics — sysctlbyname kern.cp_times + hw.model + hw.ncpu.
 #![cfg(target_os = "freebsd")]
 
+use super::usage_from_ticks;
 use crate::arena::ScratchArena;
 use std::io;
 
@@ -136,10 +137,7 @@ pub fn collect_cpu<'a>(
                 idle_ticks += buf[base + 4]; // CP_IDLE
             }
 
-            if prev.total > 0 && total_ticks > prev.total {
-                let td = (total_ticks - prev.total) as f64;
-                usage = ((td - (idle_ticks - prev.idle) as f64) / td) * 100.0;
-            }
+            usage = usage_from_ticks(prev.total, prev.idle, total_ticks, idle_ticks);
 
             prev.total = total_ticks;
             prev.idle = idle_ticks;

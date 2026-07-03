@@ -2,6 +2,7 @@
 #![cfg(windows)]
 #![allow(dead_code)]
 
+use super::usage_from_ticks;
 use crate::arena::ScratchArena;
 use std::io;
 
@@ -157,12 +158,7 @@ pub fn collect_cpu<'a>(
     let idle_u64 = filetime_to_u64(&idle);
     let total_u64 = filetime_to_u64(&kernel) + filetime_to_u64(&user);
 
-    let usage = if prev.total > 0 && total_u64 > prev.total {
-        let td = (total_u64 - prev.total) as f64;
-        ((td - (idle_u64 - prev.idle) as f64) / td) * 100.0
-    } else {
-        0.0
-    };
+    let usage = usage_from_ticks(prev.total, prev.idle, total_u64, idle_u64);
     prev.total = total_u64;
     prev.idle = idle_u64;
 
