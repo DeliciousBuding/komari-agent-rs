@@ -200,13 +200,56 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
     out
 }
 
-/// Sum `total` and `used` across all [`DiskInfo`] entries.
+fn same_statfs(a: &DiskInfo, b: &DiskInfo) -> bool {
+    a.total == b.total && a.used == b.used
+}
+
+/// Sum `total` and `used` across all unique [`DiskInfo`] entries.
 pub fn aggregate(disks: &[DiskInfo]) -> (u64, u64) {
     let mut total = 0u64;
     let mut used = 0u64;
-    for d in disks {
+    for (idx, d) in disks.iter().enumerate() {
+        if disks[..idx].iter().any(|seen| same_statfs(seen, d)) {
+            continue;
+        }
         total += d.total;
         used += d.used;
     }
     (total, used)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn disk(mp: &str, fs: &str, total: u64, used: u64) -> DiskInfo {
+        let mut mp_buf = [0u8; 192];
+        let mp_b = mp.as_bytes();
+        mp_buf[..mp_b.len()].copy_from_slice(mp_b);
+
+        let mut fs_buf = [0u8; 32];
+        let fs_b = fs.as_bytes();
+        fs_buf[..fs_b.len()].copy_from_slice(fs_b);
+
+        DiskInfo {
+            mp_buf,
+            mp_len: mp_b.len() as u8,
+            fs_buf,
+            fs_len: fs_b.len() as u8,
+            total,
+            used,
+        }
+    }
+
+    #[test]
+    fn aggregate_deduplicates_same_statfs_mounts() {
+        let disks = [
+            disk("/", "ext4", 31, 12),
+            disk("/var/lib/docker/overlay2/x/merged", "overlay", 31, 12),
+            disk("/var/lib/docker/overlay2/y/merged", "overlay", 31, 12),
+            disk("/boot/efi", "vfat", 1, 0),
+        ];
+
+        assert_eq!(aggregate(&disks), (32, 12));
+    }
 }
