@@ -91,6 +91,7 @@ pub enum Field {
     MemTotal,         // "mem_total"
     SwapTotal,        // "swap_total"
     DiskTotal,        // "disk_total"
+    DiskUsed,         // "disk_used"
     GpuName,          // "gpu_name"
     Virtualization,   // "virtualization"
 }
@@ -156,6 +157,7 @@ impl Field {
             Field::MemTotal => b"mem_total",
             Field::SwapTotal => b"swap_total",
             Field::DiskTotal => b"disk_total",
+            Field::DiskUsed => b"disk_used",
             Field::GpuName => b"gpu_name",
             Field::Virtualization => b"virtualization",
         }

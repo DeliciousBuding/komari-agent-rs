@@ -238,7 +238,7 @@ fn encode_basic_info(
     let os = crate::monitor::os::collect();
     let mem = crate::monitor::mem::collect(config);
     let disks = crate::monitor::disk::collect(config);
-    let (disk_total, _) = crate::monitor::disk::aggregate(&disks);
+    let (disk_total, disk_used) = crate::monitor::disk::aggregate(&disks);
     let (ipv4, ipv6) = crate::monitor::ip::collect_ip(config).unwrap_or((None, None));
     let gpu_name = crate::monitor::gpu::detect_gpus()
         .ok()
@@ -262,6 +262,7 @@ fn encode_basic_info(
     j.u64_field(Field::MemTotal, mem.total)?;
     j.u64_field(Field::SwapTotal, mem.swap_total)?;
     j.u64_field(Field::DiskTotal, disk_total)?;
+    j.u64_field(Field::DiskUsed, disk_used)?;
     j.str_field(Field::GpuName, &gpu_name)?;
     j.str_field(Field::Virtualization, virt)?;
     j.str_field(Field::Version, env!("CARGO_PKG_VERSION"))?;
