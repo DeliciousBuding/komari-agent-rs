@@ -1,6 +1,6 @@
 [package]
 name = "komari-agent-rs"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "Featherweight Komari monitoring agent — sync single-threaded, <1MB binary, <3MB RSS"
 license = "MIT"

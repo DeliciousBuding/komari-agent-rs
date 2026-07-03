@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-07-04
+
+### Fixed
+- Linux disk aggregation now deduplicates repeated `statfs(total, used)` samples so overlay/bind mounts of the same root filesystem cannot multiply disk usage.
+- CPU usage delta calculation now tolerates counter resets and idle-counter anomalies without unsigned underflow, panic, wraparound, or percentages outside `0..100`.
+- Report encoding clamps impossible percentage metrics and guarantees `used <= total` for RAM, swap, disk, and GPU memory before upload.
+
 ## [0.1.6] - 2026-06-21
 
 ### Added
@@ -74,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Compression**: gzip for HTTP POST reports, `permessage-deflate` (RFC 7692) for WebSocket.
 - Memory footprint roughly 10× smaller than the Go agent (~3 MB vs 18–32 MB RSS on Linux).
 
+[0.1.8]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.8
 [0.1.6]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.6
 [0.1.5]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.5
 [0.1.4]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.4
