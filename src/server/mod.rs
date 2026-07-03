@@ -87,8 +87,9 @@ fn build_static_heartbeat() -> Vec<u8> {
 
 /// Upload basic system identification info to the Komari server.
 ///
-/// Called at startup and periodically thereafter.  POSTs a JSON-RPC v2
-/// `agent.basicInfo` notification or v1 raw JSON.
+/// Called at startup and periodically thereafter. POSTs either a JSON-RPC v2
+/// `agent.basicInfo` notification or the v1 raw JSON expected by
+/// `/api/clients/uploadBasicInfo`.
 pub(super) fn update_basic_info(
     config: &Config,
     tls_cfg: &Arc<rustls::ClientConfig>,
@@ -97,21 +98,21 @@ pub(super) fn update_basic_info(
     let base = config.endpoint.trim_end_matches('/');
     let encoded_token = crate::ws::url_encode(&config.token);
 
-    // Protocol + payload ladder.
-    //
-    // Protocol: try v2 first (if configured), then v1. Some Komari forks
-    // (e.g. v1.1.9) lack the v2/rpc HTTP route entirely (POST → 404), so we
-    // descend to the v1 uploadBasicInfo endpoint — mirroring the WS FSM's
-    // WsV2→WsV1 downshift. This keeps the agent working across both v2-capable
-    // and v1-only Komari deployments.
-    //
-    // Payload: within each protocol, try the full payload (extended fields
-    // kernel_version / cpu_physical_cores) then a compat payload; older
-    // servers reject the extended fields and need the compat retry.
-    let protos: &[bool] = if config.protocol_version >= 2 {
-        &[true, false]
-    } else {
+    // Protocol + payload ladder. HTTP-only deployments intentionally start at
+    // the v1 upload endpoint; probing v2 first only creates 404 noise on the
+    // current tokendance-komari server.
+    let protos: &[bool] = if config.http_only || config.protocol_version < 2 {
         &[false]
+    } else {
+        &[true, false]
+    };
+    // The current server model accepts the compact v1 payload. Extended fields
+    // remain available for v2-capable upstreams, but HTTP-only should stay quiet
+    // and deterministic.
+    let payloads: &[bool] = if config.http_only {
+        &[false]
+    } else {
+        &[true, false]
     };
 
     let cf_access = crate::server::cf_access::CfAccess::from_config(config);
@@ -130,7 +131,7 @@ pub(super) fn update_basic_info(
                 base, encoded_token
             )
         };
-        for &extended in &[true, false] {
+        for &extended in payloads {
             let body = if is_v2 {
                 build_basic_info_v2(config, extended)
             } else {
@@ -238,7 +239,7 @@ fn encode_basic_info(
     let os = crate::monitor::os::collect();
     let mem = crate::monitor::mem::collect(config);
     let disks = crate::monitor::disk::collect(config);
-    let (disk_total, disk_used) = crate::monitor::disk::aggregate(&disks);
+    let (disk_total, _) = crate::monitor::disk::aggregate(&disks);
     let (ipv4, ipv6) = crate::monitor::ip::collect_ip(config).unwrap_or((None, None));
     let gpu_name = crate::monitor::gpu::detect_gpus()
         .ok()
@@ -262,7 +263,6 @@ fn encode_basic_info(
     j.u64_field(Field::MemTotal, mem.total)?;
     j.u64_field(Field::SwapTotal, mem.swap_total)?;
     j.u64_field(Field::DiskTotal, disk_total)?;
-    j.u64_field(Field::DiskUsed, disk_used)?;
     j.str_field(Field::GpuName, &gpu_name)?;
     j.str_field(Field::Virtualization, virt)?;
     j.str_field(Field::Version, env!("CARGO_PKG_VERSION"))?;
