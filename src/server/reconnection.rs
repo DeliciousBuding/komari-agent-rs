@@ -316,12 +316,11 @@ fn upload_http_ping_result(
     let result = super::task::handle_ping(&task.ping_type, &task.target, None);
     let params = result.build_payload(task.id, 2);
     let payload = v2::new_notification(v2::METHOD_AGENT_PING_RESULT, &params);
-    let (body, encoding) = gzip_if_enabled(&payload, config);
     match http_post(
         &build_http_url(config, ProtocolMode::HttpV2),
-        &body,
+        &payload,
         "application/json",
-        encoding,
+        None,
         &build_http_cf_headers(config),
         tls_cfg,
         dial,

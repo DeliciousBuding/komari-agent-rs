@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-07-06
+
+### Fixed
+- HTTP ping result uploads now send plain JSON instead of gzip-compressed JSON-RPC. The current Komari `/api/clients/v2/rpc` POST compatibility path reads raw request bodies and does not decompress gzip payloads.
+
 ## [0.1.9] - 2026-07-06
 
 ### Fixed
@@ -86,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Compression**: gzip for HTTP POST reports, `permessage-deflate` (RFC 7692) for WebSocket.
 - Memory footprint roughly 10× smaller than the Go agent (~3 MB vs 18–32 MB RSS on Linux).
 
+[0.1.10]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.10
 [0.1.9]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.9
 [0.1.8]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.8
 [0.1.6]: https://github.com/DeliciousBuding/komari-agent-rs/releases/tag/v0.1.6
