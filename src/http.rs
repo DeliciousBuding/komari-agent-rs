@@ -84,7 +84,7 @@ impl Write for MaybeTls {
     }
 }
 
-// ── http_post ────────────────────────────────────────────────────────────
+// ── http_post / http_get ─────────────────────────────────────────────────
 
 pub fn http_post(
     url: &str,
@@ -95,6 +95,38 @@ pub fn http_post(
     tls_cfg: &Arc<rustls::ClientConfig>,
     dial: &crate::proxy::Dialer,
 ) -> Result<HttpResponse, HttpErr> {
+    http_request(
+        "POST",
+        url,
+        Some(body),
+        Some(content_type),
+        content_encoding,
+        extra_headers,
+        tls_cfg,
+        dial,
+    )
+}
+
+pub fn http_get(
+    url: &str,
+    extra_headers: &[(String, String)],
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
+) -> Result<HttpResponse, HttpErr> {
+    http_request("GET", url, None, None, None, extra_headers, tls_cfg, dial)
+}
+
+fn http_request(
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    content_type: Option<&str>,
+    content_encoding: Option<&str>,
+    extra_headers: &[(String, String)],
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
+) -> Result<HttpResponse, HttpErr> {
+    let body = body.unwrap_or(&[]);
     // 1. Parse URL → host, port, path, query
     let (host, port, path, query) = parse_url(url)?;
 
@@ -131,13 +163,17 @@ pub fn http_post(
     // 4. Build HTTP request (manual HTTP/1.1 formatting — no alloc for path in
     //    the common no-query-string case)
     if query.is_empty() {
-        write!(stream, "POST {path} HTTP/1.1\r\n")?;
+        write!(stream, "{method} {path} HTTP/1.1\r\n")?;
     } else {
-        write!(stream, "POST {path}?{query} HTTP/1.1\r\n")?;
+        write!(stream, "{method} {path}?{query} HTTP/1.1\r\n")?;
     }
     write!(stream, "Host: {host}\r\n")?;
-    write!(stream, "Content-Type: {content_type}\r\n")?;
-    write!(stream, "Content-Length: {}\r\n", body.len())?;
+    if let Some(content_type) = content_type {
+        write!(stream, "Content-Type: {content_type}\r\n")?;
+    }
+    if method != "GET" {
+        write!(stream, "Content-Length: {}\r\n", body.len())?;
+    }
     if let Some(enc) = content_encoding {
         write!(stream, "Content-Encoding: {enc}\r\n")?;
     }
@@ -147,7 +183,9 @@ pub fn http_post(
     write!(stream, "Connection: close\r\n\r\n")?;
 
     // 5. Write body + flush (flush triggers TLS handshake)
-    stream.write_all(body)?;
+    if method != "GET" {
+        stream.write_all(body)?;
+    }
     stream.flush()?;
 
     // 6. Read response

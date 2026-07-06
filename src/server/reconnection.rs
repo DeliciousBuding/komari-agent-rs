@@ -19,12 +19,13 @@
 use super::backoff::Backoff;
 use crate::arena::ScratchArena;
 use crate::config::Config;
-use crate::http::{HttpErr, http_post};
+use crate::http::{HttpErr, http_get, http_post};
 use crate::monitor::{Monitor, generate_report};
 use crate::protocol::fsm::{FailureKind, ProtocolFsm, ProtocolMode};
 use crate::protocol::v2;
 use crate::server::cf_access::CfAccess;
 use crate::ws::{WsConnection, WsErr, WsMessage};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -254,6 +255,147 @@ fn build_http_cf_headers(config: &Config) -> Vec<(String, String)> {
     headers
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HttpPingTask {
+    id: u64,
+    ping_type: String,
+    target: String,
+    interval_secs: u64,
+}
+
+fn poll_http_ping_tasks(
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    last_run: &mut HashMap<u64, Instant>,
+) {
+    let base = config.endpoint.trim_end_matches('/');
+    let token = crate::ws::url_encode(&config.token);
+    let url = format!("{base}/api/clients/ping/tasks?token={token}");
+    let headers = build_http_cf_headers(config);
+    let resp = match http_get(&url, &headers, tls_cfg, dial) {
+        Ok(resp) if resp.status_code == 200 => resp,
+        Ok(resp) => {
+            eprintln!(
+                "[komari] WARN: ping task poll returned HTTP {}",
+                resp.status_code
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!("[komari] WARN: ping task poll failed: {e}");
+            return;
+        }
+    };
+
+    let tasks = parse_http_ping_tasks(&resp.body);
+    let now = Instant::now();
+    for task in tasks {
+        let due = match last_run.get(&task.id) {
+            Some(prev) => prev.elapsed() >= Duration::from_secs(task.interval_secs.max(1)),
+            None => true,
+        };
+        if !due {
+            continue;
+        }
+        last_run.insert(task.id, now);
+        upload_http_ping_result(config, dial, tls_cfg, &task);
+    }
+}
+
+fn upload_http_ping_result(
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    task: &HttpPingTask,
+) {
+    eprintln!(
+        "[komari] ping task {}: {} -> {}",
+        task.id, task.ping_type, task.target
+    );
+    let result = super::task::handle_ping(&task.ping_type, &task.target, None);
+    let params = result.build_payload(task.id, 2);
+    let payload = v2::new_notification(v2::METHOD_AGENT_PING_RESULT, &params);
+    let (body, encoding) = gzip_if_enabled(&payload, config);
+    match http_post(
+        &build_http_url(config, ProtocolMode::HttpV2),
+        &body,
+        "application/json",
+        encoding,
+        &build_http_cf_headers(config),
+        tls_cfg,
+        dial,
+    ) {
+        Ok(resp) if resp.status_code == 200 => {}
+        Ok(resp) => eprintln!(
+            "[komari] WARN: ping result upload returned HTTP {}",
+            resp.status_code
+        ),
+        Err(e) => eprintln!("[komari] WARN: ping result upload failed: {e}"),
+    }
+}
+
+fn parse_http_ping_tasks(body: &[u8]) -> Vec<HttpPingTask> {
+    let text = match std::str::from_utf8(body) {
+        Ok(text) => text,
+        Err(_) => return Vec::new(),
+    };
+    let mut tasks = Vec::new();
+    let mut depth = 0i32;
+    let mut start = None;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start.take() {
+                        if let Some(task) = parse_http_ping_task_object(&text[s..=idx]) {
+                            tasks.push(task);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    tasks
+}
+
+fn parse_http_ping_task_object(obj: &str) -> Option<HttpPingTask> {
+    let id = super::task::extract_json_number(obj.as_bytes(), "id")? as u64;
+    let ping_type = super::task::extract_json_string(obj.as_bytes(), "type")?;
+    let target = super::task::extract_json_string(obj.as_bytes(), "target")?;
+    let interval_secs = super::task::extract_json_number(obj.as_bytes(), "interval")
+        .unwrap_or(60)
+        .max(1) as u64;
+    Some(HttpPingTask {
+        id,
+        ping_type,
+        target,
+        interval_secs,
+    })
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // run_tick_loop — main 1-second monitoring loop
 // ═══════════════════════════════════════════════════════════════════════════
@@ -268,6 +410,8 @@ fn run_tick_loop(
     dial: &crate::proxy::Dialer,
 ) -> Result<(), TickErr> {
     let mut last_heartbeat = Instant::now();
+    let mut last_http_ping_poll = Instant::now() - Duration::from_secs(10);
+    let mut http_ping_last_run: HashMap<u64, Instant> = HashMap::new();
 
     loop {
         // 1. Collect metrics.
@@ -328,6 +472,13 @@ fn run_tick_loop(
                 }
             }
             _ => return Err(TickErr::Other("mode/connection mismatch".into())),
+        }
+
+        if matches!(conn, Connection::Http)
+            && last_http_ping_poll.elapsed() >= Duration::from_secs(5)
+        {
+            poll_http_ping_tasks(config, dial, tls_cfg, &mut http_ping_last_run);
+            last_http_ping_poll = Instant::now();
         }
 
         // 3. Read server messages (WS: non-blocking poll).
@@ -560,6 +711,36 @@ fn abbreviate(s: &str) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_http_ping_tasks_from_komari_response() {
+        let body = br#"[{"id":1,"weight":1,"name":"fleet","clients":["u1"],"default_on":true,"type":"icmp","target":"1.1.1.1","interval":60}]"#;
+        let tasks = parse_http_ping_tasks(body);
+        assert_eq!(
+            tasks,
+            vec![HttpPingTask {
+                id: 1,
+                ping_type: "icmp".to_string(),
+                target: "1.1.1.1".to_string(),
+                interval_secs: 60,
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_http_ping_tasks_ignores_invalid_objects() {
+        let body =
+            br#"[{"name":"missing-id"},{"id":2,"type":"tcp","target":"example.com","interval":0}]"#;
+        let tasks = parse_http_ping_tasks(body);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, 2);
+        assert_eq!(tasks[0].interval_secs, 1);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
