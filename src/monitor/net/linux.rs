@@ -125,7 +125,10 @@ fn parse_stats(rest: &str) -> Option<[u64; 16]> {
 
 /// Returns `true` for lo and common virtual/container interface prefixes.
 fn is_virtual(name: &str) -> bool {
-    const VP: &[&str] = &["docker", "veth", "br-", "tun", "tap", "virbr", "vnet"];
+    const VP: &[&str] = &[
+        "docker", "veth", "br-", "tun", "tap", "virbr", "vnet",
+        "cni", "podman", "flannel", "vmbr", "fwbr", "fwpr",
+    ];
     name == "lo" || VP.iter().any(|p| name.starts_with(p))
 }
 
@@ -156,9 +159,9 @@ fn include_nic(name: &str, cfg: &Config) -> bool {
 ///
 /// Reads `/proc/net/dev`, skips the two header lines, and for each remaining
 /// line parses the interface name and 16 stat columns.  Loopback and virtual
-/// interfaces (docker*, veth*, br-*, tun*, tap*, virbr*, vnet*) are excluded
-/// by default.  `Config::include_nics` / `Config::exclude_nics` refine
-/// selection with glob patterns.
+/// interfaces (docker*, veth*, br-*, tun*, tap*, virbr*, vnet*, cni*, podman*,
+/// flannel*, vmbr*, fwbr*, fwpr*) are excluded by default.  `Config::include_nics`
+/// / `Config::exclude_nics` refine selection with glob patterns.
 ///
 /// Speeds are computed as the delta from the previous call divided by elapsed
 /// time.  On the first call all speeds are 0.

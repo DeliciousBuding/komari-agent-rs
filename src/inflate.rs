@@ -21,6 +21,8 @@ pub enum InflateErr {
     BadDistance,
     /// Huffman code did not match any symbol (oversubscribed / corrupt table).
     BadCode,
+    /// Decompressed output exceeded the 64 MiB safety limit (DEFLATE bomb protection).
+    MaxSizeExceeded,
 }
 
 impl std::fmt::Display for InflateErr {
@@ -30,10 +32,14 @@ impl std::fmt::Display for InflateErr {
             Self::InvalidData => f.write_str("inflate: invalid data"),
             Self::BadDistance => f.write_str("inflate: distance too far back"),
             Self::BadCode => f.write_str("inflate: invalid huffman code"),
+            Self::MaxSizeExceeded => f.write_str("inflate: output exceeded 64 MiB safety limit"),
         }
     }
 }
 impl std::error::Error for InflateErr {}
+
+/// Maximum decompressed output size (64 MiB) — DEFLATE bomb protection.
+const MAX_INFLATE_SIZE: usize = 64 * 1024 * 1024;
 
 // ── BitReader (LSB-first) ───────────────────────────────────────────────────
 // DEFLATE packs bits least-significant-first within each byte; Huffman codes
@@ -235,6 +241,9 @@ fn decode_stored(r: &mut BitReader<'_>, out: &mut Vec<u8>) -> Result<(), Inflate
         return Err(InflateErr::InvalidData);
     }
     for _ in 0..len {
+        if out.len() >= MAX_INFLATE_SIZE {
+            return Err(InflateErr::MaxSizeExceeded);
+        }
         let b = r.read(8)?;
         out.push(b as u8);
     }
@@ -260,6 +269,9 @@ fn decode_huffman_block(
     loop {
         let sym = ll.decode(r)?;
         if sym < 256 {
+            if out.len() >= MAX_INFLATE_SIZE {
+                return Err(InflateErr::MaxSizeExceeded);
+            }
             out.push(sym as u8);
             continue;
         }
@@ -296,6 +308,9 @@ fn decode_huffman_block(
         let start = out.len() - dist_us;
         let mut copied = 0usize;
         while copied < len as usize {
+            if out.len() >= MAX_INFLATE_SIZE {
+                return Err(InflateErr::MaxSizeExceeded);
+            }
             let b = out[start + copied];
             out.push(b);
             copied += 1;
@@ -391,6 +406,11 @@ pub fn inflate_raw(input: &[u8], output: &mut Vec<u8>) -> Result<(), InflateErr>
                 decode_huffman_block(&mut r, &ll, &dist, output)?;
             }
             _ => return Err(InflateErr::InvalidData),
+        }
+        // Belt-and-suspenders: per-block size guard (hot-path checks are in the
+        // block decoders above, but a corrupt stream may bypass them).
+        if output.len() > MAX_INFLATE_SIZE {
+            return Err(InflateErr::MaxSizeExceeded);
         }
         if bfinal == 1 {
             return Ok(());

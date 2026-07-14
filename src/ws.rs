@@ -156,16 +156,17 @@ pub fn apply_mask(data: &mut [u8], mask: [u8; 4]) {
 /// Cold-path: once per outbound frame.  Opens `/dev/urandom` (Unix) or calls
 /// `BCryptGenRandom` (Windows).  Acceptable overhead — WS send happens once
 /// per monitoring tick (~1 Hz), not per byte.
-fn random_mask_key() -> [u8; 4] {
+///
+/// Returns an error if the OS entropy source is unavailable.
+fn random_mask_key() -> Result<[u8; 4], WsErr> {
     let mut buf = [0u8; 4];
 
     #[cfg(unix)]
     {
         use std::fs::File;
         File::open("/dev/urandom")
-            .expect("failed to open /dev/urandom for masking key")
-            .read_exact(&mut buf)
-            .expect("failed to read random bytes from /dev/urandom");
+            .and_then(|mut f| f.read_exact(&mut buf))
+            .map_err(|e| WsErr::Io(format!("random mask key: {}", e)))?;
     }
 
     #[cfg(windows)]
@@ -189,10 +190,11 @@ fn random_mask_key() -> [u8; 4] {
                 BCRYPT_USE_SYSTEM_PREFERRED_RNG,
             )
         };
-        assert_eq!(
-            status, 0,
-            "BCryptGenRandom failed with status 0x{status:08X}"
-        );
+        if status != 0 {
+            return Err(WsErr::Io(format!(
+                "BCryptGenRandom failed with status 0x{status:08X}"
+            )));
+        }
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -200,7 +202,7 @@ fn random_mask_key() -> [u8; 4] {
         compile_error!("ws: unsupported target for masking key generation");
     }
 
-    buf
+    Ok(buf)
 }
 
 // ── Frame header encoding ────────────────────────────────────────────────
@@ -277,7 +279,7 @@ fn write_masked_frame(
         (payload, false)
     };
 
-    let mask_key = random_mask_key();
+    let mask_key = random_mask_key()?;
     let (header, header_len, mk) =
         build_frame_header(opcode, frame_payload.len() as u64, true, mask_key, rsv1);
 
@@ -373,7 +375,8 @@ impl WsConnection {
         // through — this is sufficient for the upgrade-response round-trip.
 
         // ── 6. Build and send HTTP upgrade request ──
-        let ws_key_bytes = crypto::ws_generate_key();
+        let ws_key_bytes = crypto::ws_generate_key()
+            .map_err(|e| WsErr::Io(format!("generate WS key: {}", e)))?;
         let ws_key_str = core::str::from_utf8(&ws_key_bytes).map_err(|_| {
             WsErr::Handshake("generated WebSocket key is not valid UTF-8".to_string())
         })?;
@@ -543,6 +546,11 @@ impl WsConnection {
             crate::inflate::inflate_raw(&tail, &mut inflated).map_err(|e| {
                 WsErr::Protocol(format!("permessage-deflate inflate error: {:?}", e))
             })?;
+            if inflated.len() > 64 * 1024 * 1024 {
+                return Err(WsErr::Protocol(
+                    "permessage-deflate output exceeded 64 MiB safety limit".to_string(),
+                ));
+            }
             payload = inflated;
         }
 
@@ -1135,7 +1143,7 @@ mod tests {
 
     #[test]
     fn full_handshake_roundtrip() {
-        let key_buf = crypto::ws_generate_key();
+        let key_buf = crypto::ws_generate_key().expect("ws_generate_key failed");
         let key_str = core::str::from_utf8(&key_buf).unwrap();
         assert_eq!(key_str.len(), 24);
 

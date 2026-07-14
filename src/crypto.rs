@@ -109,14 +109,14 @@ fn process_block(h: &mut [u32; 5], block: &[u8]) {
 /// Cold-path helper for `ws_generate_key`.  May allocate internally
 /// (OS file / syscall overhead), but called at most once per WebSocket
 /// connection setup.
-fn fill_random(buf: &mut [u8]) {
+///
+/// Returns an error if the OS entropy source is unavailable.
+fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::fs::File;
-        File::open("/dev/urandom")
-            .expect("failed to open /dev/urandom")
-            .read_exact(buf)
-            .expect("failed to read random bytes from /dev/urandom");
+        File::open("/dev/urandom")?.read_exact(buf)?;
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -142,10 +142,13 @@ fn fill_random(buf: &mut [u8]) {
                 BCRYPT_USE_SYSTEM_PREFERRED_RNG,
             )
         };
-        assert_eq!(
-            status, 0,
-            "BCryptGenRandom failed with status 0x{status:08X}"
-        );
+        if status != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("BCryptGenRandom failed with status 0x{status:08X}"),
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -303,10 +306,12 @@ pub fn ws_accept_key(client_key: &str) -> [u8; 28] {
 /// Uses the OS CSPRNG (`/dev/urandom` on Unix, `BCryptGenRandom` on Windows).
 /// This is a cold-path function (called once per connection); it may allocate
 /// internally through the OS random device / syscall layer.
-pub fn ws_generate_key() -> [u8; 24] {
+///
+/// Returns an error if the OS entropy source is unavailable.
+pub fn ws_generate_key() -> std::io::Result<[u8; 24]> {
     let mut random = [0u8; 16];
-    fill_random(&mut random);
-    base64_encode_fixed::<24>(&random)
+    fill_random(&mut random)?;
+    Ok(base64_encode_fixed::<24>(&random))
 }
 
 /// Constant-time-ish comparison of a received `Sec-WebSocket-Accept` header
@@ -467,7 +472,7 @@ mod tests {
 
     #[test]
     fn ws_generate_key_produces_24_chars() {
-        let key = ws_generate_key();
+        let key = ws_generate_key().expect("ws_generate_key failed");
         assert_eq!(key.len(), 24);
         // Must be valid Base64 (only A-Z, a-z, 0-9, +, /, =).
         for &b in &key {
@@ -480,7 +485,7 @@ mod tests {
 
     #[test]
     fn ws_accept_key_roundtrip() {
-        let key_buf = ws_generate_key();
+        let key_buf = ws_generate_key().expect("ws_generate_key failed");
         let client_key = core::str::from_utf8(&key_buf).unwrap();
         let accept = ws_accept_key(client_key);
         assert!(ws_verify_accept(&accept, &accept));
