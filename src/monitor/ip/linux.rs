@@ -9,7 +9,7 @@ use core::ffi::c_void;
 use core::fmt;
 use std::ffi::CStr;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::io::FromRawFd;
 use std::sync::Arc;
 use std::time::Duration;
@@ -312,7 +312,7 @@ impl Write for MaybeTlsStream {
 /// is used directly.
 fn connect_bound(host: &str, port: u16, force_v4: bool, force_v6: bool) -> Option<TcpStream> {
     let addr_str = format!("{}:{}", host, port);
-    let addrs: Vec<SocketAddr> = addr_str.to_socket_addrs().ok()?;
+    let addrs: Vec<SocketAddr> = addr_str.to_socket_addrs().ok()?.collect();
 
     // Find a matching address for the desired family
     let target = if force_v4 {

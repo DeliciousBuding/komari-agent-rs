@@ -40,12 +40,12 @@ pub struct ConnectionsInfo {
 pub fn collect_connections() -> Result<ConnectionsInfo, MetricErr> {
     let tcp = count_entries("/proc/net/tcp")
         .and_then(|v4| Ok(v4 + count_entries("/proc/net/tcp6").unwrap_or(0)))
-        .or_else(|_| count_via_subprocess(&["-t", "-n"]))
+        .or_else(|_| count_via_subprocess(&["-t", "-n"]).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "ss/netstat unavailable")))
         .unwrap_or(0);
 
     let udp = count_entries("/proc/net/udp")
         .and_then(|v4| Ok(v4 + count_entries("/proc/net/udp6").unwrap_or(0)))
-        .or_else(|_| count_via_subprocess(&["-u", "-n"]))
+        .or_else(|_| count_via_subprocess(&["-u", "-n"]).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "ss/netstat unavailable")))
         .unwrap_or(0);
 
     Ok(ConnectionsInfo { tcp, udp })
