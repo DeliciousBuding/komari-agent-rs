@@ -6,6 +6,8 @@ use std::fs;
 use std::io;
 use std::process::Command;
 
+use crate::monitor::run_with_timeout;
+
 /// Error type for metric collection failures.
 #[derive(Debug)]
 pub enum MetricErr {
@@ -54,10 +56,14 @@ pub fn collect_connections() -> Result<ConnectionsInfo, MetricErr> {
 /// Tries `ss` first (faster, less overhead), then falls back to `netstat`.
 /// Returns `None` when neither tool is available on the system.
 fn count_via_subprocess(args: &[&str]) -> Option<u32> {
-    let output = Command::new("ss")
-        .args(args)
-        .output()
-        .or_else(|_| Command::new("netstat").args(args).output())
+    let mut ss_cmd = Command::new("ss");
+    ss_cmd.args(args);
+    let output = run_with_timeout(&mut ss_cmd, 30)
+        .or_else(|_| {
+            let mut ns_cmd = Command::new("netstat");
+            ns_cmd.args(args);
+            run_with_timeout(&mut ns_cmd, 30)
+        })
         .ok()?;
 
     if !output.status.success() {

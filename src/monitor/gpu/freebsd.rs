@@ -4,6 +4,7 @@
 
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
 use crate::arena::{MAX_GPUS, SmallVec};
+use crate::monitor::run_with_timeout;
 use std::process::Command;
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -16,9 +17,9 @@ pub fn detect() -> Result<(GpuBackend, SmallVec<GpuInfo, MAX_GPUS>), GpuDetectEr
 }
 
 fn detect_pciconf() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
-    let output = Command::new("pciconf")
-        .args(["-lv"])
-        .output()
+    let mut cmd = Command::new("pciconf");
+    cmd.args(["-lv"]);
+    let output = run_with_timeout(&mut cmd, 30)
         .map_err(|e| GpuDetectErr::Subprocess(format!("pciconf: {}", e)))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);

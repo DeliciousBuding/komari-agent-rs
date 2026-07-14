@@ -47,6 +47,7 @@ pub fn collect() -> OsInfo {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::OsInfo;
+    use crate::monitor::run_with_timeout;
     use std::fs;
     use std::io::BufRead;
     use std::process::Command;
@@ -86,9 +87,9 @@ mod linux {
     }
 
     fn kernel_version() -> String {
-        Command::new("uname")
-            .arg("-r")
-            .output()
+        let mut cmd = Command::new("uname");
+        cmd.arg("-r");
+        run_with_timeout(&mut cmd, 30)
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
@@ -123,9 +124,9 @@ mod linux {
     /// Detect Android via `getprop` or `/system/build.prop` or directory heuristics.
     fn detect_android() -> Option<String> {
         // 1. getprop ro.build.version.release
-        if let Ok(out) = Command::new("getprop")
-            .arg("ro.build.version.release")
-            .output()
+        let mut getprop_cmd = Command::new("getprop");
+        getprop_cmd.arg("ro.build.version.release");
+        if let Ok(out) = run_with_timeout(&mut getprop_cmd, 30)
             && let Ok(ver) = String::from_utf8(out.stdout)
         {
             let ver = ver.trim().to_string();
@@ -171,7 +172,7 @@ mod linux {
 
     /// Detect Proxmox VE via `pveversion`, extracting the pve-manager version line.
     fn detect_proxmox() -> Option<String> {
-        let out = Command::new("pveversion").output().ok()?;
+        let out = run_with_timeout(&mut Command::new("pveversion"), 30).ok()?;
         let stdout = String::from_utf8(out.stdout).ok()?;
         let mut version = None;
         for line in stdout.lines() {
@@ -255,9 +256,9 @@ mod linux {
 
     /// Run a command and return trimmed stdout, or empty string on failure.
     fn cmd_out(cmd: &str, args: &[&str]) -> String {
-        Command::new(cmd)
-            .args(args)
-            .output()
+        let mut command = Command::new(cmd);
+        command.args(args);
+        run_with_timeout(&mut command, 30)
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
@@ -413,6 +414,7 @@ mod windows {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::OsInfo;
+    use crate::monitor::run_with_timeout;
     use std::process::Command;
 
     pub fn collect() -> OsInfo {
@@ -423,9 +425,9 @@ mod macos {
     }
 
     fn os_name() -> String {
-        Command::new("sw_vers")
-            .arg("-productName")
-            .output()
+        let mut cmd = Command::new("sw_vers");
+        cmd.arg("-productName");
+        run_with_timeout(&mut cmd, 30)
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
@@ -433,9 +435,9 @@ mod macos {
     }
 
     fn kernel_version() -> String {
-        Command::new("uname")
-            .arg("-r")
-            .output()
+        let mut cmd = Command::new("uname");
+        cmd.arg("-r");
+        run_with_timeout(&mut cmd, 30)
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
@@ -450,6 +452,7 @@ mod macos {
 #[cfg(target_os = "freebsd")]
 mod freebsd {
     use super::OsInfo;
+    use crate::monitor::run_with_timeout;
     use std::process::Command;
 
     pub fn collect() -> OsInfo {
@@ -461,7 +464,7 @@ mod freebsd {
 
     fn os_name() -> String {
         // Prefer freebsd-version for canonical version string
-        if let Ok(out) = Command::new("freebsd-version").output() {
+        if let Ok(out) = run_with_timeout(&mut Command::new("freebsd-version"), 30) {
             if let Ok(s) = String::from_utf8(out.stdout) {
                 let v = s.trim().to_string();
                 if !v.is_empty() {
@@ -470,9 +473,9 @@ mod freebsd {
             }
         }
         // Fallback: uname -sr (e.g. "FreeBSD 14.1-RELEASE")
-        Command::new("uname")
-            .arg("-sr")
-            .output()
+        let mut uname_cmd = Command::new("uname");
+        uname_cmd.arg("-sr");
+        run_with_timeout(&mut uname_cmd, 30)
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
@@ -480,9 +483,9 @@ mod freebsd {
     }
 
     fn kernel_version() -> String {
-        Command::new("uname")
-            .arg("-r")
-            .output()
+        let mut cmd = Command::new("uname");
+        cmd.arg("-r");
+        run_with_timeout(&mut cmd, 30)
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())

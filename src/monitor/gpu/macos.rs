@@ -4,6 +4,7 @@
 
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
 use crate::arena::{MAX_GPUS, SmallVec};
+use crate::monitor::run_with_timeout;
 use std::process::Command;
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -17,9 +18,9 @@ pub fn detect() -> Result<(GpuBackend, SmallVec<GpuInfo, MAX_GPUS>), GpuDetectEr
 }
 
 fn detect_system_profiler() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
-    let output = Command::new("system_profiler")
-        .args(["SPDisplaysDataType", "-xml"])
-        .output()
+    let mut cmd = Command::new("system_profiler");
+    cmd.args(["SPDisplaysDataType", "-xml"]);
+    let output = run_with_timeout(&mut cmd, 30)
         .map_err(|e| GpuDetectErr::Subprocess(format!("system_profiler: {}", e)))?;
 
     if !output.status.success() {

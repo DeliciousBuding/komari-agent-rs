@@ -4,6 +4,7 @@
 
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
 use crate::arena::{MAX_GPUS, SmallVec};
+use crate::monitor::run_with_timeout;
 use std::fs;
 use std::process::Command;
 
@@ -48,7 +49,9 @@ fn find_tool(canonical: &str, tool_name: &str) -> Result<String, String> {
     }
 
     // 2. Fallback: `which tool_name`
-    if let Ok(output) = Command::new("which").arg(tool_name).output() {
+    let mut which_cmd = Command::new("which");
+    which_cmd.arg(tool_name);
+    if let Ok(output) = run_with_timeout(&mut which_cmd, 30) {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() && std::path::Path::new(&path).is_file() {
@@ -67,12 +70,12 @@ fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> 
     let tool_path = find_tool("/usr/bin/nvidia-smi", "nvidia-smi")
         .map_err(|e| GpuDetectErr::Subprocess(e))?;
 
-    let output = Command::new(&tool_path)
-        .args([
-            "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
+    let mut nvidia_cmd = Command::new(&tool_path);
+    nvidia_cmd.args([
+        "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
+        "--format=csv,noheader,nounits",
+    ]);
+    let output = run_with_timeout(&mut nvidia_cmd, 30)
         .map_err(|e| GpuDetectErr::Subprocess(format!("nvidia-smi: {}", e)))?;
 
     if !output.status.success() {
@@ -140,9 +143,9 @@ fn detect_rocm_smi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     let tool_path = find_tool("/opt/rocm/bin/rocm-smi", "rocm-smi")
         .map_err(|e| GpuDetectErr::Subprocess(e))?;
 
-    let output = Command::new(&tool_path)
-        .args(["--showallinfo", "--json"])
-        .output()
+    let mut rocm_cmd = Command::new(&tool_path);
+    rocm_cmd.args(["--showallinfo", "--json"]);
+    let output = run_with_timeout(&mut rocm_cmd, 30)
         .map_err(|e| GpuDetectErr::Subprocess(format!("rocm-smi: {}", e)))?;
 
     if !output.status.success() {
@@ -326,8 +329,7 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
 // Runs `lspci` and filters for VGA / 3D / Display devices.
 
 fn detect_lspci() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
-    let output = Command::new("lspci")
-        .output()
+    let output = run_with_timeout(&mut Command::new("lspci"), 30)
         .map_err(|e| GpuDetectErr::Subprocess(format!("lspci: {}", e)))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);

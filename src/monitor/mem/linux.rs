@@ -11,6 +11,7 @@ use std::io::{BufRead, BufReader};
 use std::process::Command;
 
 use crate::config::Config;
+use crate::monitor::run_with_timeout;
 
 /// Collected memory metrics (bytes).
 #[derive(Debug, Default, Clone, Copy)]
@@ -109,7 +110,7 @@ fn mode_1(m: &ProcMem) -> MemInfo {
 
 /// Mode 2: `free -b` subprocess. Swap from `/proc/meminfo`.
 fn mode_2() -> Option<MemInfo> {
-    let out = Command::new("free").arg("-b").output().ok()?;
+    let out = run_with_timeout(&mut Command::new("free").arg("-b"), 30).ok()?;
     if !out.status.success() {
         return None;
     }

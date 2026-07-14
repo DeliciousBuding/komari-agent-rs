@@ -1,7 +1,7 @@
 // komari-agent-rs: Linux IP detection — NIC via getifaddrs FFI + external HTTP APIs.
 //
 // Endpoints matched from D:/Code/Projects/external/komari-agent-go/monitoring/unit/ip.go
-// (7 IPv4 + 4 IPv6 endpoints in the Go reference; 3+3+cf-trace used here for simplicity).
+// (7 IPv4 + 4 IPv6 endpoints in the Go reference; 6+3+cf-trace used here).
 #![allow(dead_code)]
 
 use crate::config::Config;
@@ -9,7 +9,9 @@ use core::ffi::c_void;
 use core::fmt;
 use std::ffi::CStr;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::os::unix::io::FromRawFd;
+use std::sync::Arc;
 use std::time::Duration;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -99,6 +101,38 @@ unsafe extern "C" {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// FFI: socket / bind / connect / close — forced IPv4/IPv6 binding
+// ═══════════════════════════════════════════════════════════════════
+
+const LIBC_AF_INET: i32 = 2;
+const LIBC_AF_INET6: i32 = 10;
+const SOCK_STREAM: i32 = 1;
+
+#[repr(C)]
+struct raw_sockaddr_in {
+    sin_family: u16,
+    sin_port: u16,
+    sin_addr: [u8; 4],
+    sin_zero: [u8; 8],
+}
+
+#[repr(C)]
+struct raw_sockaddr_in6 {
+    sin6_family: u16,
+    sin6_port: u16,
+    sin6_flowinfo: u32,
+    sin6_addr: [u8; 16],
+    sin6_scope_id: u32,
+}
+
+unsafe extern "C" {
+    fn socket(domain: i32, type_: i32, protocol: i32) -> i32;
+    fn bind(sockfd: i32, addr: *const u8, addrlen: u32) -> i32;
+    fn connect(sockfd: i32, addr: *const u8, addrlen: u32) -> i32;
+    fn close(fd: i32) -> i32;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // collect_ip — main entry point
 // ═══════════════════════════════════════════════════════════════════
 
@@ -123,18 +157,23 @@ pub fn collect_ip(config: &Config) -> Result<(Option<String>, Option<String>), M
         ipv6 = Some(config.custom_ipv6.clone());
     }
 
-    // 3. External HTTP APIs (best-effort, plain HTTP)
+    // 3. Build TLS config once for HTTPS endpoints
+    let tls_cfg = crate::tls::make_tls_config(config)
+        .ok()
+        .map(Arc::new);
+
+    // 4. External HTTP APIs (best-effort, HTTP + HTTPS)
     if ipv4.is_none() {
-        ipv4 = fetch_ipv4_http();
+        ipv4 = fetch_ipv4_http(tls_cfg.as_ref());
     }
     if ipv6.is_none() {
-        ipv6 = fetch_ipv6_http();
+        ipv6 = fetch_ipv6_http(tls_cfg.as_ref());
     }
 
-    // 4. Cloudflare trace fallback
+    // 5. Cloudflare trace fallback
     if ipv4.is_none()
         && ipv6.is_none()
-        && let Some((v4, v6)) = fetch_cf_trace()
+        && let Some((v4, v6)) = fetch_cf_trace(tls_cfg.as_ref())
     {
         ipv4 = v4;
         ipv6 = v6;
@@ -224,31 +263,203 @@ fn format_ipv6(addr: &[u8; 16]) -> String {
             s.push(':');
         }
         let word = u16::from_be_bytes([chunk[0], chunk[1]]);
-        // Zero-compression: we use the simple "never compress" form to avoid complexity.
-        // The full form is always valid per RFC 4291 §2.2.
         s.push_str(&format!("{:x}", word));
     }
     s
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// HTTP-based detection (TcpStream, plain HTTP only — best-effort)
+// HTTP-based detection (TcpStream + optional rustls TLS for HTTPS)
 // ═══════════════════════════════════════════════════════════════════
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn http_get(url: &str) -> Option<String> {
-    // Parse host:port from URL
-    let (host, port, path) = parse_url(url)?;
+/// Unified stream for plain TCP and TLS-wrapped connections.
+enum MaybeTlsStream {
+    Tls(rustls::StreamOwned<rustls::ClientConnection, TcpStream>),
+    Plain(TcpStream),
+}
 
-    // Resolve and connect
-    let addr = format!("{}:{}", host, port)
-        .to_socket_addrs()
-        .ok()?
-        .next()?;
-    let mut stream = TcpStream::connect_timeout(&addr, HTTP_TIMEOUT).ok()?;
+impl Read for MaybeTlsStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            MaybeTlsStream::Tls(s) => s.read(buf),
+            MaybeTlsStream::Plain(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for MaybeTlsStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            MaybeTlsStream::Tls(s) => s.write(buf),
+            MaybeTlsStream::Plain(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            MaybeTlsStream::Tls(s) => s.flush(),
+            MaybeTlsStream::Plain(s) => s.flush(),
+        }
+    }
+}
+
+/// Connect to `host:port` with forced IPv4 or IPv6 binding.
+///
+/// When `force_v4` is true, the socket is bound to `0.0.0.0:0` before connect,
+/// ensuring the OS uses an IPv4 path. When `force_v6` is true, the socket is
+/// bound to `[::]:0`. When neither flag is set, `TcpStream::connect_timeout`
+/// is used directly.
+fn connect_bound(host: &str, port: u16, force_v4: bool, force_v6: bool) -> Option<TcpStream> {
+    let addr_str = format!("{}:{}", host, port);
+    let addrs: Vec<SocketAddr> = addr_str.to_socket_addrs().ok()?;
+
+    // Find a matching address for the desired family
+    let target = if force_v4 {
+        addrs.iter().find(|a| a.is_ipv4())?
+    } else if force_v6 {
+        addrs.iter().find(|a| a.is_ipv6())?
+    } else {
+        addrs.first()?
+    };
+
+    if !force_v4 && !force_v6 {
+        return TcpStream::connect_timeout(target, HTTP_TIMEOUT).ok();
+    }
+
+    // Explicit socket + bind + connect for forced address family
+    let domain = if force_v4 { LIBC_AF_INET } else { LIBC_AF_INET6 };
+    let fd = unsafe { socket(domain, SOCK_STREAM, 0) };
+    if fd < 0 {
+        return None;
+    }
+
+    // Bind to wildcard address
+    if force_v4 {
+        let bind_addr = raw_sockaddr_in {
+            sin_family: AF_INET,
+            sin_port: 0u16.to_be(),
+            sin_addr: [0u8; 4],
+            sin_zero: [0u8; 8],
+        };
+        let ret = unsafe {
+            bind(
+                fd,
+                &bind_addr as *const _ as *const u8,
+                core::mem::size_of::<raw_sockaddr_in>() as u32,
+            )
+        };
+        if ret < 0 {
+            unsafe { close(fd) };
+            return None;
+        }
+    } else {
+        let bind_addr = raw_sockaddr_in6 {
+            sin6_family: AF_INET6,
+            sin6_port: 0u16.to_be(),
+            sin6_flowinfo: 0,
+            sin6_addr: [0u8; 16],
+            sin6_scope_id: 0,
+        };
+        let ret = unsafe {
+            bind(
+                fd,
+                &bind_addr as *const _ as *const u8,
+                core::mem::size_of::<raw_sockaddr_in6>() as u32,
+            )
+        };
+        if ret < 0 {
+            unsafe { close(fd) };
+            return None;
+        }
+    }
+
+    // Connect to target
+    let connect_result = if force_v4 {
+        let ip_bytes = match target.ip() {
+            IpAddr::V4(v4) => v4.octets(),
+            _ => {
+                unsafe { close(fd) };
+                return None;
+            }
+        };
+        let target_addr = raw_sockaddr_in {
+            sin_family: AF_INET,
+            sin_port: target.port().to_be(),
+            sin_addr: ip_bytes,
+            sin_zero: [0u8; 8],
+        };
+        unsafe {
+            connect(
+                fd,
+                &target_addr as *const _ as *const u8,
+                core::mem::size_of::<raw_sockaddr_in>() as u32,
+            )
+        }
+    } else {
+        let ip_bytes = match target.ip() {
+            IpAddr::V6(v6) => v6.octets(),
+            _ => {
+                unsafe { close(fd) };
+                return None;
+            }
+        };
+        let target_addr = raw_sockaddr_in6 {
+            sin6_family: AF_INET6,
+            sin6_port: target.port().to_be(),
+            sin6_flowinfo: 0,
+            sin6_addr: ip_bytes,
+            sin6_scope_id: 0,
+        };
+        unsafe {
+            connect(
+                fd,
+                &target_addr as *const _ as *const u8,
+                core::mem::size_of::<raw_sockaddr_in6>() as u32,
+            )
+        }
+    };
+
+    if connect_result < 0 {
+        unsafe { close(fd) };
+        return None;
+    }
+
+    // Set timeouts on the raw fd before wrapping in TcpStream
+    // (TcpStream::from_raw_fd inherits whatever is on the fd)
+    let stream = unsafe { TcpStream::from_raw_fd(fd) };
     stream.set_read_timeout(Some(HTTP_TIMEOUT)).ok()?;
     stream.set_write_timeout(Some(HTTP_TIMEOUT)).ok()?;
+    Some(stream)
+}
+
+/// Perform an HTTP GET request. Supports both `http://` (plain TCP) and
+/// `https://` (TLS via rustls). Returns the response body as a String.
+///
+/// `tls_cfg` is required for HTTPS URLs; plain HTTP URLs ignore it.
+/// `force_v4` binds the socket to `0.0.0.0:0` before connecting; `force_v6`
+/// binds to `[::]:0`. Both false uses the OS default.
+fn http_get(
+    url: &str,
+    tls_cfg: Option<&Arc<rustls::ClientConfig>>,
+    force_v4: bool,
+    force_v6: bool,
+) -> Option<String> {
+    let (host, port, path, is_https) = parse_url(url)?;
+
+    let stream = connect_bound(host, port, force_v4, force_v6)?;
+
+    // Wrap in TLS if HTTPS
+    let mut stream = if is_https {
+        let cfg = tls_cfg?;
+        let server_name = rustls::pki_types::ServerName::try_from(host)
+            .ok()?
+            .to_owned();
+        let conn = rustls::ClientConnection::new(Arc::clone(cfg), server_name).ok()?;
+        MaybeTlsStream::Tls(rustls::StreamOwned::new(conn, stream))
+    } else {
+        MaybeTlsStream::Plain(stream)
+    };
 
     // Send HTTP GET
     let req = format!(
@@ -256,6 +467,7 @@ fn http_get(url: &str) -> Option<String> {
         path, host
     );
     stream.write_all(req.as_bytes()).ok()?;
+    stream.flush().ok()?;
 
     // Read response
     let mut buf = vec![0u8; 4096];
@@ -280,45 +492,68 @@ fn http_get(url: &str) -> Option<String> {
     Some(payload.to_string())
 }
 
-fn parse_url(url: &str) -> Option<(&str, u16, &str)> {
-    let rest = url.strip_prefix("http://")?;
+/// Parse a URL into (host, port, path, is_https).
+/// Accepts both `http://` (port 80) and `https://` (port 443).
+fn parse_url(url: &str) -> Option<(&str, u16, &str, bool)> {
+    let (rest, default_port, is_https) = if let Some(s) = url.strip_prefix("https://") {
+        (s, 443u16, true)
+    } else if let Some(s) = url.strip_prefix("http://") {
+        (s, 80u16, false)
+    } else {
+        return None;
+    };
     let (host_port, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
     let (host, port) = match host_port.find(':') {
         Some(i) => (&host_port[..i], host_port[i + 1..].parse::<u16>().ok()?),
-        None => (host_port, 80),
+        None => (host_port, default_port),
     };
-    Some((host, port, path))
+    Some((host, port, path, is_https))
 }
 
 /// Try each IPv4 HTTP endpoint; return first match.
-fn fetch_ipv4_http() -> Option<String> {
-    let apis = [
+/// IPv4 APIs bind to `0.0.0.0:0` to force the IPv4 network path.
+fn fetch_ipv4_http(tls_cfg: Option<&Arc<rustls::ClientConfig>>) -> Option<String> {
+    let apis: &[&str] = &[
         "http://ipv4.ip.sb",
         "http://api.ipify.org",
         "http://ipv4.icanhazip.com",
+        "https://www.visa.cn/cdn-cgi/trace",
+        "https://www.qualcomm.cn/cdn-cgi/trace",
+        "https://cloudflare.com/cdn-cgi/trace",
     ];
-    for url in &apis {
-        if let Some(body) = http_get(url)
-            && let Some(ip) = extract_ipv4(&body)
-        {
-            return Some(ip);
+    for url in apis {
+        if let Some(body) = http_get(url, tls_cfg, true, false) {
+            // cdn-cgi/trace endpoints return "ip=X.X.X.X" lines
+            if url.contains("cdn-cgi/trace") {
+                for line in body.lines() {
+                    if let Some(val) = line.strip_prefix("ip=") {
+                        let val = val.trim();
+                        if val.contains('.') {
+                            return Some(val.to_string());
+                        }
+                    }
+                }
+            } else if let Some(ip) = extract_ipv4(&body) {
+                return Some(ip);
+            }
         }
     }
     None
 }
 
 /// Try each IPv6 HTTP endpoint; return first match.
-fn fetch_ipv6_http() -> Option<String> {
-    let apis = [
+/// IPv6 APIs bind to `[::]:0` to force the IPv6 network path.
+fn fetch_ipv6_http(tls_cfg: Option<&Arc<rustls::ClientConfig>>) -> Option<String> {
+    let apis: &[&str] = &[
         "http://v6.ip.zxinc.org",
         "http://api6.ipify.org",
         "http://ipv6.icanhazip.com",
     ];
-    for url in &apis {
-        if let Some(body) = http_get(url)
+    for url in apis {
+        if let Some(body) = http_get(url, tls_cfg, false, true)
             && let Some(ip) = extract_ipv6(&body)
         {
             return Some(ip);
@@ -328,8 +563,11 @@ fn fetch_ipv6_http() -> Option<String> {
 }
 
 /// Cloudflare trace fallback — parse "ip=" line from /cdn-cgi/trace.
-fn fetch_cf_trace() -> Option<(Option<String>, Option<String>)> {
-    let body = http_get("http://cloudflare.com/cdn-cgi/trace")?;
+/// Uses HTTPS with forced IPv4 binding.
+fn fetch_cf_trace(
+    tls_cfg: Option<&Arc<rustls::ClientConfig>>,
+) -> Option<(Option<String>, Option<String>)> {
+    let body = http_get("https://cloudflare.com/cdn-cgi/trace", tls_cfg, true, false)?;
     let mut ipv4: Option<String> = None;
     let mut ipv6: Option<String> = None;
     for line in body.lines() {
