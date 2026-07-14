@@ -52,11 +52,14 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
     let tls =
         Arc::new(crate::tls::make_tls_config(config).map_err(|e| UpdateErr::Other(e.to_string()))?);
 
+    let github_token = env::var("GITHUB_TOKEN").ok();
+
     // 1. GET https://api.github.com/repos/DeliciousBuding/komari-agent-rs/releases/latest
     let json = https_get(
         "api.github.com",
         "/repos/DeliciousBuding/komari-agent-rs/releases/latest",
         &tls,
+        github_token.as_deref(),
     )?;
 
     // 2. Parse tag_name, compare semver (strip leading 'v')
@@ -75,10 +78,10 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
         .ok_or_else(|| UpdateErr::Other("no SHA256SUMS asset".into()))?;
 
     // 4. Download binary
-    let bin = https_download(&dl_url, &tls)?;
+    let bin = https_download(&dl_url, &tls, github_token.as_deref())?;
 
     // 5. Download SHA256SUMS, extract expected hash for our asset
-    let sums = String::from_utf8(https_download(&sums_url, &tls)?)
+    let sums = String::from_utf8(https_download(&sums_url, &tls, github_token.as_deref())?)
         .map_err(|_| UpdateErr::Other("SHA256SUMS is not UTF-8".into()))?;
     let expected = sums
         .lines()
@@ -110,10 +113,14 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
     let old = exe.with_extension("old");
     #[cfg(windows)]
     {
+        // Windows: two-step rename instead of ReplaceFileW because a running
+        // executable is locked and ReplaceFileW cannot overwrite it.  NTFS
+        // permits renaming an in-use file, so we rename exe→old (still usable
+        // by the OS) then new→exe.  The old binary is scheduled for deletion
+        // on next reboot via MoveFileExW with MOVEFILE_DELAY_UNTIL_REBOOT.
         let _ = fs::remove_file(&old);
         fs::rename(&exe, &old)?;
         fs::rename(&new, &exe)?;
-        // MoveFileExW(old, NULL, REPLACE_EXISTING | DELAY_UNTIL_REBOOT)
         use std::os::windows::ffi::OsStrExt;
         let wide: Vec<u16> = old
             .as_os_str()
@@ -122,11 +129,12 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
             .collect();
         const MOVEFILE_REPLACE_EXISTING: u32 = 0x00000001;
         const MOVEFILE_DELAY_UNTIL_REBOOT: u32 = 0x00000004;
+        const MOVEFILE_WRITE_THROUGH: u32 = 0x00000008;
         unsafe {
             MoveFileExW(
                 wide.as_ptr(),
                 std::ptr::null(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT | MOVEFILE_WRITE_THROUGH,
             );
         }
     }
@@ -142,14 +150,14 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
 
 // ── HTTP helpers ────────────────────────────────────────────────────────────
 
-fn https_get(host: &str, path: &str, tls: &Arc<rustls::ClientConfig>) -> Result<String, UpdateErr> {
-    let body = https_fetch(host, 443, path, "", tls)?;
+fn https_get(host: &str, path: &str, tls: &Arc<rustls::ClientConfig>, auth_token: Option<&str>) -> Result<String, UpdateErr> {
+    let body = https_fetch(host, 443, path, "", tls, auth_token)?;
     String::from_utf8(body).map_err(|_| UpdateErr::Http("non-UTF-8 response".into()))
 }
 
-fn https_download(url: &str, tls: &Arc<rustls::ClientConfig>) -> Result<Vec<u8>, UpdateErr> {
+fn https_download(url: &str, tls: &Arc<rustls::ClientConfig>, auth_token: Option<&str>) -> Result<Vec<u8>, UpdateErr> {
     let (host, port, path, query) = parse_https_url(url)?;
-    https_fetch(&host, port, &path, &query, tls)
+    https_fetch(&host, port, &path, &query, tls, auth_token)
 }
 
 fn https_fetch(
@@ -158,6 +166,7 @@ fn https_fetch(
     path: &str,
     query: &str,
     tls: &Arc<rustls::ClientConfig>,
+    auth_token: Option<&str>,
 ) -> Result<Vec<u8>, UpdateErr> {
     let addr = format!("{host}:{port}");
     let sock = addr
@@ -182,9 +191,13 @@ fn https_fetch(
     } else {
         format!("{path}?{query}")
     };
+    let auth_header = match auth_token {
+        Some(token) => format!("Authorization: Bearer {token}\r\n"),
+        None => String::new(),
+    };
     write!(
         stream,
-        "GET {req_path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: komari-agent-rs/{}\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+        "GET {req_path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: komari-agent-rs/{}\r\nAccept: */*\r\n{auth_header}Connection: close\r\n\r\n",
         CURRENT_VERSION
     )
     .map_err(|e| UpdateErr::Http(e.to_string()))?;
@@ -279,11 +292,17 @@ fn semver_gt(a: &str, b: &str) -> bool {
 
 fn platform_asset() -> &'static str {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "komari-agent-rs-linux-amd64"
+        "komari-agent-rs-linux-x86_64"
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
         "komari-agent-rs-linux-arm64"
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "komari-agent-rs-windows-amd64.exe"
+        "komari-agent-rs-windows-x86_64.exe"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "komari-agent-rs-macos-x86_64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "komari-agent-rs-macos-arm64"
+    } else if cfg!(all(target_os = "freebsd", target_arch = "x86_64")) {
+        "komari-agent-rs-freebsd-x86_64"
     } else {
         "komari-agent-rs-unknown"
     }

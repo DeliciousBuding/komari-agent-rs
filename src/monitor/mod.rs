@@ -35,6 +35,77 @@ pub mod process;
 pub mod uptime;
 pub mod virtualization;
 
+// ── run_with_timeout ──────────────────────────────────────────────────────────
+// Shared helper: spawn a command, wait with a deadline, kill on timeout.
+// Returns io::Result<Output> like Command::output(), but with a timeout.
+// Pattern matches execute_exec in server/task.rs (30 s deadline, kill on expiry).
+
+/// Run a command with a timeout. Spawns the child, polls with
+/// [`std::process::Child::try_wait`], kills on timeout, and returns the
+/// captured output (stdout + stderr).  The pipes are drained after the
+/// process exits so the output is always collected even for a killed child.
+///
+/// Returns `Err(io::ErrorKind::TimedOut)` when the deadline expires; the
+/// `Output` inside is lost (callers that need partial output should use the
+/// raw spawn + poll pattern directly).
+#[allow(dead_code)]
+pub fn run_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout_secs: u64,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    // Take ownership of the child's stdout/stderr so we can drain pipes
+    // after the process exits without deadlocking.
+    let mut child_stdout = child.stdout.take().unwrap();
+    let mut child_stderr = child.stderr.take().unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                // Timeout — kill the child and bail out.
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+
+    // Drain whatever the child wrote before exiting (or being killed).
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    let _ = child_stdout.read_to_end(&mut stdout_buf);
+    let _ = child_stderr.read_to_end(&mut stderr_buf);
+
+    match exit_status {
+        Some(status) => Ok(std::process::Output {
+            status,
+            stdout: stdout_buf,
+            stderr: stderr_buf,
+        }),
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("command timed out after {}s", timeout_secs),
+        )),
+    }
+}
+
 // ── MonitorErr ───────────────────────────────────────────────────────────────
 
 /// Errors that can occur during a monitoring tick.
