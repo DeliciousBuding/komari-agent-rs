@@ -81,6 +81,18 @@ impl PrevNetSnapshot {
     }
 }
 
+/// Safe counter delta: returns `current - previous` when the counter has not
+/// wrapped, and 0 when it has (e.g. after a reboot or u64 overflow).  This
+/// prevents `wrapping_sub` from producing garbage rates on wraparound.
+#[inline]
+fn safe_delta(current: u64, previous: u64) -> u64 {
+    if current >= previous {
+        current - previous
+    } else {
+        0
+    }
+}
+
 // ── Parsing helpers ───────────────────────────────────────────────────────────
 
 /// Split a `/proc/net/dev` line into interface name and the remainder after ':'.
@@ -193,8 +205,8 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
                     (0, 0)
                 } else {
                     (
-                        (tx.wrapping_sub(ptx) as f64 / secs) as u64,
-                        (rx.wrapping_sub(prx) as f64 / secs) as u64,
+                        (safe_delta(tx, ptx) as f64 / secs) as u64,
+                        (safe_delta(rx, prx) as f64 / secs) as u64,
                     )
                 }
             }

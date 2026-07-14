@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::io;
+use std::process::Command;
 
 /// Error type for metric collection failures.
 #[derive(Debug)]
@@ -30,10 +31,47 @@ pub struct ConnectionsInfo {
 ///
 /// Reads the four proc files and counts non-header (entry) lines.
 /// An empty file or header-only file contributes 0 to the count.
+///
+/// If `/proc/net` is unreadable (e.g. inside a container with a masked procfs),
+/// falls back to running `ss -t -n` / `ss -u -n`, then `netstat -t -n` /
+/// `netstat -u -n`, counting non-header output lines.
 pub fn collect_connections() -> Result<ConnectionsInfo, MetricErr> {
-    let tcp = count_entries("/proc/net/tcp")? + count_entries("/proc/net/tcp6")?;
-    let udp = count_entries("/proc/net/udp")? + count_entries("/proc/net/udp6")?;
+    let tcp = count_entries("/proc/net/tcp")
+        .and_then(|v4| Ok(v4 + count_entries("/proc/net/tcp6").unwrap_or(0)))
+        .or_else(|_| count_via_subprocess(&["-t", "-n"]))
+        .unwrap_or(0);
+
+    let udp = count_entries("/proc/net/udp")
+        .and_then(|v4| Ok(v4 + count_entries("/proc/net/udp6").unwrap_or(0)))
+        .or_else(|_| count_via_subprocess(&["-u", "-n"]))
+        .unwrap_or(0);
+
     Ok(ConnectionsInfo { tcp, udp })
+}
+
+/// Count non-header lines from `ss` or `netstat` subprocess output.
+///
+/// Tries `ss` first (faster, less overhead), then falls back to `netstat`.
+/// Returns `None` when neither tool is available on the system.
+fn count_via_subprocess(args: &[&str]) -> Option<u32> {
+    let output = Command::new("ss")
+        .args(args)
+        .output()
+        .or_else(|_| Command::new("netstat").args(args).output())
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // First line is a header (State / Recv-Q / Send-Q …); count the rest.
+    let lines: u32 = stdout
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .count() as u32;
+    Some(lines)
 }
 
 /// Count newlines in `path`, subtract 1 for the header line.
