@@ -12,14 +12,25 @@
 
 ## 当前状态
 
-- **当前阶段**：全部完成 ✅（P1–P6）
-- **上一里程碑**：Phase 6 ✅ Polish + Packaging
-- **工程状态**：6 阶段全部交付；80 源文件，162 单元测试通过；4 平台（Linux/Windows/macOS/FreeBSD）全功能对等
-- **实测指标**（cargo-bloat，Linux musl release stripped）：
-  - 二进制 ~1.5 MB（rustls 1.1MB + ring 528KB + webpki 262KB + std 471KB + **自身代码 196KB**）
-  - RSS ~3 MB（达标，对比 Go 原版 18-32 MB）
-  - 原 <1 MB 二进制目标被 TLS 栈（~1 MB 不可压）否决，已据实测修正
-- **下一步**：无（任务完结；可选后续：长期稳定性观察、用户反馈收集）
+- **当前阶段**：P7 ✅ v0.2 Go Upstream Feature Sync — 全部完成
+- **上一里程碑**：P7 ✅ (2026-07-14)
+- **工程状态**：6/6 issues 已关闭，3 commits 已 push main，245 tests pass
+- **下一步**：无
+
+## P7 v0.2 Go Upstream Feature Sync
+
+| Issue | 功能 | Commit | 状态 |
+|:-----:|------|--------|:----:|
+| #62 | GPU 详细指标 (utilization/temp/DXGI metadata) | `d8048ac` | ✅ |
+| #63 | 高延迟重试 + TCP 重传检测 | `c436a35` | ✅ |
+| #64 | 虚拟 GPU 过滤 (virtio/vmware/qxl等) | `d8048ac` | ✅ |
+| #65 | 容器检测增强 (podman/CRI-O/LXC) | `4e03446` | ✅ |
+| #66 | GPU 驱动名映射 (i915→Intel等) | `d8048ac` | ✅ |
+| #67 | nvidia-smi/rocm-smi 路径检测 | `d8048ac` | ✅ |
+
+**Milestone**: [P7](https://github.com/DeliciousBuding/komari-agent-rs/milestone/7) | **Tests**: 245 pass
+
+## 历史指标（不变）
 
 ## 文档索引
 
