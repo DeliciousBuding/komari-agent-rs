@@ -69,6 +69,10 @@ pub struct GpuInfo {
     pub utilization: f64,
     /// GPU temperature in degrees Celsius.
     pub temperature: u64,
+    /// PCI vendor ID (e.g. 0x10DE for NVIDIA).
+    pub vendor_id: u32,
+    /// PCI device ID.
+    pub device_id: u32,
 }
 
 // ── GpuDetectErr ───────────────────────────────────────────────────────────

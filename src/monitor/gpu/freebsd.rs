@@ -43,6 +43,8 @@ fn detect_pciconf() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
                     memory_used: 0,
                     utilization: 0.0,
                     temperature: 0,
+                    vendor_id: 0,
+                    device_id: 0,
                 });
             }
 
@@ -75,6 +77,8 @@ fn detect_pciconf() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
             memory_used: 0,
             utilization: 0.0,
             temperature: 0,
+            vendor_id: 0,
+            device_id: 0,
         });
     }
 

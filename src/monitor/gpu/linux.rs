@@ -34,11 +34,40 @@ pub fn detect() -> Result<(GpuBackend, SmallVec<GpuInfo, MAX_GPUS>), GpuDetectEr
     Err(GpuDetectErr::NoBackend)
 }
 
+// ── Binary path resolution ─────────────────────────────────────────────────
+// Resolves tool paths by checking canonical location first, then falling back
+// to `which`. Returns the resolved path or an error string.
+
+/// Resolve a tool's path: check `canonical` first, then fall back to `which`.
+/// Returns `Ok(path)` or `Err("tool: tool not found")`.
+fn find_tool(canonical: &str, tool_name: &str) -> Result<String, String> {
+    // 1. Check canonical path
+    let canonical_path = std::path::Path::new(canonical);
+    if canonical_path.is_file() {
+        return Ok(canonical.to_string());
+    }
+
+    // 2. Fallback: `which tool_name`
+    if let Ok(output) = Command::new("which").arg(tool_name).output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() && std::path::Path::new(&path).is_file() {
+                return Ok(path);
+            }
+        }
+    }
+
+    Err(format!("{}: tool not found", tool_name))
+}
+
 // ── 1. NVIDIA: nvidia-smi CSV mode ─────────────────────────────────────────
 // Matches DD7 spec: --query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu --format=csv,noheader,nounits
 
 fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
-    let output = Command::new("nvidia-smi")
+    let tool_path = find_tool("/usr/bin/nvidia-smi", "nvidia-smi")
+        .map_err(|e| GpuDetectErr::Subprocess(e))?;
+
+    let output = Command::new(&tool_path)
         .args([
             "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
             "--format=csv,noheader,nounits",
@@ -88,6 +117,8 @@ fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> 
             memory_used: mem_used,
             utilization,
             temperature,
+            vendor_id: 0,
+            device_id: 0,
         })
         .map_err(|_| GpuDetectErr::TooManyGpus)?;
     }
@@ -106,7 +137,10 @@ fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> 
 // "Temperature" keys ONLY. No full JSON parse.
 
 fn detect_rocm_smi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
-    let output = Command::new("rocm-smi")
+    let tool_path = find_tool("/opt/rocm/bin/rocm-smi", "rocm-smi")
+        .map_err(|e| GpuDetectErr::Subprocess(e))?;
+
+    let output = Command::new(&tool_path)
         .args(["--showallinfo", "--json"])
         .output()
         .map_err(|e| GpuDetectErr::Subprocess(format!("rocm-smi: {}", e)))?;
@@ -159,6 +193,8 @@ fn detect_rocm_smi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
                     memory_used: current_mem_used,
                     utilization: current_util,
                     temperature: current_temp,
+                    vendor_id: 0,
+                    device_id: 0,
                 })
                 .map_err(|_| GpuDetectErr::TooManyGpus)?;
             }
@@ -247,14 +283,23 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         let device_id =
             u32::from_str_radix(device_str.trim().trim_start_matches("0x"), 16).unwrap_or(0);
 
-        // Read device name from uevent
+        // Read device name from uevent, apply driver filtering and name mapping
         let uevent_path = format!("{}/uevent", device_path);
         let uevent = fs::read_to_string(&uevent_path).unwrap_or_default();
-        let model = uevent
+        let raw_driver = uevent
             .lines()
             .find(|l| l.starts_with("DRIVER="))
-            .map(|l| l.trim_start_matches("DRIVER=").to_string())
-            .unwrap_or_else(|| format!("{} {:04x}:{:04x}", vendor_name, vendor_id, device_id));
+            .map(|l| l.trim_start_matches("DRIVER=").to_string());
+
+        let model = match raw_driver {
+            Some(ref drv) if is_virtual_drm_driver(drv) => continue,
+            Some(ref drv) => {
+                map_driver_name(drv).unwrap_or(drv).to_string()
+            }
+            None => {
+                format!("{} {:04x}:{:04x}", vendor_name, vendor_id, device_id)
+            }
+        };
 
         gpus.push(GpuInfo {
             name: model,
@@ -262,6 +307,8 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
             memory_used: 0,
             utilization: 0.0,
             temperature: 0,
+            vendor_id,
+            device_id,
         })
         .map_err(|_| GpuDetectErr::TooManyGpus)?;
     }
@@ -292,6 +339,11 @@ fn detect_lspci() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
             continue;
         }
 
+        // Skip virtual GPUs (case-insensitive contains)
+        if is_virtual_gpu_lspci(&lower) {
+            continue;
+        }
+
         // Extract name after the last colon
         let name = match line.rfind(':') {
             Some(idx) if idx + 1 < line.len() => line[idx + 1..].trim(),
@@ -314,6 +366,8 @@ fn detect_lspci() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
             memory_used: 0,
             utilization: 0.0,
             temperature: 0,
+            vendor_id: 0,
+            device_id: 0,
         })
         .map_err(|_| GpuDetectErr::TooManyGpus)?;
     }
@@ -324,5 +378,41 @@ fn detect_lspci() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         ))
     } else {
         Ok(gpus)
+    }
+}
+
+// ── Virtual GPU filtering helpers ───────────────────────────────────────────
+
+/// Check if an lspci line describes a virtual GPU (case-insensitive).
+fn is_virtual_gpu_lspci(line_lower: &str) -> bool {
+    const VIRTUAL_PATTERNS: &[&str] = &[
+        "virtio", "vmware", "qxl", "bochs", "cirrus", "hyperv", "simpledrm",
+        "simplefb", "vbox",
+    ];
+    VIRTUAL_PATTERNS.iter().any(|p| line_lower.contains(p))
+}
+
+/// Check if a DRM driver name is a known virtual/software GPU driver.
+fn is_virtual_drm_driver(driver: &str) -> bool {
+    const VIRTUAL_DRIVERS: &[&str] = &[
+        "virtio-pci", "virtio_gpu", "bochs-drm", "qxl", "vmwgfx", "cirrus",
+        "vboxvideo", "hyperv_fb", "simpledrm", "simplefb",
+    ];
+    VIRTUAL_DRIVERS.iter().any(|d| *d == driver)
+}
+
+/// Map a raw DRM driver name to a human-readable GPU name.
+fn map_driver_name(driver: &str) -> Option<&'static str> {
+    match driver {
+        "i915" | "i915-drm" => Some("Intel Integrated Graphics"),
+        "amdgpu" => Some("AMD GPU"),
+        "nouveau" => Some("NVIDIA GPU (Open Source)"),
+        "vc4" | "vc4-drm" | "v3d" | "v3d-drm" => Some("Broadcom VideoCore"),
+        "panfrost" => Some("ARM Mali (Panfrost)"),
+        "lima" => Some("ARM Mali (Lima)"),
+        "msm" | "msm_drm" => Some("Qualcomm Adreno"),
+        "ast" => Some("ASPEED Graphics"),
+        "mgag200" => Some("Matrox G200"),
+        _ => None,
     }
 }

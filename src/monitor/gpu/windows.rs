@@ -243,6 +243,8 @@ fn detect_dxgi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
             memory_used: 0,   // DXGI doesn't report per-adapter usage
             utilization: 0.0, // DXGI doesn't report utilization
             temperature: 0,   // DXGI doesn't report temperature
+            vendor_id: desc.vendor_id,
+            device_id: desc.device_id,
         });
     }
 
