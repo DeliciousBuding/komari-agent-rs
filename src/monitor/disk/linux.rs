@@ -102,7 +102,38 @@ const EXCLUDED_FS: &[&str] = &[
 ];
 
 fn is_excluded_fs(fstype: &str) -> bool {
+    // fuseblk (ntfs-3g) is a physical disk — always include.
+    if fstype == "fuseblk" {
+        return false;
+    }
     EXCLUDED_FS.contains(&fstype)
+}
+
+// ── Mountpoint prefix exclusion ───────────────────────────────────────────────
+
+/// Mountpoint prefixes that should be excluded from disk accounting.
+const MOUNTPOINT_EXCLUDE_PREFIXES: &[&str] = &[
+    "/tmp",
+    "/var/tmp",
+    "/dev",
+    "/run",
+    "/var/lib/containers",
+    "/var/lib/docker",
+    "/proc",
+    "/sys",
+    "/sys/fs/cgroup",
+    "/etc/resolv.conf",
+    "/etc/host",
+    "/nix/store",
+];
+
+fn is_excluded_mountpoint(mp: &str) -> bool {
+    if mp == "/" {
+        return false; // always include root
+    }
+    MOUNTPOINT_EXCLUDE_PREFIXES
+        .iter()
+        .any(|p| mp.starts_with(p))
 }
 
 // ── Mountpoint match helper ───────────────────────────────────────────────────
@@ -144,6 +175,8 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
 
     let use_whitelist = !config.include_mountpoints.is_empty();
 
+    let mut seen_zfs_pools: Vec<String> = Vec::new();
+
     for line in BufReader::new(file).lines() {
         let line = match line {
             Ok(l) => l,
@@ -151,7 +184,11 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
         };
 
         let mut parts = line.split_whitespace();
-        let mp = match parts.nth(1) {
+        let dev = match parts.next() {
+            Some(v) => v,
+            None => continue,
+        };
+        let mp = match parts.next() {
             Some(v) => v,
             None => continue,
         };
@@ -160,9 +197,36 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
             None => continue,
         };
 
+        // Skip /dev/loop devices.
+        if dev.starts_with("/dev/loop") {
+            continue;
+        }
+
         if is_excluded_fs(fs) {
             continue;
         }
+
+        // Skip mountpoints with excluded prefixes (root "/" always included).
+        if is_excluded_mountpoint(mp) {
+            continue;
+        }
+
+        // ZFS dataset dedup: if fstype is zfs and device path contains "/",
+        // keep only the pool part (before first "/").
+        let zfs_pool: Option<String> = if fs == "zfs" {
+            let pool = if let Some(idx) = dev.find('/') {
+                dev[..idx].to_string()
+            } else {
+                dev.to_string()
+            };
+            if seen_zfs_pools.iter().any(|p| *p == pool) {
+                continue;
+            }
+            Some(pool)
+        } else {
+            None
+        };
+
         if use_whitelist {
             if !matches_patterns(mp, &config.include_mountpoints) {
                 continue;
@@ -195,6 +259,11 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
             total,
             used,
         });
+
+        // Track ZFS pool for dedup after successful push.
+        if let Some(pool) = zfs_pool {
+            seen_zfs_pools.push(pool);
+        }
     }
 
     out

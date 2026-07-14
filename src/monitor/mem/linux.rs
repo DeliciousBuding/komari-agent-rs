@@ -30,6 +30,9 @@ struct ProcMem {
     cached: u64,
     s_reclaimable: u64,
     shmem: u64,
+    swap_cached: u64,
+    zswap: u64,
+    zswapped: u64,
     swap_total: u64,
     swap_free: u64,
 }
@@ -44,6 +47,9 @@ fn read_proc_meminfo() -> Option<ProcMem> {
         cached: 0,
         s_reclaimable: 0,
         shmem: 0,
+        swap_cached: 0,
+        zswap: 0,
+        zswapped: 0,
         swap_total: 0,
         swap_free: 0,
     };
@@ -62,6 +68,9 @@ fn read_proc_meminfo() -> Option<ProcMem> {
             "Cached" => m.cached = val,
             "SReclaimable" => m.s_reclaimable = val,
             "Shmem" => m.shmem = val,
+            "SwapCached" => m.swap_cached = val,
+            "Zswap" => m.zswap = val,
+            "Zswapped" => m.zswapped = val,
             "SwapTotal" => m.swap_total = val,
             "SwapFree" => m.swap_free = val,
             _ => {}
@@ -72,7 +81,9 @@ fn read_proc_meminfo() -> Option<ProcMem> {
 
 #[inline]
 fn swap_used(m: &ProcMem) -> u64 {
-    m.swap_total.saturating_sub(m.swap_free)
+    m.swap_total
+        .saturating_sub(m.swap_free)
+        .saturating_sub(m.swap_cached)
 }
 
 /// Mode 0: htop-like.
@@ -80,7 +91,7 @@ fn mode_0(m: &ProcMem) -> MemInfo {
     let d = m.free + m.buffers + m.cached + m.s_reclaimable;
     MemInfo {
         total: m.total,
-        used: m.total.saturating_sub(d),
+        used: m.total.saturating_sub(d).saturating_add(m.shmem),
         swap_total: m.swap_total,
         swap_used: swap_used(m),
     }
