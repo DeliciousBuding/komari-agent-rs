@@ -3,7 +3,8 @@
 
 /// Detect virtualization environment.
 /// Returns "HyperV", "VMware", "VirtualBox", "KVM", "Xen", "bhyve",
-/// "Docker", "Kubernetes", "LXC", or "" (bare metal / unknown).
+/// "Docker", "Kubernetes", "LXC", "podman", "containerd", "crio",
+/// or "none" (bare metal / unknown).
 pub fn detect() -> &'static str {
     // 1. CPUID-based hypervisor detection (x86_64 only)
     if let Some(virt) = detect_via_cpuid() {
@@ -21,7 +22,7 @@ pub fn detect() -> &'static str {
         }
     }
 
-    "" // bare metal
+    "none" // bare metal
 }
 
 // ── CPUID detection (x86_64) ──────────────────────────────────────────────────
@@ -63,22 +64,43 @@ fn detect_via_cpuid() -> Option<&'static str> {
 
 #[cfg(target_os = "linux")]
 fn detect_container() -> Option<&'static str> {
-    // /.dockerenv — Docker marker file
-    if std::path::Path::new("/.dockerenv").exists() {
-        return Some("Docker");
+    // /run/.containerenv — podman / CRI-O marker file
+    if std::path::Path::new("/run/.containerenv").exists() {
+        return Some("podman");
     }
 
-    // /proc/self/cgroup — runtime-engine patterns
+    // /dev/.lxc-boot-id — LXC marker file
+    if std::path::Path::new("/dev/.lxc-boot-id").exists() {
+        return Some("lxc");
+    }
+
+    // /.dockerenv — Docker marker file
+    if std::path::Path::new("/.dockerenv").exists() {
+        return Some("docker");
+    }
+
+    // /proc/self/cgroup — per-line precise runtime-engine matching
     if let Ok(data) = std::fs::read_to_string("/proc/self/cgroup") {
-        let lower = data.to_lowercase();
-        if lower.contains("/docker") || lower.contains("/containerd") || lower.contains("docker-") {
-            return Some("Docker");
-        }
-        if lower.contains("/kubepods") {
-            return Some("Kubernetes");
-        }
-        if lower.contains("/lxc") {
-            return Some("LXC");
+        for line in data.lines() {
+            let lower = line.to_lowercase();
+            if lower.contains("docker") {
+                return Some("docker");
+            }
+            if lower.contains("containerd") {
+                return Some("containerd");
+            }
+            if lower.contains("kubepods") {
+                return Some("kubernetes");
+            }
+            if lower.contains("libpod") || lower.contains("podman") {
+                return Some("podman");
+            }
+            if lower.contains("crio") {
+                return Some("crio");
+            }
+            if lower.contains("lxc") {
+                return Some("lxc");
+            }
         }
     }
 
