@@ -244,7 +244,72 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y + (m as i64 <= 2) as i64, m, d)
 }
 
-/// Perform ping with 3-tier fallback.
+// ═══════════════════════════════════════════════════════════════════════════
+// High-latency retry constants (issue #63)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "ping")]
+const HIGH_LATENCY_THRESHOLD_MS: u64 = 1000;
+
+#[cfg(feature = "ping")]
+const MAX_LATENCY_RETRIES: u32 = 3;
+
+#[cfg(feature = "ping")]
+const TCP_RETRANSMISSION_DROP_THRESHOLD_MS: u64 = 800;
+
+/// Measure a ping with high-latency retry.
+///
+/// If the first measurement succeeds but its RTT exceeds
+/// [`HIGH_LATENCY_THRESHOLD_MS`], retry up to [`MAX_LATENCY_RETRIES`] more
+/// times and return the minimum observed RTT.
+///
+/// ## TCP retransmission detection
+///
+/// On the **second** TCP measurement (`attempt == 1`), if the RTT drop from the
+/// first attempt exceeds [`TCP_RETRANSMISSION_DROP_THRESHOLD_MS`], the function
+/// returns `-1` immediately — a first-ping spike this large is treated as a TCP
+/// retransmission artifact.
+///
+/// For non-TCP pings retransmission detection is skipped and the simple
+/// min-of-N strategy is used.
+#[cfg(feature = "ping")]
+fn measure_with_retry(ping_type: &str, mut measure: impl FnMut() -> i64) -> i64 {
+    let first = measure();
+    if first < 0 || first <= HIGH_LATENCY_THRESHOLD_MS as i64 {
+        return first;
+    }
+
+    // High latency on first attempt — retry
+    let mut best = first;
+    for attempt in 0..MAX_LATENCY_RETRIES {
+        let rtt = measure();
+        if rtt < 0 {
+            // Measurement failed; keep the best valid RTT we already have.
+            return best;
+        }
+
+        // TCP retransmission detection: only on the second measurement.
+        if ping_type == "tcp" && attempt == 0 {
+            let drop = first - rtt;
+            if drop > TCP_RETRANSMISSION_DROP_THRESHOLD_MS as i64 {
+                return -1;
+            }
+        }
+
+        if rtt < best {
+            best = rtt;
+        }
+
+        // Latency is now acceptable — stop retrying early.
+        if rtt <= HIGH_LATENCY_THRESHOLD_MS as i64 {
+            break;
+        }
+    }
+
+    best
+}
+
+/// Perform ping with 3-tier fallback and high-latency retry.
 ///
 /// ## Fallback chain
 /// - `icmp` → `ping_icmp()`; on failure (permission denied, timeout), falls back to TCP.
@@ -257,30 +322,36 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 pub fn handle_ping(ping_type: &str, target: &str, timeout_ms: Option<u64>) -> PingResult {
     match ping_type {
         "icmp" => {
-            let rtt = super::ping_icmp::ping_icmp(target, timeout_ms);
+            let rtt =
+                measure_with_retry("icmp", || super::ping_icmp::ping_icmp(target, timeout_ms));
             if rtt >= 0 {
                 return PingResult::new("icmp", rtt);
             }
             // Fallback: ICMP failed (likely permission denied) → TCP
-            let rtt = super::ping_tcp::ping_tcp(target, timeout_ms);
+            let rtt =
+                measure_with_retry("tcp", || super::ping_tcp::ping_tcp(target, timeout_ms));
             if rtt >= 0 {
                 return PingResult::new("tcp", rtt);
             }
             // Fallback: TCP failed → HTTP
-            let rtt = super::ping_http::ping_http(target, timeout_ms);
+            let rtt =
+                measure_with_retry("http", || super::ping_http::ping_http(target, timeout_ms));
             PingResult::new("http", rtt)
         }
         "tcp" => {
-            let rtt = super::ping_tcp::ping_tcp(target, timeout_ms);
+            let rtt =
+                measure_with_retry("tcp", || super::ping_tcp::ping_tcp(target, timeout_ms));
             if rtt >= 0 {
                 return PingResult::new("tcp", rtt);
             }
             // Fallback: TCP failed → HTTP
-            let rtt = super::ping_http::ping_http(target, timeout_ms);
+            let rtt =
+                measure_with_retry("http", || super::ping_http::ping_http(target, timeout_ms));
             PingResult::new("http", rtt)
         }
         "http" => {
-            let rtt = super::ping_http::ping_http(target, timeout_ms);
+            let rtt =
+                measure_with_retry("http", || super::ping_http::ping_http(target, timeout_ms));
             PingResult::new("http", rtt)
         }
         _ => PingResult::new("unknown", -1),
@@ -655,5 +726,143 @@ mod exec_tests {
         assert!(s.contains("\"task_id\":\"t1\""));
         assert!(s.contains("\"exit_code\":0"));
         assert!(s.contains("\"finished_at\""));
+    }
+}
+
+#[cfg(all(test, feature = "ping"))]
+mod ping_retry_tests {
+    use super::*;
+
+    #[test]
+    fn no_retry_when_latency_under_threshold() {
+        let mut calls = 0;
+        let rtt = measure_with_retry("icmp", || {
+            calls += 1;
+            500
+        });
+        assert_eq!(rtt, 500);
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn no_retry_on_failure() {
+        let mut calls = 0;
+        let rtt = measure_with_retry("icmp", || {
+            calls += 1;
+            -1
+        });
+        assert_eq!(rtt, -1);
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_on_high_latency_uses_min() {
+        let values = vec![1500i64, 1200, 900];
+        let mut idx = 0;
+        let rtt = measure_with_retry("icmp", || {
+            let v = values[idx];
+            idx += 1;
+            v
+        });
+        assert_eq!(rtt, 900);
+        assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn retry_uses_min_across_all_high_attempts() {
+        let values = vec![2000i64, 1500, 1800, 2500];
+        let mut idx = 0;
+        let rtt = measure_with_retry("http", || {
+            let v = values[idx];
+            idx += 1;
+            v
+        });
+        assert_eq!(rtt, 1500);
+        assert_eq!(idx, 4);
+    }
+
+    #[test]
+    fn retry_keeps_best_when_later_attempt_fails() {
+        let values = vec![1500i64, 1300, -1];
+        let mut idx = 0;
+        let rtt = measure_with_retry("icmp", || {
+            let v = values[idx];
+            idx += 1;
+            v
+        });
+        assert_eq!(rtt, 1300);
+        assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn tcp_retransmission_detected() {
+        // drop = 1200 - 200 = 1000 > 800 → fail immediately
+        let values = vec![1200i64, 200, 500, 300];
+        let mut idx = 0;
+        let rtt = measure_with_retry("tcp", || {
+            let v = values[idx];
+            idx += 1;
+            v
+        });
+        assert_eq!(rtt, -1);
+        assert_eq!(idx, 2); // stopped after 2nd call
+    }
+
+    #[test]
+    fn tcp_no_retransmission_when_drop_small() {
+        // drop = 1200 - 500 = 700 <= 800 → proceed with retry.
+        // Second attempt (500) is under threshold → stops early.
+        let values = vec![1200i64, 500, 9999];
+        let mut idx = 0;
+        let rtt = measure_with_retry("tcp", || {
+            let v = values[idx];
+            idx += 1;
+            v
+        });
+        assert_eq!(rtt, 500);
+        assert_eq!(idx, 2); // stopped after first retry (under threshold, no retransmission)
+    }
+
+    #[test]
+    fn icmp_no_retransmission_detection() {
+        // ICMP with large drop: no retransmission check, just min.
+        // Second attempt (100) is under threshold → stops early.
+        let values = vec![1200i64, 100, 9999];
+        let mut idx = 0;
+        let rtt = measure_with_retry("icmp", || {
+            let v = values[idx];
+            idx += 1;
+            v
+        });
+        assert_eq!(rtt, 100);
+        assert_eq!(idx, 2); // stopped after first retry (under threshold)
+    }
+
+    #[test]
+    fn http_no_retransmission_detection() {
+        // HTTP with large drop: no retransmission check, just min
+        let values = vec![2000i64, 500];
+        let mut idx = 0;
+        let rtt = measure_with_retry("http", || {
+            let v = values[idx];
+            idx += 1;
+            v
+        });
+        assert_eq!(rtt, 500);
+        assert_eq!(idx, 2);
+    }
+
+    #[test]
+    fn retry_stops_early_when_under_threshold() {
+        // 2000 → 1500 → 800 (under 1000) — 4th value never consumed
+        let values = vec![2000i64, 1500, 800, 9999];
+        let mut idx = 0;
+        let rtt = measure_with_retry("icmp", || {
+            let v = values[idx];
+            idx += 1;
+            v
+        });
+        assert_eq!(rtt, 800);
+        assert_eq!(idx, 3);
     }
 }
