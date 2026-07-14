@@ -381,7 +381,11 @@ fn parse_http_ping_tasks(body: &[u8]) -> Vec<HttpPingTask> {
 }
 
 fn parse_http_ping_task_object(obj: &str) -> Option<HttpPingTask> {
-    let id = super::task::extract_json_number(obj.as_bytes(), "id")? as u64;
+    let raw_id = super::task::extract_json_number(obj.as_bytes(), "id")?;
+    if raw_id < 0 {
+        return None;
+    }
+    let id = raw_id as u64;
     let ping_type = super::task::extract_json_string(obj.as_bytes(), "type")?;
     let target = super::task::extract_json_string(obj.as_bytes(), "target")?;
     let interval_secs = super::task::extract_json_number(obj.as_bytes(), "interval")
@@ -673,7 +677,8 @@ fn handle_ping_task(
     eprintln!("[komari] ping task {task_id}: {ping_type} -> {target}");
     let result = super::task::handle_ping(ping_type, target, None);
     let is_v2 = matches!(mode, ProtocolMode::WsV2 | ProtocolMode::HttpV2);
-    let payload = result.build_payload(task_id as u64, if is_v2 { 2 } else { 1 });
+    let id = if task_id < 0 { 0 } else { task_id as u64 };
+    let payload = result.build_payload(id, if is_v2 { 2 } else { 1 });
     if let Some(ws) = ws {
         if let Err(e) = ws.send_text(&payload) {
             eprintln!("[komari] WARN: failed to send ping result: {e:?}");
