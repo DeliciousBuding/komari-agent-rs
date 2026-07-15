@@ -6,6 +6,13 @@
 //   - Microsoft ConPTY API (Windows 10 1809+)
 //
 // Builds only on `#[cfg(target_family = "windows")]` when `feature = "terminal"`.
+//
+// FFI surface intentionally mirrors Win32 names/layouts; suppress style lints.
+
+#![allow(non_snake_case)]
+#![allow(non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::doc_overindented_list_items)]
 
 use std::ffi::OsStr;
 use std::io;
@@ -244,9 +251,7 @@ impl WindowsTerminal {
         let mut hpc: HPCON = ptr::null_mut();
         let hr = unsafe { CreatePseudoConsole(coord, input_read, output_write, 0, &mut hpc) };
         if hr != S_OK || hpc.is_null() {
-            unsafe {
-                cleanup_pipes(input_read, input_write, output_read, output_write);
-            }
+            cleanup_pipes(input_read, input_write, output_read, output_write);
             return Err(TerminalErr::PtyOpen("CreatePseudoConsole"));
         }
 
@@ -323,17 +328,15 @@ impl WindowsTerminal {
         // (the buffer was heap-allocated by Vec).
 
         if ok == FALSE {
-            unsafe {
-                cleanup_early(
-                    hpc,
-                    input_read,
-                    input_write,
-                    output_read,
-                    output_write,
-                    pi.hProcess,
-                    pi.hThread,
-                );
-            }
+            cleanup_early(
+                hpc,
+                input_read,
+                input_write,
+                output_read,
+                output_write,
+                pi.hProcess,
+                pi.hThread,
+            );
             return Err(TerminalErr::Exec("CreateProcessW"));
         }
 

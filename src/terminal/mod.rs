@@ -17,6 +17,10 @@ use crate::ws::{WsConnection, WsErr, WsMessage};
 // ── TerminalErr ─────────────────────────────────────────────────────────────
 
 /// Errors that can occur during terminal operations.
+///
+/// Some variants are only constructed on one platform (e.g. `Fork` on Unix);
+/// keep them for the cross-platform API surface.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum TerminalErr {
     /// Underlying I/O error (PTY fd or pipe read/write).
@@ -121,12 +125,11 @@ const WS_RESTORE_TIMEOUT: Duration = Duration::from_secs(30);
 /// of goroutine-driven (this agent is sync, no async runtime).
 ///
 /// Protocol (mirrors the Go agent):
-///   - WS text message  → JSON `{"type":"input","input":"…"}` writes `input`
-///                        to the PTY;
-///                        JSON `{"type":"resize","cols":N,"rows":N}` resizes.
-///   - WS binary frame  → written verbatim to the PTY.
-///   - WS close / EOF   → session ends.
-///   - PTY output       → sent as a WS binary frame.
+/// - WS text message → JSON `{"type":"input","input":"…"}` writes `input` to the
+///   PTY; JSON `{"type":"resize","cols":N,"rows":N}` resizes.
+/// - WS binary frame → written verbatim to the PTY.
+/// - WS close / EOF → session ends.
+/// - PTY output → sent as a WS binary frame.
 ///
 /// Returns `Ok(())` on a clean close, or an error if either side fails.
 pub fn start_terminal(ws: &mut WsConnection) -> Result<(), TerminalErr> {
