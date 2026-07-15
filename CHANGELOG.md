@@ -2,20 +2,22 @@
 
 ## Unreleased
 
+## v0.2.1 (2026-07-15)
+
 ### Fixed
-- **permessage-deflate root cause**: inflate now appends gorilla/websocket trailer (`00 00 FF FF` + empty final stored block `01 00 00 FF FF`). RFC-only trailer left `inflate_raw` / Go flate at UnexpectedEof on real server frames.
-- Wire interactive terminal end-to-end when built with `--features terminal`
+- **permessage-deflate root cause**: inflate appends gorilla/websocket trailer (`00 00 FF FF` + empty final stored block `01 00 00 FF FF`) so real server frames no longer UnexpectedEof
+- Interactive terminal end-to-end when built with `--features terminal` / `full`
 - WebSocket upgrade query separator for paths that already have `?id=`
+- `disable_exec` is independent of `disable_web_ssh` (no JSON mirror)
 
 ### Changed
-- `disable_exec` is independent of `disable_web_ssh` (JSON no longer mirrors web_ssh → exec)
 - Terminal: max 2 concurrent sessions; 30min idle timeout
-- Sensitive ops on server require 2FA enrollment (tokendance-komari)
+- Release workflow emits **linux-musl default** (no terminal) and **full** assets for fleet vs fire-axe
+- Deflate inflate failure auto-disables compression as safety net
 
 ### Notes
 - Default build still has no `terminal` feature; `disable_web_ssh` / `disable_exec` default **true**
-- Auto-degrade on deflate failure remains as safety net; primary path is correct inflate
-
+- us1 E2E WebSSH verified 2026-07-15 with compression ON
 
 ## v0.2.0 (2026-07-14)
 

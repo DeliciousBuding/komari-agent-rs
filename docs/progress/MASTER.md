@@ -1,6 +1,6 @@
 # MASTER.md — komari-agent-rs
 
-最后更新：2026-07-15 20:30
+最后更新：2026-07-15 21:55
 
 ## 任务标识
 
@@ -52,7 +52,8 @@ P1–P7 已完成（见下文历史表 / GitHub milestones 1–7）。
 
 ## 下一步
 
-1. commit + push agent-rs 与 tokendance-komari
-2. 更新 server STATE / runbook
-3. （可选）us1 去掉固定 `--disable-compression` 验证自动降级
-4. 打 tag 触发 dual release
+1. ~~commit + push agent-rs~~ main@ba68147+
+2. ~~更新 server STATE / runbook~~
+3. us1 compression ON 已 E2E（deflate trailer 根因已修）
+4. **打 tag `v0.2.1` 触发 dual release**（本轮）
+5. 舰队仍默认 v0.1.10 HTTP-only；仅 us1 full 试点
