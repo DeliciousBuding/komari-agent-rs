@@ -126,8 +126,8 @@ fn parse_stats(rest: &str) -> Option<[u64; 16]> {
 /// Returns `true` for lo and common virtual/container interface prefixes.
 fn is_virtual(name: &str) -> bool {
     const VP: &[&str] = &[
-        "docker", "veth", "br-", "tun", "tap", "virbr", "vnet",
-        "cni", "podman", "flannel", "vmbr", "fwbr", "fwpr",
+        "docker", "veth", "br-", "tun", "tap", "virbr", "vnet", "cni", "podman", "flannel", "vmbr",
+        "fwbr", "fwpr",
     ];
     name == "lo" || VP.iter().any(|p| name.starts_with(p))
 }

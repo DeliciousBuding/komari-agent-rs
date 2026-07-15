@@ -150,12 +150,21 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
 
 // ── HTTP helpers ────────────────────────────────────────────────────────────
 
-fn https_get(host: &str, path: &str, tls: &Arc<rustls::ClientConfig>, auth_token: Option<&str>) -> Result<String, UpdateErr> {
+fn https_get(
+    host: &str,
+    path: &str,
+    tls: &Arc<rustls::ClientConfig>,
+    auth_token: Option<&str>,
+) -> Result<String, UpdateErr> {
     let body = https_fetch(host, 443, path, "", tls, auth_token)?;
     String::from_utf8(body).map_err(|_| UpdateErr::Http("non-UTF-8 response".into()))
 }
 
-fn https_download(url: &str, tls: &Arc<rustls::ClientConfig>, auth_token: Option<&str>) -> Result<Vec<u8>, UpdateErr> {
+fn https_download(
+    url: &str,
+    tls: &Arc<rustls::ClientConfig>,
+    auth_token: Option<&str>,
+) -> Result<Vec<u8>, UpdateErr> {
     let (host, port, path, query) = parse_https_url(url)?;
     https_fetch(&host, port, &path, &query, tls, auth_token)
 }

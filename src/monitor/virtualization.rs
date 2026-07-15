@@ -114,11 +114,8 @@ fn detect_container() -> Option<&'static str> {
 
 #[cfg(target_os = "linux")]
 fn detect_via_systemd() -> Option<&'static str> {
-    let output = run_with_timeout(
-        &mut std::process::Command::new("systemd-detect-virt"),
-        30,
-    )
-    .ok()?;
+    let output =
+        run_with_timeout(&mut std::process::Command::new("systemd-detect-virt"), 30).ok()?;
     if !output.status.success() {
         return None;
     }

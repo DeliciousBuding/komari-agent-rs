@@ -559,8 +559,8 @@ fn dispatch_server_message(
                 }
             }
             "agent.terminal.request" => {
-                let request_id = super::task::extract_json_string(data, "request_id")
-                    .unwrap_or_default();
+                let request_id =
+                    super::task::extract_json_string(data, "request_id").unwrap_or_default();
                 handle_terminal_request(config, dial, tls_cfg, &request_id);
             }
             "agent.message" | "agent.event" => {
@@ -588,8 +588,8 @@ fn dispatch_server_message(
                 }
             }
             "terminal" => {
-                let request_id = super::task::extract_json_string(data, "request_id")
-                    .unwrap_or_default();
+                let request_id =
+                    super::task::extract_json_string(data, "request_id").unwrap_or_default();
                 handle_terminal_request(config, dial, tls_cfg, &request_id);
             }
             _ if !text.trim().is_empty() => {

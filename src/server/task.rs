@@ -328,8 +328,7 @@ pub fn handle_ping(ping_type: &str, target: &str, timeout_ms: Option<u64>) -> Pi
                 return PingResult::new("icmp", rtt);
             }
             // Fallback: ICMP failed (likely permission denied) → TCP
-            let rtt =
-                measure_with_retry("tcp", || super::ping_tcp::ping_tcp(target, timeout_ms));
+            let rtt = measure_with_retry("tcp", || super::ping_tcp::ping_tcp(target, timeout_ms));
             if rtt >= 0 {
                 return PingResult::new("tcp", rtt);
             }
@@ -339,8 +338,7 @@ pub fn handle_ping(ping_type: &str, target: &str, timeout_ms: Option<u64>) -> Pi
             PingResult::new("http", rtt)
         }
         "tcp" => {
-            let rtt =
-                measure_with_retry("tcp", || super::ping_tcp::ping_tcp(target, timeout_ms));
+            let rtt = measure_with_retry("tcp", || super::ping_tcp::ping_tcp(target, timeout_ms));
             if rtt >= 0 {
                 return PingResult::new("tcp", rtt);
             }

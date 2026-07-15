@@ -67,8 +67,8 @@ fn find_tool(canonical: &str, tool_name: &str) -> Result<String, String> {
 // Matches DD7 spec: --query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu --format=csv,noheader,nounits
 
 fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
-    let tool_path = find_tool("/usr/bin/nvidia-smi", "nvidia-smi")
-        .map_err(|e| GpuDetectErr::Subprocess(e))?;
+    let tool_path =
+        find_tool("/usr/bin/nvidia-smi", "nvidia-smi").map_err(|e| GpuDetectErr::Subprocess(e))?;
 
     let mut nvidia_cmd = Command::new(&tool_path);
     nvidia_cmd.args([
@@ -140,8 +140,8 @@ fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> 
 // "Temperature" keys ONLY. No full JSON parse.
 
 fn detect_rocm_smi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
-    let tool_path = find_tool("/opt/rocm/bin/rocm-smi", "rocm-smi")
-        .map_err(|e| GpuDetectErr::Subprocess(e))?;
+    let tool_path =
+        find_tool("/opt/rocm/bin/rocm-smi", "rocm-smi").map_err(|e| GpuDetectErr::Subprocess(e))?;
 
     let mut rocm_cmd = Command::new(&tool_path);
     rocm_cmd.args(["--showallinfo", "--json"]);
@@ -296,9 +296,7 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
 
         let model = match raw_driver {
             Some(ref drv) if is_virtual_drm_driver(drv) => continue,
-            Some(ref drv) => {
-                map_driver_name(drv).unwrap_or(drv).to_string()
-            }
+            Some(ref drv) => map_driver_name(drv).unwrap_or(drv).to_string(),
             None => {
                 format!("{} {:04x}:{:04x}", vendor_name, vendor_id, device_id)
             }
@@ -388,8 +386,15 @@ fn detect_lspci() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
 /// Check if an lspci line describes a virtual GPU (case-insensitive).
 fn is_virtual_gpu_lspci(line_lower: &str) -> bool {
     const VIRTUAL_PATTERNS: &[&str] = &[
-        "virtio", "vmware", "qxl", "bochs", "cirrus", "hyperv", "simpledrm",
-        "simplefb", "vbox",
+        "virtio",
+        "vmware",
+        "qxl",
+        "bochs",
+        "cirrus",
+        "hyperv",
+        "simpledrm",
+        "simplefb",
+        "vbox",
     ];
     VIRTUAL_PATTERNS.iter().any(|p| line_lower.contains(p))
 }
@@ -397,8 +402,16 @@ fn is_virtual_gpu_lspci(line_lower: &str) -> bool {
 /// Check if a DRM driver name is a known virtual/software GPU driver.
 fn is_virtual_drm_driver(driver: &str) -> bool {
     const VIRTUAL_DRIVERS: &[&str] = &[
-        "virtio-pci", "virtio_gpu", "bochs-drm", "qxl", "vmwgfx", "cirrus",
-        "vboxvideo", "hyperv_fb", "simpledrm", "simplefb",
+        "virtio-pci",
+        "virtio_gpu",
+        "bochs-drm",
+        "qxl",
+        "vmwgfx",
+        "cirrus",
+        "vboxvideo",
+        "hyperv_fb",
+        "simpledrm",
+        "simplefb",
     ];
     VIRTUAL_DRIVERS.iter().any(|d| *d == driver)
 }

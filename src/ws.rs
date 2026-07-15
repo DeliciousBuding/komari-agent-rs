@@ -375,8 +375,8 @@ impl WsConnection {
         // through — this is sufficient for the upgrade-response round-trip.
 
         // ── 6. Build and send HTTP upgrade request ──
-        let ws_key_bytes = crypto::ws_generate_key()
-            .map_err(|e| WsErr::Io(format!("generate WS key: {}", e)))?;
+        let ws_key_bytes =
+            crypto::ws_generate_key().map_err(|e| WsErr::Io(format!("generate WS key: {}", e)))?;
         let ws_key_str = core::str::from_utf8(&ws_key_bytes).map_err(|_| {
             WsErr::Handshake("generated WebSocket key is not valid UTF-8".to_string())
         })?;
@@ -1028,9 +1028,7 @@ mod tests {
             &[],
             false,
         );
-        assert!(req.starts_with(
-            "GET /api/clients/terminal?id=abc123&token=tok HTTP/1.1\r\n"
-        ));
+        assert!(req.starts_with("GET /api/clients/terminal?id=abc123&token=tok HTTP/1.1\r\n"));
     }
 
     #[test]

@@ -158,9 +158,7 @@ pub fn collect_ip(config: &Config) -> Result<(Option<String>, Option<String>), M
     }
 
     // 3. Build TLS config once for HTTPS endpoints
-    let tls_cfg = crate::tls::make_tls_config(config)
-        .ok()
-        .map(Arc::new);
+    let tls_cfg = crate::tls::make_tls_config(config).ok().map(Arc::new);
 
     // 4. External HTTP APIs (best-effort, HTTP + HTTPS)
     if ipv4.is_none() {
@@ -328,7 +326,11 @@ fn connect_bound(host: &str, port: u16, force_v4: bool, force_v6: bool) -> Optio
     }
 
     // Explicit socket + bind + connect for forced address family
-    let domain = if force_v4 { LIBC_AF_INET } else { LIBC_AF_INET6 };
+    let domain = if force_v4 {
+        LIBC_AF_INET
+    } else {
+        LIBC_AF_INET6
+    };
     let fd = unsafe { socket(domain, SOCK_STREAM, 0) };
     if fd < 0 {
         return None;
