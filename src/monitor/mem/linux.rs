@@ -110,7 +110,7 @@ fn mode_1(m: &ProcMem) -> MemInfo {
 
 /// Mode 2: `free -b` subprocess. Swap from `/proc/meminfo`.
 fn mode_2() -> Option<MemInfo> {
-    let out = run_with_timeout(&mut Command::new("free").arg("-b"), 30).ok()?;
+    let out = run_with_timeout(Command::new("free").arg("-b"), 30).ok()?;
     if !out.status.success() {
         return None;
     }

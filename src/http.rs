@@ -116,6 +116,7 @@ pub fn http_get(
     http_request("GET", url, None, None, None, extra_headers, tls_cfg, dial)
 }
 
+#[allow(clippy::too_many_arguments)] // HTTP request surface genuinely needs method/url/body/headers/tls/dial
 fn http_request(
     method: &str,
     url: &str,

@@ -86,11 +86,7 @@ impl PrevNetSnapshot {
 /// prevents `wrapping_sub` from producing garbage rates on wraparound.
 #[inline]
 fn safe_delta(current: u64, previous: u64) -> u64 {
-    if current >= previous {
-        current - previous
-    } else {
-        0
-    }
+    current.saturating_sub(previous)
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────

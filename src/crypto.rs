@@ -143,10 +143,9 @@ fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
             )
         };
         if status != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("BCryptGenRandom failed with status 0x{status:08X}"),
-            ));
+            return Err(std::io::Error::other(format!(
+                "BCryptGenRandom failed with status 0x{status:08X}"
+            )));
         }
         Ok(())
     }

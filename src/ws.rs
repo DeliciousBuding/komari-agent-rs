@@ -779,7 +779,7 @@ fn read_http_response_headers(
 
         // Check for terminating \r\n\r\n.
         let len = buf.len();
-        if len >= 4 && buf[len - 4..] == [b'\r', b'\n', b'\r', b'\n'] {
+        if len >= 4 && buf[len - 4..] == *b"\r\n\r\n" {
             break;
         }
 

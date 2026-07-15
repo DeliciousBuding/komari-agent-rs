@@ -366,12 +366,11 @@ fn parse_http_ping_tasks(body: &[u8]) -> Vec<HttpPingTask> {
             }
             '}' => {
                 depth -= 1;
-                if depth == 0 {
-                    if let Some(s) = start.take() {
-                        if let Some(task) = parse_http_ping_task_object(&text[s..=idx]) {
-                            tasks.push(task);
-                        }
-                    }
+                if depth == 0
+                    && let Some(s) = start.take()
+                    && let Some(task) = parse_http_ping_task_object(&text[s..=idx])
+                {
+                    tasks.push(task);
                 }
             }
             _ => {}
@@ -645,7 +644,6 @@ fn handle_terminal_request(
         eprintln!(
             "[komari] terminal request {request_id}: binary built without 'terminal' feature"
         );
-        return;
     }
 
     #[cfg(feature = "terminal")]
