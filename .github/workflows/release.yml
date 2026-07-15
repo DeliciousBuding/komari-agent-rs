@@ -7,6 +7,31 @@ permissions:
   contents: write
 
 jobs:
+
+  # Default feature set (monitoring-only, no terminal/ping/self-update) for fleet.
+  build-linux-musl-default:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Check binary size < 2MB
+        run: |
+          SIZE=$(stat -c%s target/x86_64-unknown-linux-musl/release/komari-agent-rs)
+          if [ "$SIZE" -ge 2097152 ]; then
+            echo "::error::Binary size $SIZE bytes exceeds 2MB limit"
+            exit 1
+          fi
+      - name: Prepare artifact
+        run: cp target/x86_64-unknown-linux-musl/release/komari-agent-rs komari-agent-rs-linux-x86_64-default
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-musl-default
+          path: komari-agent-rs-linux-x86_64-default
+
   build-linux-musl:
     runs-on: ubuntu-latest
     steps:
@@ -24,11 +49,11 @@ jobs:
             exit 1
           fi
       - name: Prepare artifact
-        run: cp target/x86_64-unknown-linux-musl/release/komari-agent-rs komari-agent-rs-linux-x86_64
+        run: cp target/x86_64-unknown-linux-musl/release/komari-agent-rs komari-agent-rs-linux-x86_64-full
       - uses: actions/upload-artifact@v7
         with:
-          name: linux-musl
-          path: komari-agent-rs-linux-x86_64
+          name: linux-musl-full
+          path: komari-agent-rs-linux-x86_64-full
 
   build-windows:
     runs-on: windows-latest
@@ -133,7 +158,7 @@ jobs:
           path: komari-agent-rs-macos-arm64
 
   create-release:
-    needs: [build-linux-musl, build-linux-musl-arm64, build-windows, build-macos, build-macos-arm64, build-freebsd]
+    needs: [build-linux-musl-default, build-linux-musl, build-linux-musl-arm64, build-windows, build-macos, build-macos-arm64, build-freebsd]
     runs-on: ubuntu-latest
     permissions:
       contents: write

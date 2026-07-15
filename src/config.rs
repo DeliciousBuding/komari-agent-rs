@@ -25,7 +25,7 @@ use std::str::FromStr;
 // ConfigErr — unified error type for all config operations
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ConfigErr {
     /// A flag that requires a value was provided without one.
     MissingValue(String),
@@ -74,6 +74,7 @@ impl std::error::Error for ConfigErr {}
 // Config — all 32 fields matching Go agent + user-requested additions
 // ============================================================================
 
+#[derive(Debug, Clone)]
 pub struct Config {
     // -- Required (no defaults) --
     pub endpoint: String, // AGENT_ENDPOINT, --endpoint / -e
@@ -87,6 +88,10 @@ pub struct Config {
 
     // -- Feature toggles --
     pub disable_web_ssh: bool, // AGENT_DISABLE_WEB_SSH,    --disable-web-ssh,         default true
+    /// Independent gate for one-shot remote exec (`agent.exec`).
+    /// Defaults to **true** (safer than Go). When unset in JSON, follows
+    /// `disable_web_ssh` for backward compatibility.
+    pub disable_exec: bool, // AGENT_DISABLE_EXEC,       --disable-exec,            default true
     pub disable_auto_update: bool, // AGENT_DISABLE_AUTO_UPDATE, --disable-auto-update,     default true
     pub disable_compression: bool, // AGENT_DISABLE_COMPRESSION, --disable-compression,     default false
     pub http_only: bool, // AGENT_HTTP_ONLY, --http-only, default false (DPI/middlebox escape hatch: skip WS, report over HTTP only)
@@ -138,6 +143,7 @@ impl Default for Config {
             reconnect_interval: 5,
             max_retries: 10,
             disable_web_ssh: true,
+            disable_exec: true,
             disable_auto_update: true,
             disable_compression: false,
             http_only: false,
@@ -304,6 +310,7 @@ pub fn help_text() -> &'static str {
      \n\
      Behavior:\n  \
      --disable-web-ssh               Disable remote terminal (WebSSH)\n  \
+     --disable-exec                 Disable one-shot remote exec (default true; independent of WebSSH)\n  \
      --disable-auto-update           Disable GitHub Releases self-update\n  \
      --disable-compression           Disable gzip (HTTP) and permessage-deflate (WS)\n  \
      --debug-log                     Verbose debug logging\n  \
@@ -434,6 +441,7 @@ fn apply_long_flag(config: &mut Config, name: &str, val: Option<&str>) -> Result
 
         // -- Bool flags (--flag → true, --flag=value → parsed)
         "disable-web-ssh" => config.disable_web_ssh = parse_bool_opt("--disable-web-ssh", val)?,
+        "disable-exec" => config.disable_exec = parse_bool_opt("--disable-exec", val)?,
         "disable-auto-update" => {
             config.disable_auto_update = parse_bool_opt("--disable-auto-update", val)?
         }
@@ -514,6 +522,7 @@ fn is_bool_flag(name: &str) -> bool {
     matches!(
         name,
         "disable-web-ssh"
+            | "disable-exec"
             | "disable-auto-update"
             | "disable-compression"
             | "http-only"
@@ -589,6 +598,11 @@ pub fn load_env(config: &mut Config) {
         && let Ok(b) = parse_bool("AGENT_DISABLE_WEB_SSH", &v)
     {
         config.disable_web_ssh = b;
+    }
+    if let Ok(v) = env::var("AGENT_DISABLE_EXEC")
+        && let Ok(b) = parse_bool("AGENT_DISABLE_EXEC", &v)
+    {
+        config.disable_exec = b;
     }
     if let Ok(v) = env::var("AGENT_DISABLE_AUTO_UPDATE")
         && let Ok(b) = parse_bool("AGENT_DISABLE_AUTO_UPDATE", &v)
@@ -1246,6 +1260,13 @@ fn apply_json_map(config: &mut Config, map: &std::collections::HashMap<String, J
     if let Some(v) = get_bool("disable_web_ssh") {
         config.disable_web_ssh = v;
     }
+    // Independent exec gate; if omitted, keep default (or follow disable_web_ssh
+    // when that key alone is present for legacy configs that only knew one flag).
+    if let Some(v) = get_bool("disable_exec") {
+        config.disable_exec = v;
+    } else if let Some(v) = get_bool("disable_web_ssh") {
+        config.disable_exec = v;
+    }
     if let Some(v) = get_bool("disable_auto_update") {
         config.disable_auto_update = v;
     }
@@ -1383,6 +1404,7 @@ mod tests {
             "--gpu",
             "--disable-auto-update",
             "--disable-web-ssh",
+            "--disable-exec",
             "--disable-compression",
             "--memory-include-cache",
             "--month-rotate",

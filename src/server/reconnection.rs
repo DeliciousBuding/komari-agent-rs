@@ -27,7 +27,13 @@ use crate::server::cf_access::CfAccess;
 use crate::ws::{WsConnection, WsErr, WsMessage};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+/// Cap concurrent interactive terminal sessions (PTY threads).
+/// Beyond this the request is refused so a flood cannot fork-bomb the host.
+static TERMINAL_SESSIONS: AtomicUsize = AtomicUsize::new(0);
+const MAX_TERMINAL_SESSIONS: usize = 2;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Connection handle
@@ -75,8 +81,12 @@ impl From<HttpErr> for TickErr {
 ///    Periodic basic-info refresh runs every
 ///    `config.info_report_interval` minutes via [`super::update_basic_info`].
 pub fn run_reconnection_loop(config: &Config) -> ! {
+    // Owned runtime config so we can auto-disable WS compression after a
+    // permessage-deflate inflate failure (reconnect without compression).
+    let mut runtime_cfg = config.clone();
+
     // Step 1: Initialise TLS config (fatal on failure).
-    let tls_cfg = match crate::tls::make_tls_config(config) {
+    let tls_cfg = match crate::tls::make_tls_config(&runtime_cfg) {
         Ok(cfg) => Arc::new(cfg),
         Err(e) => {
             eprintln!("[komari] ERROR: TLS config init failed: {}", e);
@@ -89,19 +99,24 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
     // Basic info is uploaded AFTER the first successful connection — the
     // server must register this client (via the WS handshake) before it can
     // accept basicInfo updates, so uploading eagerly here yields HTTP 500.
-    let dial = crate::proxy::Dialer::from_config(config);
+    let dial = crate::proxy::Dialer::from_config(&runtime_cfg);
 
-    let mut fsm = ProtocolFsm::new(config.protocol_version, config.http_only);
-    let mut backoff = Backoff::new(config.max_retries, config.reconnect_interval);
-    let mut monitor = Monitor::new_with_config(config);
+    let mut fsm = ProtocolFsm::new(runtime_cfg.protocol_version, runtime_cfg.http_only);
+    let mut backoff = Backoff::new(runtime_cfg.max_retries, runtime_cfg.reconnect_interval);
+    let mut monitor = Monitor::new_with_config(&runtime_cfg);
     let mut arena = ScratchArena::new();
     let mut last_info_refresh = Instant::now();
-    let info_interval = Duration::from_secs(config.info_report_interval * 60);
+    let info_interval = Duration::from_secs(runtime_cfg.info_report_interval * 60);
+
+    eprintln!(
+        "[komari] capabilities: {}",
+        agent_capabilities(&runtime_cfg).join(",")
+    );
 
     loop {
         // Periodic basic info refresh.
         if last_info_refresh.elapsed() >= info_interval {
-            if let Err(e) = super::update_basic_info(config, &tls_cfg, &dial) {
+            if let Err(e) = super::update_basic_info(&runtime_cfg, &tls_cfg, &dial) {
                 eprintln!("[komari] WARN: periodic basic info refresh failed: {}", e);
             }
             last_info_refresh = Instant::now();
@@ -109,13 +124,13 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
 
         // Do NOT on_reconnect() here — connect failures must accumulate to
         // trigger the 3-strike downgrade (WsV2 → WsV1 → HttpV2 → HttpV1).
-        let conn = match connect_with_fsm(&fsm, config, &tls_cfg, &dial) {
+        let conn = match connect_with_fsm(&fsm, &runtime_cfg, &tls_cfg, &dial) {
             Ok(conn) => {
                 fsm.on_success();
                 backoff.reset();
                 // Client is now registered server-side — upload basic info.
                 // Non-fatal: the periodic refresh retries on failure.
-                if let Err(e) = super::update_basic_info(config, &tls_cfg, &dial) {
+                if let Err(e) = super::update_basic_info(&runtime_cfg, &tls_cfg, &dial) {
                     eprintln!(
                         "[komari] WARN: post-connect basic info upload failed: {}",
                         e
@@ -149,10 +164,18 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
             &mut fsm,
             &mut monitor,
             &mut arena,
-            config,
+            &runtime_cfg,
             &tls_cfg,
             &dial,
         ) {
+            // Auto-degrade: permessage-deflate inflate bugs force a reconnect
+            // without compression instead of flapping forever.
+            if is_deflate_failure(&e) && !runtime_cfg.disable_compression {
+                eprintln!(
+                    "[komari] WARN: permessage-deflate failed — disabling compression for subsequent reconnects"
+                );
+                runtime_cfg.disable_compression = true;
+            }
             let kind = classify_tick_failure(&e);
             let downgraded = fsm.on_failure(kind);
             eprintln!(
@@ -663,11 +686,22 @@ fn handle_terminal_request(
             headers
         };
 
+        // Concurrency gate: refuse rather than unbounded PTY fork.
+        let prev = TERMINAL_SESSIONS.fetch_add(1, Ordering::SeqCst);
+        if prev >= MAX_TERMINAL_SESSIONS {
+            TERMINAL_SESSIONS.fetch_sub(1, Ordering::SeqCst);
+            eprintln!(
+                "[komari] terminal request {request_id}: refused (max {MAX_TERMINAL_SESSIONS} concurrent sessions)"
+            );
+            return;
+        }
+
         // Detach so the monitor tick keeps running while the PTY session lives.
         // The server holds the browser WS open for ~30s waiting for this dial.
         let spawn_result = std::thread::Builder::new()
             .name(format!("terminal-{request_id}"))
             .spawn(move || {
+                let _guard = TerminalSessionGuard;
                 establish_terminal_session(
                     &endpoint,
                     &token,
@@ -680,8 +714,17 @@ fn handle_terminal_request(
                 );
             });
         if let Err(e) = spawn_result {
+            TERMINAL_SESSIONS.fetch_sub(1, Ordering::SeqCst);
             eprintln!("[komari] failed to spawn terminal thread: {e}");
         }
+    }
+}
+
+/// Decrements [`TERMINAL_SESSIONS`] when a terminal worker exits.
+struct TerminalSessionGuard;
+impl Drop for TerminalSessionGuard {
+    fn drop(&mut self) {
+        TERMINAL_SESSIONS.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -757,7 +800,7 @@ fn handle_exec_task(
         return;
     }
     eprintln!("[komari] exec task {task_id}: {}", abbreviate(command));
-    let result = super::task::execute_exec(command, config.disable_web_ssh);
+    let result = super::task::execute_exec(command, config.disable_exec);
     let body = super::task::build_task_result(task_id, &result.output, result.exit_code);
     if let Err(e) = upload_task_result(config, dial, tls_cfg, &body) {
         eprintln!("[komari] WARN: task/result upload failed: {e}");
@@ -902,6 +945,36 @@ fn classify_tick_failure(e: &TickErr) -> FailureKind {
     }
 }
 
+/// True when the tick failed because permessage-deflate inflate could not
+/// decode a server frame (known class of interoperability bugs).
+fn is_deflate_failure(e: &TickErr) -> bool {
+    match e {
+        TickErr::Ws(WsErr::Protocol(s)) => {
+            let s = s.to_ascii_lowercase();
+            s.contains("permessage-deflate") || s.contains("inflate")
+        }
+        _ => false,
+    }
+}
+
+/// Capability strings advertised at startup (and for future agent.pull).
+///
+/// Always includes control-plane basics; `exec` / `terminal` are gated by
+/// config (+ compile feature for terminal).
+pub(crate) fn agent_capabilities(config: &Config) -> Vec<&'static str> {
+    let mut caps = vec!["message", "event"];
+    if cfg!(feature = "ping") {
+        caps.push("ping");
+    }
+    if !config.disable_exec {
+        caps.push("exec");
+    }
+    if cfg!(feature = "terminal") && !config.disable_web_ssh && !config.http_only {
+        caps.push("terminal");
+    }
+    caps
+}
+
 fn is_timeout(e: &WsErr) -> bool {
     matches!(e, WsErr::Io(s) if {
         let s = s.to_lowercase();
@@ -909,4 +982,52 @@ fn is_timeout(e: &WsErr) -> bool {
             || s.contains("would block")
             || s.contains("temporarily unavailable") // EAGAIN/EWOULDBLOCK on Linux
     })
+}
+
+#[cfg(test)]
+mod p8_tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn deflate_failure_detected_from_protocol_message() {
+        let e = TickErr::Ws(WsErr::Protocol(
+            "permessage-deflate inflate error: UnexpectedEof".into(),
+        ));
+        assert!(is_deflate_failure(&e));
+        let e2 = TickErr::Ws(WsErr::Protocol("other protocol error".into()));
+        assert!(!is_deflate_failure(&e2));
+    }
+
+    #[test]
+    fn capabilities_hide_terminal_when_http_only_or_disabled() {
+        let mut c = Config::default();
+        c.http_only = true;
+        c.disable_web_ssh = false;
+        c.disable_exec = false;
+        let caps = agent_capabilities(&c);
+        assert!(caps.contains(&"message"));
+        assert!(caps.contains(&"exec"));
+        assert!(!caps.contains(&"terminal"), "http_only must hide terminal");
+
+        c.http_only = false;
+        c.disable_web_ssh = true;
+        let caps = agent_capabilities(&c);
+        assert!(!caps.contains(&"terminal"));
+    }
+
+    #[test]
+    fn capabilities_include_terminal_when_enabled() {
+        let mut c = Config::default();
+        c.http_only = false;
+        c.disable_web_ssh = false;
+        c.disable_exec = true;
+        let caps = agent_capabilities(&c);
+        assert!(!caps.contains(&"exec"));
+        if cfg!(feature = "terminal") {
+            assert!(caps.contains(&"terminal"));
+        } else {
+            assert!(!caps.contains(&"terminal"));
+        }
+    }
 }

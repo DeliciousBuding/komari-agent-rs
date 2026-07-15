@@ -113,6 +113,10 @@ const WS_POLL_TIMEOUT: Duration = Duration::from_millis(50);
 /// with a 50 ms timeout.
 const WS_RESTORE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Idle timeout for an interactive session with no WS input and no PTY output.
+/// Prevents abandoned browser tabs from holding a root shell forever.
+const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
 /// Launch an interactive terminal session over an already-connected WebSocket.
 ///
 /// `ws` — an established `WsConnection` (handshake complete) that the caller
@@ -179,18 +183,29 @@ fn run_copy_loop(ws: &mut WsConnection, term: &mut dyn Terminal) -> Result<(), T
 /// Inner loop, separated so the timeout restore always runs exactly once.
 fn copy_loop_inner(ws: &mut WsConnection, term: &mut dyn Terminal) -> Result<(), TerminalErr> {
     let mut pty_out = [0u8; 4096];
+    let mut last_activity = std::time::Instant::now();
 
     loop {
+        if last_activity.elapsed() >= SESSION_IDLE_TIMEOUT {
+            return Err(TerminalErr::WebSocket(format!(
+                "session idle for {}s — closing",
+                SESSION_IDLE_TIMEOUT.as_secs()
+            )));
+        }
+
         // ── WS → PTY (polled with the short timeout) ──────────────────────
         match ws.read_message() {
             Ok(Some(WsMessage::Text(data))) => {
+                last_activity = std::time::Instant::now();
                 handle_text_command(&data, term)?;
             }
             Ok(Some(WsMessage::Binary(data))) => {
+                last_activity = std::time::Instant::now();
                 write_all_to_pty(term, &data)?;
             }
             Ok(Some(WsMessage::Ping(payload))) => {
                 // RFC 6455: reply with a pong carrying the same payload.
+                // Do not refresh idle timer — keepalives alone shouldn't hold a shell open.
                 ws.send_pong(&payload)?;
             }
             Ok(Some(WsMessage::Pong(_))) => {
@@ -219,6 +234,7 @@ fn copy_loop_inner(ws: &mut WsConnection, term: &mut dyn Terminal) -> Result<(),
                 return Ok(());
             }
             Ok(n) => {
+                last_activity = std::time::Instant::now();
                 ws.send_binary(&pty_out[..n])?;
             }
             // PTYs surface non-blocking as an I/O error on some platforms;
