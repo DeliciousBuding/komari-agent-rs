@@ -403,16 +403,17 @@ impl ExecResult {
 
 /// Execute a server-sent command and return its combined output + exit code.
 ///
-/// Mirrors Go `executeCommand`:
-///   - When `disable_web_ssh` is set, returns a fixed "disabled" message with
+/// Mirrors Go `executeCommand`, but the gate is **`disable_exec`** (independent
+/// of WebSSH / `disable_web_ssh`):
+///   - When `disable_exec` is set, returns a fixed "disabled" message with
 ///     exit code -1 (the server surfaces this as a failed task).
 ///   - An empty/whitespace command yields "No command provided", code 0.
 ///   - Unix: `sh -s` with the command piped to stdin.
 ///   - Windows: a temp `.ps1` script (UTF-8 + BOM, ExecutionPolicy bypass)
 ///     run via `powershell.exe`.
 ///   - stdout and stderr are merged (stderr last); `\r\n` is normalised to `\n`.
-pub fn execute_exec(command: &str, disable_web_ssh: bool) -> ExecResult {
-    if disable_web_ssh {
+pub fn execute_exec(command: &str, disable_exec: bool) -> ExecResult {
+    if disable_exec {
         return ExecResult::new("Remote control is disabled.".to_string(), -1);
     }
     let trimmed = command.trim();
@@ -701,10 +702,19 @@ mod exec_tests {
     }
 
     #[test]
-    fn exec_disabled_when_web_ssh_off() {
+    fn exec_disabled_when_disable_exec() {
         let r = execute_exec("rm -rf /", true);
         assert_eq!(r.exit_code, -1);
         assert!(r.output.contains("disabled"));
+    }
+
+    #[test]
+    fn exec_enabled_even_if_web_ssh_would_be_off() {
+        // Document independence: the parameter is only disable_exec.
+        // Callers pass config.disable_exec, not disable_web_ssh.
+        let r = execute_exec("true", false);
+        // On non-unix this still returns a platform message or runs; just ensure not the disabled path.
+        assert_ne!(r.output, "Remote control is disabled.");
     }
 
     #[test]

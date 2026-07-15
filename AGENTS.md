@@ -29,12 +29,12 @@
 
 ## 生产约束（WebSSH / 控制面）
 
-1. **默认关**：`default=[]` 无 `terminal`；`disable_web_ssh=true`；舰队多数 `--http-only`
+1. **默认关**：`default=[]` 无 `terminal`；`disable_web_ssh=true`；`disable_exec=true`；舰队多数 `--http-only`
 2. **消防斧启用**需：`--features terminal|full` + 非 http-only + `disable_web_ssh=false` + 公网 nginx Upgrade
-3. **`disable_web_ssh` 同时门闩 exec**（与 Go 一致）
-4. **WS 压缩**：inflate 必须使用 gorilla trailer（`00 00 FF FF` + `01 00 00 FF FF`）。失败自动关压缩仅作兜底，不是主路径。
-5. **`disable_exec` 与 `disable_web_ssh` 独立**（默认均为 true）；JSON 不得互相同步。
-5. 运维 SSOT：`~/server/docs/runbooks/komari-webshell.md` + `~/server/projects/komari/STATE.md`
+3. **`disable_exec` 与 `disable_web_ssh` 完全独立**（默认均为 true）；JSON **不得**互相同步。开 WebSSH 不等于开 one-shot exec
+4. **WS 压缩**：inflate 必须使用 gorilla trailer（`00 00 FF FF` + `01 00 00 FF FF`）。失败自动关压缩仅作兜底
+5. **终端例外**：sync 事件循环是主路径；interactive terminal 允许最多 **2** 个 detached PTY 线程（空闲 30min 关）
+6. 运维 SSOT：`~/server/docs/runbooks/komari-webshell.md` + `~/server/projects/komari/STATE.md`
 
 ## Git 规则
 
