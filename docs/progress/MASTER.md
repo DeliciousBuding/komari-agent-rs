@@ -11,7 +11,7 @@
 
 ## 当前状态
 
-- **当前阶段**：P8 执行中（实现完成，文档/commit/可选 us1 验证收尾）
+- **当前阶段**：P8 ✅ 实现与文档已合入 main（`8ab7ae2` / server `1de0d91`）
 - **Milestone**：https://github.com/DeliciousBuding/komari-agent-rs/milestone/9
 - **Tests**：p8_tests 3/3；AuthSensitive_test 3/3
 
@@ -26,7 +26,7 @@
 | P8.5 强制 2FA | ✅ | 未 enroll 拒绝 |
 | P8.6 Release 双资产 | ✅ | workflow |
 | P8.7 测试 | ✅ | unit |
-| P8.8 文档 | 🔄 | STATE/runbook/本文件 |
+| P8.8 文档 | ✅ | STATE/runbook/本文件 |
 
 ## 文档索引
 
