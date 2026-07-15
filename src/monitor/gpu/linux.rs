@@ -51,12 +51,12 @@ fn find_tool(canonical: &str, tool_name: &str) -> Result<String, String> {
     // 2. Fallback: `which tool_name`
     let mut which_cmd = Command::new("which");
     which_cmd.arg(tool_name);
-    if let Ok(output) = run_with_timeout(&mut which_cmd, 30) {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() && std::path::Path::new(&path).is_file() {
-                return Ok(path);
-            }
+    if let Ok(output) = run_with_timeout(&mut which_cmd, 30)
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() && std::path::Path::new(&path).is_file() {
+            return Ok(path);
         }
     }
 
@@ -68,7 +68,7 @@ fn find_tool(canonical: &str, tool_name: &str) -> Result<String, String> {
 
 fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     let tool_path =
-        find_tool("/usr/bin/nvidia-smi", "nvidia-smi").map_err(|e| GpuDetectErr::Subprocess(e))?;
+        find_tool("/usr/bin/nvidia-smi", "nvidia-smi").map_err(GpuDetectErr::Subprocess)?;
 
     let mut nvidia_cmd = Command::new(&tool_path);
     nvidia_cmd.args([
@@ -141,7 +141,7 @@ fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> 
 
 fn detect_rocm_smi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     let tool_path =
-        find_tool("/opt/rocm/bin/rocm-smi", "rocm-smi").map_err(|e| GpuDetectErr::Subprocess(e))?;
+        find_tool("/opt/rocm/bin/rocm-smi", "rocm-smi").map_err(GpuDetectErr::Subprocess)?;
 
     let mut rocm_cmd = Command::new(&tool_path);
     rocm_cmd.args(["--showallinfo", "--json"]);
@@ -413,7 +413,7 @@ fn is_virtual_drm_driver(driver: &str) -> bool {
         "simpledrm",
         "simplefb",
     ];
-    VIRTUAL_DRIVERS.iter().any(|d| *d == driver)
+    VIRTUAL_DRIVERS.contains(&driver)
 }
 
 /// Map a raw DRM driver name to a human-readable GPU name.

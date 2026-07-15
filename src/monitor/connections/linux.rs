@@ -39,20 +39,18 @@ pub struct ConnectionsInfo {
 /// `netstat -u -n`, counting non-header output lines.
 pub fn collect_connections() -> Result<ConnectionsInfo, MetricErr> {
     let tcp = count_entries("/proc/net/tcp")
-        .and_then(|v4| Ok(v4 + count_entries("/proc/net/tcp6").unwrap_or(0)))
+        .map(|v4| v4 + count_entries("/proc/net/tcp6").unwrap_or(0))
         .or_else(|_| {
-            count_via_subprocess(&["-t", "-n"]).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::Other, "ss/netstat unavailable")
-            })
+            count_via_subprocess(&["-t", "-n"])
+                .ok_or_else(|| std::io::Error::other("ss/netstat unavailable"))
         })
         .unwrap_or(0);
 
     let udp = count_entries("/proc/net/udp")
-        .and_then(|v4| Ok(v4 + count_entries("/proc/net/udp6").unwrap_or(0)))
+        .map(|v4| v4 + count_entries("/proc/net/udp6").unwrap_or(0))
         .or_else(|_| {
-            count_via_subprocess(&["-u", "-n"]).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::Other, "ss/netstat unavailable")
-            })
+            count_via_subprocess(&["-u", "-n"])
+                .ok_or_else(|| std::io::Error::other("ss/netstat unavailable"))
         })
         .unwrap_or(0);
 

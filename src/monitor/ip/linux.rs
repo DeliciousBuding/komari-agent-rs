@@ -273,6 +273,7 @@ fn format_ipv6(addr: &[u8; 16]) -> String {
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Unified stream for plain TCP and TLS-wrapped connections.
+#[allow(clippy::large_enum_variant)]
 enum MaybeTlsStream {
     Tls(rustls::StreamOwned<rustls::ClientConnection, TcpStream>),
     Plain(TcpStream),
@@ -504,13 +505,14 @@ fn parse_url(url: &str) -> Option<(&str, u16, &str, bool)> {
     } else {
         return None;
     };
-    let (host_port, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = match host_port.find(':') {
-        Some(i) => (&host_port[..i], host_port[i + 1..].parse::<u16>().ok()?),
-        None => (host_port, default_port),
+    let (host_port, path) = rest
+        .find('/')
+        .map(|i| (&rest[..i], &rest[i..]))
+        .unwrap_or((rest, "/"));
+    let (host, port) = if let Some(i) = host_port.find(':') {
+        (&host_port[..i], host_port[i + 1..].parse::<u16>().ok()?)
+    } else {
+        (host_port, default_port)
     };
     Some((host, port, path, is_https))
 }

@@ -219,7 +219,7 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
             } else {
                 dev.to_string()
             };
-            if seen_zfs_pools.iter().any(|p| *p == pool) {
+            if seen_zfs_pools.contains(&pool) {
                 continue;
             }
             Some(pool)
