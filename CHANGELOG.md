@@ -3,15 +3,19 @@
 ## Unreleased
 
 ### Fixed
-- Wire interactive terminal end-to-end when built with `--features terminal` (parity with Go `establishTerminalConnection`): handle v1 `"terminal"` / v2 `agent.terminal.request`, dial `/api/clients/terminal?id=…`, run PTY/ConPTY on a detached thread
-- WebSocket upgrade request now appends `token=` with the correct `?`/`&` separator when the path already has a query string (required for terminal `id=`)
-- CI: clear `cargo clippy -D warnings` / `fmt` drift across default + feature matrix (connections/disk/gpu/ip/crypto/http/terminal FFI)
+- **permessage-deflate root cause**: inflate now appends gorilla/websocket trailer (`00 00 FF FF` + empty final stored block `01 00 00 FF FF`). RFC-only trailer left `inflate_raw` / Go flate at UnexpectedEof on real server frames.
+- Wire interactive terminal end-to-end when built with `--features terminal`
+- WebSocket upgrade query separator for paths that already have `?id=`
+
+### Changed
+- `disable_exec` is independent of `disable_web_ssh` (JSON no longer mirrors web_ssh → exec)
+- Terminal: max 2 concurrent sessions; 30min idle timeout
+- Sensitive ops on server require 2FA enrollment (tokendance-komari)
 
 ### Notes
-- Default build still has **no** `terminal` feature; `disable_web_ssh` remains **true** by default; `--http-only` still cannot receive terminal pushes (needs a WS control plane)
-- Opening remote control (`disable_web_ssh=false`) also enables one-shot `agent.exec`
-- Production note (2026-07-15): public Komari nginx must forward `Upgrade`/`Connection` on `/api/clients/`; WS path may need `--disable-compression` until permessage-deflate inflate is hardened
-- us1 pilot E2E: terminal session dial + PTY shell (`hostname`/`id`) verified against `status.vectorcontrol.tech`
+- Default build still has no `terminal` feature; `disable_web_ssh` / `disable_exec` default **true**
+- Auto-degrade on deflate failure remains as safety net; primary path is correct inflate
+
 
 ## v0.2.0 (2026-07-14)
 

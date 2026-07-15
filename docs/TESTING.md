@@ -98,14 +98,15 @@ opt-level = "z"        # 依赖也最小体积
 
 ### WebSSH 生产验收（2026-07-15，us1）
 
-前提：`--features full` 二进制、`http_only=false`、`disable_web_ssh=false`、`--disable-compression`；nginx `/api/clients/` 转发 Upgrade。
+前提：`--features full` 二进制、`http_only=false`、`disable_web_ssh=false`、**compression 开启**（`disable_compression=false`）；nginx `/api/clients/` 转发 Upgrade。
 
 | 步骤 | 结果 |
 |------|------|
-| 公网 `GET /api/clients/v2/rpc` WS 握手 | **101**（修 nginx 前为 400） |
-| admin `GET /api/admin/client/<us1>/terminal` | 101 + waiting for agent |
-| agent 日志 | `terminal session … dialing` → `closed cleanly` |
-| 交互命令 `hostname; id; uname -a` | `us1` / `uid=0(root)` / Linux 内核串 |
+| 公网 `GET /api/clients/v2/rpc` WS 握手 | **101** + `permessage-deflate; server_no_context_takeover; client_no_context_takeover` |
+| 控制面常驻（≥90s） | **无** `permessage-deflate inflate error`（2026-07-15 根因修复后） |
+| admin `GET /api/admin/client/<us1>/terminal` | 101 + agent dial |
+| 交互 `hostname; id` | `us1` / `uid=0(root)` |
+| `disable_exec=true` | capabilities 含 `terminal` **不含** `exec` |
 
 ---
 
