@@ -498,21 +498,17 @@ fn http_get(
 /// Parse a URL into (host, port, path, is_https).
 /// Accepts both `http://` (port 80) and `https://` (port 443).
 fn parse_url(url: &str) -> Option<(&str, u16, &str, bool)> {
-    let (rest, default_port, is_https) = if let Some(s) = url.strip_prefix("https://") {
-        (s, 443u16, true)
-    } else if let Some(s) = url.strip_prefix("http://") {
-        (s, 80u16, false)
-    } else {
-        return None;
-    };
+    let (rest, default_port, is_https) = url
+        .strip_prefix("https://")
+        .map(|s| (s, 443u16, true))
+        .or_else(|| url.strip_prefix("http://").map(|s| (s, 80u16, false)))?;
     let (host_port, path) = rest
         .find('/')
         .map(|i| (&rest[..i], &rest[i..]))
         .unwrap_or((rest, "/"));
-    let (host, port) = if let Some(i) = host_port.find(':') {
-        (&host_port[..i], host_port[i + 1..].parse::<u16>().ok()?)
-    } else {
-        (host_port, default_port)
+    let (host, port) = match host_port.find(':') {
+        Some(i) => (&host_port[..i], host_port[i + 1..].parse::<u16>().ok()?),
+        None => (host_port, default_port),
     };
     Some((host, port, path, is_https))
 }
