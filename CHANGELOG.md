@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Wire interactive terminal end-to-end when built with `--features terminal` (parity with Go `establishTerminalConnection`): handle v1 `"terminal"` / v2 `agent.terminal.request`, dial `/api/clients/terminal?id=…`, run PTY/ConPTY on a detached thread
+- WebSocket upgrade request now appends `token=` with the correct `?`/`&` separator when the path already has a query string (required for terminal `id=`)
+
+### Notes
+- Default build still has **no** `terminal` feature; `disable_web_ssh` remains **true** by default; `--http-only` still cannot receive terminal pushes (needs a WS control plane)
+- Opening remote control (`disable_web_ssh=false`) also enables one-shot `agent.exec`
+
 ## v0.2.0 (2026-07-14)
 
 ### Added

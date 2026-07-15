@@ -173,7 +173,7 @@ cargo build --release --features self-update        # +自我更新
 | `--protocol-version` | `AGENT_PROTOCOL_VERSION` | `2` | `2`=JSON-RPC v2,`1`=v1(被拒自动降级) |
 | `--http-only` | `AGENT_HTTP_ONLY` | `false` | DPI 逃生:仅 HTTP POST,不用 WS |
 | `--gpu` | `AGENT_ENABLE_GPU` | `false` | 启用 GPU 指标 |
-| `--disable-web-ssh` | `AGENT_DISABLE_WEB_SSH` | `true` | 禁用 Web 终端 |
+| `--disable-web-ssh` | `AGENT_DISABLE_WEB_SSH` | `true` | 禁用远程控制（WebSSH **与** one-shot exec）。默认 **true**（比 Go 更保守）。WebSSH 还需 `--features terminal` 构建，且不能 `--http-only` |
 | `--disable-auto-update` | `AGENT_DISABLE_AUTO_UPDATE` | `true` | 禁用 GitHub Release 自更新 |
 | `--ignore-unsafe-cert` / `-u` | `AGENT_IGNORE_UNSAFE_CERT` | `false` | 跳过 TLS 证书校验(不安全) |
 | `--custom-dns` | `AGENT_CUSTOM_DNS` | — | 自定义 DNS(逗号分隔) |

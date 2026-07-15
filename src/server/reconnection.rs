@@ -559,9 +559,9 @@ fn dispatch_server_message(
                 }
             }
             "agent.terminal.request" => {
-                eprintln!(
-                    "[komari] terminal request received (enable 'terminal' feature to handle)"
-                );
+                let request_id = super::task::extract_json_string(data, "request_id")
+                    .unwrap_or_default();
+                handle_terminal_request(config, dial, tls_cfg, &request_id);
             }
             "agent.message" | "agent.event" => {
                 eprintln!("[komari] server message/event: {}", abbreviate(text));
@@ -588,9 +588,9 @@ fn dispatch_server_message(
                 }
             }
             "terminal" => {
-                eprintln!(
-                    "[komari] terminal request received (enable 'terminal' feature to handle)"
-                );
+                let request_id = super::task::extract_json_string(data, "request_id")
+                    .unwrap_or_default();
+                handle_terminal_request(config, dial, tls_cfg, &request_id);
             }
             _ if !text.trim().is_empty() => {
                 eprintln!("[komari] unhandled v1 message: {}", abbreviate(text));
@@ -612,6 +612,137 @@ fn extract_ping_fields(data: &[u8]) -> Option<(i64, String, String)> {
     let target = super::task::extract_json_string(data, "target")
         .or_else(|| super::task::extract_json_string(data, "ping_target"))?;
     Some((tid, ping_type, target))
+}
+
+/// Handle a server-initiated interactive terminal request.
+///
+/// Mirrors Go `establishTerminalConnection` + `terminal.StartTerminal`:
+///   1. Reject empty session id.
+///   2. If the `terminal` feature is not compiled in, log and return.
+///   3. If `disable_web_ssh` is set, dial the session WS only long enough to
+///      tell the browser the axe is locked, then close.
+///   4. Otherwise dial `/api/clients/terminal?id=<session>` on a **detached
+///      thread** (PTY loop is blocking; must not stall the single-threaded
+///      monitor tick) and run `terminal::start_terminal`.
+///
+/// Terminal requires a live agent control plane that can receive the push
+/// (`agent.terminal.request` / v1 `"terminal"`). Pure `--http-only` agents
+/// never get that push, so this path is only reachable over WS modes.
+fn handle_terminal_request(
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    request_id: &str,
+) {
+    if request_id.is_empty() {
+        eprintln!("[komari] terminal request without request_id, ignoring");
+        return;
+    }
+
+    #[cfg(not(feature = "terminal"))]
+    {
+        let _ = (config, dial, tls_cfg);
+        eprintln!(
+            "[komari] terminal request {request_id}: binary built without 'terminal' feature"
+        );
+        return;
+    }
+
+    #[cfg(feature = "terminal")]
+    {
+        let request_id = request_id.to_string();
+        let endpoint = config.endpoint.clone();
+        let token = config.token.clone();
+        let disable_web_ssh = config.disable_web_ssh;
+        let disable_compression = config.disable_compression;
+        let dial = dial.clone();
+        let tls_cfg = Arc::clone(tls_cfg);
+        let cf_headers: Vec<(String, String)> = {
+            let mut headers = Vec::new();
+            if let Some(ref cf) = CfAccess::from_config(config) {
+                cf.inject_ws_headers(&mut headers);
+            }
+            headers
+        };
+
+        // Detach so the monitor tick keeps running while the PTY session lives.
+        // The server holds the browser WS open for ~30s waiting for this dial.
+        let spawn_result = std::thread::Builder::new()
+            .name(format!("terminal-{request_id}"))
+            .spawn(move || {
+                establish_terminal_session(
+                    &endpoint,
+                    &token,
+                    &request_id,
+                    disable_web_ssh,
+                    disable_compression,
+                    &dial,
+                    &tls_cfg,
+                    &cf_headers,
+                );
+            });
+        if let Err(e) = spawn_result {
+            eprintln!("[komari] failed to spawn terminal thread: {e}");
+        }
+    }
+}
+
+/// Dial the terminal bridge and run (or refuse) the PTY session.
+///
+/// Path shape matches Go:
+///   `ws(s)://<endpoint>/api/clients/terminal?token=<token>&id=<id>`
+/// Our WS layer always appends `token=`; we only put `id` on the path.
+#[cfg(feature = "terminal")]
+#[allow(clippy::too_many_arguments)]
+fn establish_terminal_session(
+    endpoint: &str,
+    token: &str,
+    request_id: &str,
+    disable_web_ssh: bool,
+    disable_compression: bool,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    extra_headers: &[(String, String)],
+) {
+    // Encode session id for the query string (defence against odd chars).
+    let path = format!(
+        "/api/clients/terminal?id={}",
+        crate::ws::url_encode(request_id)
+    );
+    eprintln!("[komari] terminal session {request_id}: dialing {path}");
+
+    let mut ws = match WsConnection::connect(
+        endpoint,
+        &path,
+        token,
+        Arc::clone(tls_cfg),
+        Duration::from_secs(30),
+        extra_headers,
+        dial,
+        !disable_compression,
+    ) {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("[komari] terminal session {request_id}: dial failed: {e}");
+            return;
+        }
+    };
+
+    if disable_web_ssh {
+        // Parity with Go terminal.StartTerminal when DisableWebSsh is set:
+        // surface a clear message to the browser, then close.
+        let msg = b"\n\nWeb SSH is disabled. Enable it by running without --disable-web-ssh \
+(and build with --features terminal). Remote exec is gated by the same flag.\n";
+        let _ = ws.send_text(msg);
+        let _ = ws.close();
+        eprintln!("[komari] terminal session {request_id}: refused (disable_web_ssh)");
+        return;
+    }
+
+    match crate::terminal::start_terminal(&mut ws) {
+        Ok(()) => eprintln!("[komari] terminal session {request_id}: closed cleanly"),
+        Err(e) => eprintln!("[komari] terminal session {request_id}: error: {e}"),
+    }
 }
 
 /// Execute a remote command and upload its result via HTTP POST to

@@ -698,7 +698,14 @@ fn build_upgrade_request(
     let mut req = String::with_capacity(512);
     req.push_str("GET ");
     req.push_str(path);
-    req.push_str("?token=");
+    // Path may already carry query params (e.g. `/api/clients/terminal?id=…`).
+    // Append token with the correct separator so multi-param dials stay valid.
+    if path.contains('?') {
+        req.push('&');
+    } else {
+        req.push('?');
+    }
+    req.push_str("token=");
     req.push_str(&url_encode(token));
     req.push_str(" HTTP/1.1\r\n");
     req.push_str("Host: ");
@@ -1009,6 +1016,21 @@ mod tests {
     fn upgrade_request_url_encodes_token() {
         let req = build_upgrade_request("host", "/path", "token with spaces!", "key", &[], false);
         assert!(req.contains("token%20with%20spaces%21"));
+    }
+
+    #[test]
+    fn upgrade_request_appends_token_when_path_has_query() {
+        let req = build_upgrade_request(
+            "host",
+            "/api/clients/terminal?id=abc123",
+            "tok",
+            "key",
+            &[],
+            false,
+        );
+        assert!(req.starts_with(
+            "GET /api/clients/terminal?id=abc123&token=tok HTTP/1.1\r\n"
+        ));
     }
 
     #[test]

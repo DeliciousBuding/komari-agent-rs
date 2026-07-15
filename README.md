@@ -193,7 +193,7 @@ Every option can be passed as a CLI flag, an `AGENT_*` environment variable, or 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
 | `--gpu` | `AGENT_ENABLE_GPU` | `false` | Enable GPU metrics (or build with `--features gpu-detection`) |
-| `--disable-web-ssh` | `AGENT_DISABLE_WEB_SSH` | `true` | Disable the web terminal (off by default) |
+| `--disable-web-ssh` | `AGENT_DISABLE_WEB_SSH` | `true` | Disable remote control (WebSSH **and** one-shot exec). Default **on** (safer than Go). WebSSH also requires a build with `--features terminal` and a non-`--http-only` control plane. |
 | `--disable-auto-update` | `AGENT_DISABLE_AUTO_UPDATE` | `true` | Disable GitHub-Release self-update |
 | `--disable-compression` | `AGENT_DISABLE_COMPRESSION` | `false` | Disable WebSocket permessage-deflate |
 | `--memory-include-cache` | `AGENT_MEMORY_INCLUDE_CACHE` | `false` | Count filesystem cache as "used" memory |
@@ -231,7 +231,7 @@ Full blueprint: **[docs/plan/architecture-reference.md](docs/plan/architecture-r
 |---|---|---|---|
 | Core (monitoring + v1/v2 + HTTP) | ~196 KB (incl. TLS floor ~1 MB) | Yes | Essential metrics collection and reporting |
 | `gpu-detection` | +~80 KB | No | GPU name, utilization, VRAM, temperature |
-| `terminal` | +~60 KB | No | PTY/ConPTY interactive shell |
+| `terminal` | +~60 KB | No | PTY/ConPTY interactive shell (wired: dials `/api/clients/terminal` on request; still needs `disable_web_ssh=false` + non-http-only) |
 | `ping` | +~30 KB | No | ICMP → TCP → HTTP three-tier ping |
 | `self-update` | +~15 KB | No | GitHub Release auto-update |
 | **`full` (all features)** | **~196 KB agent + ~1 MB TLS** | — | Complete agent, ~1.5 MB stripped total |
