@@ -536,22 +536,16 @@ impl WsConnection {
             apply_mask(&mut payload, mask_key);
         }
 
-        // permessage-deflate (RFC 7692): a data frame (text/binary) with RSV1
-        // set carries a compressed payload. Re-append the sync-flush tail that
-        // the sender stripped, then inflate. Control frames are never compressed.
+        // permessage-deflate (RFC 7692 §7.2.1 + gorilla/websocket interop):
+        // Server (gorilla EnableCompression) strips a trailing Z_SYNC_FLUSH
+        // marker before framing. Decompression must re-append:
+        //   1) 00 00 FF FF  — RFC 7692 §7.2.1
+        //   2) 01 00 00 FF FF — empty final stored block
+        // Gorilla does both in decompressNoContextTakeover; only (1) leaves
+        // flate readers (and our inflate_raw) with UnexpectedEof on many frames.
+        // Control frames are never compressed.
         if rsv1 && self.compression_enabled && (opcode_raw == 1 || opcode_raw == 2) {
-            let mut tail = payload.clone();
-            tail.extend_from_slice(&[0x00, 0x00, 0xFF, 0xFF]);
-            let mut inflated = Vec::with_capacity(payload.len() * 2);
-            crate::inflate::inflate_raw(&tail, &mut inflated).map_err(|e| {
-                WsErr::Protocol(format!("permessage-deflate inflate error: {:?}", e))
-            })?;
-            if inflated.len() > 64 * 1024 * 1024 {
-                return Err(WsErr::Protocol(
-                    "permessage-deflate output exceeded 64 MiB safety limit".to_string(),
-                ));
-            }
-            payload = inflated;
+            payload = inflate_permessage_deflate(&payload)?;
         }
 
         // ── Fragmentation guard ──
@@ -731,6 +725,32 @@ fn build_upgrade_request(
     }
     req.push_str("\r\n");
     req
+}
+
+/// RFC 7692 + gorilla/websocket decompression trailer.
+///
+/// Matches `github.com/gorilla/websocket` `decompressNoContextTakeover`:
+/// sync-flush bytes required by the RFC, plus an empty final stored block so
+/// DEFLATE readers that require BFINAL do not return UnexpectedEof.
+const PERMESSAGE_DEFLATE_TRAILER: &[u8] = &[
+    0x00, 0x00, 0xFF, 0xFF, // RFC 7692 §7.2.1
+    0x01, 0x00, 0x00, 0xFF, 0xFF, // empty final stored block (gorilla)
+];
+
+/// Inflate a permessage-deflate payload (RSV1 data frame body).
+fn inflate_permessage_deflate(compressed: &[u8]) -> Result<Vec<u8>, WsErr> {
+    let mut with_trailer = Vec::with_capacity(compressed.len() + PERMESSAGE_DEFLATE_TRAILER.len());
+    with_trailer.extend_from_slice(compressed);
+    with_trailer.extend_from_slice(PERMESSAGE_DEFLATE_TRAILER);
+    let mut inflated = Vec::with_capacity(compressed.len().saturating_mul(2).max(64));
+    crate::inflate::inflate_raw(&with_trailer, &mut inflated)
+        .map_err(|e| WsErr::Protocol(format!("permessage-deflate inflate error: {e}")))?;
+    if inflated.len() > 64 * 1024 * 1024 {
+        return Err(WsErr::Protocol(
+            "permessage-deflate output exceeded 64 MiB safety limit".to_string(),
+        ));
+    }
+    Ok(inflated)
 }
 
 /// Minimal percent-encoding for the token query-parameter value.
@@ -1083,6 +1103,56 @@ mod tests {
         let (code, _accept, permessage) = parse_http_response(response).unwrap();
         assert_eq!(code, 101);
         assert!(permessage);
+    }
+
+    /// Gorilla strips Z_SYNC_FLUSH (`00 00 FF FF`) on the wire. RFC-only re-append
+    /// is **not** enough for compress/flate streams: Go's flate reader returns
+    /// UnexpectedEof without the extra empty final stored block that gorilla
+    /// appends in `decompressNoContextTakeover`.
+    ///
+    /// Vector: `compress/flate` level=1 + gorilla `truncWriter` (Flush, hold last 4).
+    #[test]
+    fn inflate_permessage_deflate_gorilla_jsonrpc_ack() {
+        let framed = hex_decode(
+            "04c0310a84301085e1bbfc7558c2967315b19038852251f226362177f71b9cba6b7b0ac6ff97491c3b4626d15cfd0a6ce0afd710b6ac09c5165d18eaa5b8c49c1f00",
+        );
+        let out = inflate_permessage_deflate(&framed).expect("gorilla trailer inflate");
+        assert_eq!(
+            out.as_slice(),
+            br#"{"jsonrpc":"2.0","id":"0","result":{"events":[],"status":"success"}}"#
+        );
+    }
+
+    #[test]
+    fn inflate_permessage_deflate_empty_payload() {
+        // empty message after truncWriter: single 0x00 on the wire
+        let out = inflate_permessage_deflate(&[0x00]).expect("empty");
+        assert_eq!(out.as_slice(), b"");
+    }
+
+    #[test]
+    fn inflate_permessage_rfc_only_tail_fails_on_flate_vector() {
+        let framed = hex_decode(
+            "04c0310a84301085e1bbfc7558c2967315b19038852251f226362177f71b9cba6b7b0ac6ff97491c3b4626d15cfd0a6ce0afd710b6ac09c5165d18eaa5b8c49c1f00",
+        );
+        let mut only_rfc = framed.clone();
+        only_rfc.extend_from_slice(&[0x00, 0x00, 0xFF, 0xFF]);
+        let mut out = Vec::new();
+        let err = crate::inflate::inflate_raw(&only_rfc, &mut out);
+        assert!(
+            err.is_err(),
+            "RFC-only trailer must fail on gorilla/flate wire (got ok, {} bytes)",
+            out.len()
+        );
+        // Clean path succeeds
+        inflate_permessage_deflate(&framed).expect("gorilla path");
+    }
+
+    fn hex_decode(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]

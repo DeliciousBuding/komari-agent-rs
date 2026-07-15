@@ -27,12 +27,15 @@ use crate::server::cf_access::CfAccess;
 use crate::ws::{WsConnection, WsErr, WsMessage};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "terminal")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 /// Cap concurrent interactive terminal sessions (PTY threads).
-/// Beyond this the request is refused so a flood cannot fork-bomb the host.
+#[cfg(feature = "terminal")]
 static TERMINAL_SESSIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "terminal")]
 const MAX_TERMINAL_SESSIONS: usize = 2;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -721,7 +724,9 @@ fn handle_terminal_request(
 }
 
 /// Decrements [`TERMINAL_SESSIONS`] when a terminal worker exits.
+#[cfg(feature = "terminal")]
 struct TerminalSessionGuard;
+#[cfg(feature = "terminal")]
 impl Drop for TerminalSessionGuard {
     fn drop(&mut self) {
         TERMINAL_SESSIONS.fetch_sub(1, Ordering::SeqCst);

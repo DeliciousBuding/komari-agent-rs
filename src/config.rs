@@ -1260,11 +1260,9 @@ fn apply_json_map(config: &mut Config, map: &std::collections::HashMap<String, J
     if let Some(v) = get_bool("disable_web_ssh") {
         config.disable_web_ssh = v;
     }
-    // Independent exec gate; if omitted, keep default (or follow disable_web_ssh
-    // when that key alone is present for legacy configs that only knew one flag).
+    // Independent exec gate (default true). Do **not** silently follow
+    // disable_web_ssh — opening WebSSH must not imply remote exec.
     if let Some(v) = get_bool("disable_exec") {
-        config.disable_exec = v;
-    } else if let Some(v) = get_bool("disable_web_ssh") {
         config.disable_exec = v;
     }
     if let Some(v) = get_bool("disable_auto_update") {
