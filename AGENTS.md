@@ -1,6 +1,6 @@
 # AGENTS.md
 
-最后更新：2026-06-20
+最后更新：2026-07-15
 
 ## 身份
 
@@ -24,6 +24,16 @@
 | `docs/plan/task-breakdown.md` | 51 个实现任务 |
 | `docs/plan/dependency-graph.md` | 依赖图 + S.U.P.E.R 评分 |
 | `docs/plan/milestones.md` | 6 阶段里程碑 + Gate 标准 |
+| `docs/TESTING.md` | 验证矩阵；含 2026-07-15 WebSSH us1 E2E |
+| `CHANGELOG.md` | 发布与 Unreleased |
+
+## 生产约束（WebSSH / 控制面）
+
+1. **默认关**：`default=[]` 无 `terminal`；`disable_web_ssh=true`；舰队多数 `--http-only`
+2. **消防斧启用**需：`--features terminal|full` + 非 http-only + `disable_web_ssh=false` + 公网 nginx Upgrade
+3. **`disable_web_ssh` 同时门闩 exec**（与 Go 一致）
+4. **WS 压缩**：生产控制面若出现 `permessage-deflate inflate error`，先 `--disable-compression`
+5. 运维 SSOT：`~/server/docs/runbooks/komari-webshell.md` + `~/server/projects/komari/STATE.md`
 
 ## Git 规则
 

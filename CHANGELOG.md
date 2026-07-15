@@ -5,10 +5,13 @@
 ### Fixed
 - Wire interactive terminal end-to-end when built with `--features terminal` (parity with Go `establishTerminalConnection`): handle v1 `"terminal"` / v2 `agent.terminal.request`, dial `/api/clients/terminal?id=…`, run PTY/ConPTY on a detached thread
 - WebSocket upgrade request now appends `token=` with the correct `?`/`&` separator when the path already has a query string (required for terminal `id=`)
+- CI: clear `cargo clippy -D warnings` / `fmt` drift across default + feature matrix (connections/disk/gpu/ip/crypto/http/terminal FFI)
 
 ### Notes
 - Default build still has **no** `terminal` feature; `disable_web_ssh` remains **true** by default; `--http-only` still cannot receive terminal pushes (needs a WS control plane)
 - Opening remote control (`disable_web_ssh=false`) also enables one-shot `agent.exec`
+- Production note (2026-07-15): public Komari nginx must forward `Upgrade`/`Connection` on `/api/clients/`; WS path may need `--disable-compression` until permessage-deflate inflate is hardened
+- us1 pilot E2E: terminal session dial + PTY shell (`hostname`/`id`) verified against `status.vectorcontrol.tech`
 
 ## v0.2.0 (2026-07-14)
 

@@ -2,7 +2,7 @@
 
 Komari-agent-rs 验证矩阵与性能基准。spec-driven develop Phase 5/6 产出。
 
-最后更新：2026-06-21
+最后更新：2026-07-15
 
 ---
 
@@ -84,7 +84,7 @@ opt-level = "z"        # 依赖也最小体积
 | HTTP POST fallback | ✅ | ✅ | 3-strike 降级 |
 | exec 远程命令 | ✅ | ✅ | sh -s (Unix) / powershell (Windows) + task/result |
 | ping (ICMP/TCP/HTTP) | ✅ | ✅ | 3-tier 降级，feature-gated `ping` |
-| terminal/WebSSH | ✅ | ✅ | WS<->PTY 双向循环 + ConPTY resize，feature-gated `terminal` |
+| terminal/WebSSH | ✅ | ✅ | WS↔PTY 双向循环 + ConPTY resize；**feature-gated `terminal` 且已接线**（v0.2.0+ main）；默认构建仍不编入 |
 | gzip / WS 压缩 | ✅ | ✅ | HTTP POST gzip + WS permessage-deflate (RFC 7692) |
 | JSON config | ✅ | ✅ | `--config` 文件分层 |
 | self-update | ✅ | ✅ | GitHub Releases + SHA256，feature-gated `self-update` |
@@ -95,6 +95,17 @@ opt-level = "z"        # 依赖也最小体积
 | custom-dns | ✅ | ✅ | dns.rs 接线 |
 | GPU 监控 | ✅ | ✅ | 裸 FFI，feature-gated `gpu-detection` |
 | 跨平台 | Linux/Win/macOS/BSD | Linux/Win/macOS/BSD | 4 平台对等 |
+
+### WebSSH 生产验收（2026-07-15，us1）
+
+前提：`--features full` 二进制、`http_only=false`、`disable_web_ssh=false`、`--disable-compression`；nginx `/api/clients/` 转发 Upgrade。
+
+| 步骤 | 结果 |
+|------|------|
+| 公网 `GET /api/clients/v2/rpc` WS 握手 | **101**（修 nginx 前为 400） |
+| admin `GET /api/admin/client/<us1>/terminal` | 101 + waiting for agent |
+| agent 日志 | `terminal session … dialing` → `closed cleanly` |
+| 交互命令 `hostname; id; uname -a` | `us1` / `uid=0(root)` / Linux 内核串 |
 
 ---
 
