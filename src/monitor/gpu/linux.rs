@@ -1,6 +1,6 @@
 // komari-agent-rs: Linux GPU detection.
 // Priority order: 1) nvidia-smi CSV  2) rocm-smi --json  3) sysfs DRM  4) lspci
-// Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_linux.go
+// Reference: upstream komari-agent-go/monitoring/unit/gpu_linux.go
 
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
 use crate::arena::{MAX_GPUS, SmallVec};

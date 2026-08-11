@@ -1,7 +1,7 @@
 // komari-agent-rs: custom DNS resolver with IPv4/IPv6 preference.
 //
 // Mirrors Go dnsresolver package:
-//   D:/Code/Projects/external/komari-agent-go/dnsresolver/resolver.go
+//   upstream komari-agent-go/dnsresolver/resolver.go
 //
 // 100% feature parity: TTL cache (50 entries, 5 min), 10 built-in DNS servers,
 // system DNS fallback, raw UDP DNS query (A + AAAA), IP version preference

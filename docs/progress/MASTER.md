@@ -5,7 +5,7 @@
 ## 任务标识
 
 - **任务名**：P8 WebSSH Harden + Deflate + Release
-- **描述**：在 terminal 接线与 us1 E2E 之后，硬化压缩/门闩/限流/2FA/双资产发布
+- **描述**：在 terminal 接线与 prod E2E 之后，硬化压缩/门闩/限流/2FA/双资产发布
 - **追踪模式**：`GITHUB_STANDARD`（Issues + Milestones + Labels；token 无 `project` scope）
 - **仓库**：`DeliciousBuding/komari-agent-rs`（server 改动在 `DeliciousBuding/tokendance-komari`）
 
@@ -48,12 +48,12 @@ P1–P7 已完成（见下文历史表 / GitHub milestones 1–7）。
 |------|------|
 | 共享指令 | `AGENTS.md` |
 | Claude | `CLAUDE.md` |
-| 运维 SSOT | `~/server/projects/komari/STATE.md` |
+| 运维 SSOT | Komari server 内部文档 |
 
 ## 下一步
 
 1. ~~commit + push agent-rs~~ main@ba68147+
 2. ~~更新 server STATE / runbook~~
-3. us1 compression ON 已 E2E（deflate trailer 根因已修）
+3. prod compression ON 已 E2E（deflate trailer 根因已修）
 4. **打 tag `v0.2.1` 触发 dual release**（本轮）
-5. 舰队仍默认 v0.1.10 HTTP-only；仅 us1 full 试点
+5. 舰队仍默认 v0.1.10 HTTP-only；仅 prod full 试点

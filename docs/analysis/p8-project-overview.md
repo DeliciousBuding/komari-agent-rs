@@ -4,7 +4,7 @@
 
 ## Preliminary Direction
 
-在 **已完成 terminal 接线 + us1 E2E** 的基础上，完成 WebSSH 硬化：deflate 自动降级、exec 门闩拆分、terminal 限流/空闲超时、能力广告、server 强制 2FA、Release 双资产。
+在 **已完成 terminal 接线 + prod E2E** 的基础上，完成 WebSSH 硬化：deflate 自动降级、exec 门闩拆分、terminal 限流/空闲超时、能力广告、server 强制 2FA、Release 双资产。
 
 ## Current Architecture
 
@@ -48,12 +48,12 @@ cargo build --release --features full
 
 - Agent: 230+ unit tests；P8 新增 `p8_tests`
 - Server: `web/api` 新增 `AuthSensitive_test.go`
-- E2E: us1 已人工/脚本验证（见 runbook）
+- E2E: prod 已人工/脚本验证（见 runbook）
 
 ## Project Governance Baseline
 
 - `AGENTS.md` / `CLAUDE.md`（agent-rs）
-- server: `projects/komari/STATE.md` + `docs/runbooks/komari-webshell.md`
+- server: Komari server 运维文档（内部）
 - Tracking: **GITHUB_STANDARD**（无 project scope）
 
 ## External Integrations

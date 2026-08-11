@@ -1,5 +1,5 @@
 // komari-agent-rs: VM/container detection.
-// Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/virtualization.go
+// Reference: upstream komari-agent-go/monitoring/unit/virtualization.go
 
 #[cfg(target_os = "linux")]
 use crate::monitor::run_with_timeout;

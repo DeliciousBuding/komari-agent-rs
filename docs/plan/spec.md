@@ -54,9 +54,9 @@
 
 | 仓库 | 路径 | 用途 |
 |------|------|------|
-| Go 原版 | `D:/Code/Projects/external/komari-agent-go` | 功能 spec + 协议参考 |
-| Zig 版 | `D:/Code/Projects/external/komari-zig-agent` | 轻量实现参考 |
-| Rust 现有版 | `D:/Code/Projects/external/komari-monitor-rs` | Rust 参考 |
+| Go 原版 | `upstream komari-agent-go` | 功能 spec + 协议参考 |
+| Zig 版 | `komari-zig-agent` | 轻量实现参考 |
+| Rust 现有版 | `komari-monitor-rs` | Rust 参考 |
 
 ## 架构蓝图
 

@@ -1,5 +1,5 @@
 // komari-agent-rs: CPU metrics module.
-// Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/cpu.go
+// Reference: upstream komari-agent-go/monitoring/unit/cpu.go
 
 #![allow(unused_imports)]
 

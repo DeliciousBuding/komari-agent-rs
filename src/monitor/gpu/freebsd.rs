@@ -1,6 +1,6 @@
 // komari-agent-rs: FreeBSD GPU detection via pciconf -lv.
 // Filters for class=0x03 (display controller), parses vendor/device strings.
-// Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_freebsd.go
+// Reference: upstream komari-agent-go/monitoring/unit/gpu_freebsd.go
 
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
 use crate::arena::{MAX_GPUS, SmallVec};

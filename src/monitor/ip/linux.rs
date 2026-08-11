@@ -1,6 +1,6 @@
 // komari-agent-rs: Linux IP detection — NIC via getifaddrs FFI + external HTTP APIs.
 //
-// Endpoints matched from D:/Code/Projects/external/komari-agent-go/monitoring/unit/ip.go
+// Endpoints matched from upstream komari-agent-go/monitoring/unit/ip.go
 // (7 IPv4 + 4 IPv6 endpoints in the Go reference; 6+3+cf-trace used here).
 #![allow(dead_code)]
 

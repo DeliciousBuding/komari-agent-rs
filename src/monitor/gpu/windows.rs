@@ -1,6 +1,6 @@
 // komari-agent-rs: Windows GPU detection via raw DXGI COM FFI.
 // No windows-rs / windows crate — bare LoadLibraryW + GetProcAddress + vtable calls.
-// Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_windows.go
+// Reference: upstream komari-agent-go/monitoring/unit/gpu_windows.go
 
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
 use crate::arena::{MAX_GPUS, SmallVec};

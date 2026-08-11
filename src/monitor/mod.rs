@@ -400,7 +400,7 @@ fn encode_report(
 
     // ══════════════════════════════════════════════════════════════════════
     // Build JSON matching Go komari-agent wire format exactly.
-    // Reference: D:/Code/Projects/external/komari-agent-go/monitoring/monitoring.go
+    // Reference: upstream komari-agent-go/monitoring/monitoring.go
     // ══════════════════════════════════════════════════════════════════════
 
     j.begin_obj()?;

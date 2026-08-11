@@ -1,5 +1,5 @@
 // komari-agent-rs: public/private IP detection module.
-// Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/ip.go
+// Reference: upstream komari-agent-go/monitoring/unit/ip.go
 
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;

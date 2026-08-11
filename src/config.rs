@@ -5,9 +5,9 @@
 //   debug_log, exclude_mountpoints
 //
 // References:
-//   D:/Code/Projects/external/komari-agent-go/cmd/flags/flag.go  (struct + tags)
-//   D:/Code/Projects/external/komari-agent-go/cmd/root.go        (cobra init + env loader)
-//   D:/Code/Projects/edgehub/komari-agent-rs/docs/plan/spec.md   (DD1 constraint)
+//   upstream komari-agent-go/cmd/flags/flag.go  (struct + tags)
+//   upstream komari-agent-go/cmd/root.go        (cobra init + env loader)
+//   komari-agent-rs/docs/plan/spec.md   (DD1 constraint)
 
 // The parser module carries a complete config surface: the live CLI/env parser
 // used by main(), plus a parallel JSON-config loader + hand-rolled JSON

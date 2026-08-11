@@ -1,6 +1,6 @@
 // komari-agent-rs: macOS GPU detection via system_profiler -xml key scanning.
 // No plist/xml parser — simple string scanning for sppci_model and spdisplays_vram.
-// Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_darwin.go
+// Reference: upstream komari-agent-go/monitoring/unit/gpu_darwin.go
 
 use super::{GpuBackend, GpuDetectErr, GpuInfo};
 use crate::arena::{MAX_GPUS, SmallVec};

@@ -18,7 +18,7 @@ Mode: GITHUB_STANDARD | Milestone: [P8](https://github.com/DeliciousBuding/komar
 
 - [x] `cargo test --features terminal` p8_tests 绿
 - [x] `go test ./web/api` 绿
-- [ ] us1 可选：去掉 `--disable-compression` 后 deflate 失败会自动降级（不阻塞合并）
+- [ ] prod 可选：去掉 `--disable-compression` 后 deflate 失败会自动降级（不阻塞合并）
 - [ ] tag 触发 Release 出 `*-default` 与 `*-full`
 
 ## Parallel lanes

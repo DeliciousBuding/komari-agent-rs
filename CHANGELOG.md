@@ -17,7 +17,7 @@
 
 ### Notes
 - Default build still has no `terminal` feature; `disable_web_ssh` / `disable_exec` default **true**
-- us1 E2E WebSSH verified 2026-07-15 with compression ON
+- prod E2E WebSSH verified 2026-07-15 with compression ON
 
 ## v0.2.0 (2026-07-14)
 

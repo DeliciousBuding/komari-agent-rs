@@ -1,6 +1,6 @@
 // komari-agent-rs: GPU detection — platform dispatch via #[cfg] gates.
 // DD7 in spec.md: nvidia-smi CSV → rocm-smi key-scan → sysfs DRM → lspci → DXGI → system_profiler → pciconf.
-// Reference: D:/Code/Projects/external/komari-agent-go/monitoring/unit/gpu_*.go
+// Reference: upstream komari-agent-go/monitoring/unit/gpu_*.go
 //
 // The full backend enum (`GpuBackend` variants for every platform tool), the
 // `NoBackend` error, and the `GpuDetector` trait form a cross-platform parity

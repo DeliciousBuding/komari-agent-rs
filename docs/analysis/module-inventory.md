@@ -1,8 +1,8 @@
 # Komari Agent Go-to-Rust: Module Inventory
 
 **Generated**: 2026-06-20
-**Source codebase**: `D:/Code/Projects/external/komari-agent-go`
-**Target**: `D:/Code/Projects/edgehub/komari-agent-rs`
+**Source codebase**: `upstream komari-agent-go`
+**Target**: `komari-agent-rs`
 **Total non-test Go source**: ~6,555 lines across 46 files (+ ~834 test lines across 10 files)
 
 ---
@@ -31,7 +31,7 @@
 
 ### 2.1 `main.go`
 
-**Path**: `D:/Code/Projects/external/komari-agent-go/main.go` (13 lines)
+**Path**: `upstream komari-agent-go/main.go` (13 lines)
 
 **Responsibility**: Single-file entry point. Calls `cmd.Execute()` and exits with code 0.
 
@@ -52,7 +52,7 @@
 
 ### 2.2 `cmd/` Module
 
-**Path**: `D:/Code/Projects/external/komari-agent-go/cmd/`
+**Path**: `upstream komari-agent-go/cmd/`
 
 **Files**: flags/flag.go (38), root.go (232), autodiscovery.go (202), checkMem.go (55), listDisk.go (42), warn.go (14), warn_windows.go (409)
 
@@ -79,7 +79,7 @@
 
 ### 2.3 `monitoring/` Module
 
-**Path**: `D:/Code/Projects/external/komari-agent-go/monitoring/`
+**Path**: `upstream komari-agent-go/monitoring/`
 
 **Sub-modules**: monitoring/monitoring.go (orchestrator), monitoring/unit/ (collectors), monitoring/netstatic/ (traffic history)
 

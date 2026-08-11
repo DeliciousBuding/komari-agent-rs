@@ -24,7 +24,7 @@
 | `docs/plan/task-breakdown.md` | 51 个实现任务 |
 | `docs/plan/dependency-graph.md` | 依赖图 + S.U.P.E.R 评分 |
 | `docs/plan/milestones.md` | 6 阶段里程碑 + Gate 标准 |
-| `docs/TESTING.md` | 验证矩阵；含 2026-07-15 WebSSH us1 E2E |
+| `docs/TESTING.md` | 验证矩阵；含 2026-07-15 WebSSH prod E2E |
 | `CHANGELOG.md` | 发布与 Unreleased |
 
 ## 生产约束（WebSSH / 控制面）
@@ -34,7 +34,7 @@
 3. **`disable_exec` 与 `disable_web_ssh` 完全独立**（默认均为 true）；JSON **不得**互相同步。开 WebSSH 不等于开 one-shot exec
 4. **WS 压缩**：inflate 必须使用 gorilla trailer（`00 00 FF FF` + `01 00 00 FF FF`）。失败自动关压缩仅作兜底
 5. **终端例外**：sync 事件循环是主路径；interactive terminal 允许最多 **2** 个 detached PTY 线程（空闲 30min 关）
-6. 运维 SSOT：`~/server/docs/runbooks/komari-webshell.md` + `~/server/projects/komari/STATE.md`
+6. 运维 SSOT：Komari server 运维文档（内部）
 
 ## Git 规则
 
