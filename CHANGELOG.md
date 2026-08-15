@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+- **Windows NVIDIA detailed GPU metrics**: `nvidia-smi` CSV fallback fills
+  per-GPU utilization, temperature, and used VRAM that DXGI cannot report
+  (mirrors upstream komari-agent-go `e5aefd4f`; DXGI remains the fallback)
+- `install.sh --user`: per-user systemd user service (non-root, `systemctl --user`
+  + `loginctl enable-linger`, XDG paths)
+
+### Changed
+- **Drop Cloudflare Access credentials** (`cf_access_client_id` /
+  `cf_access_client_secret`, `--cf-access-*`, `AGENT_CF_ACCESS_*`): the agent
+  no longer holds a long-lived CF Access service token. Aligns with upstream
+  komari-agent-go `8cd92149`; deployments use CF Access edge bypass instead.
+- Release workflow rebuilt as a single matrix job (parallel per-target builds),
+  added `Swatinem/rust-cache@v2`, and fixed macOS x86_64 to build on the Intel
+  `macos-13` runner (previously mislabeled arm64 output as x86_64)
+- CI workflow: added `rust-cache@v2` and `fail-fast: false`
+
 ## v0.2.1 (2026-07-15)
 
 ### Fixed

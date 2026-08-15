@@ -23,7 +23,6 @@ use crate::http::{HttpErr, http_get, http_post};
 use crate::monitor::{Monitor, generate_report};
 use crate::protocol::fsm::{FailureKind, ProtocolFsm, ProtocolMode};
 use crate::protocol::v2;
-use crate::server::cf_access::CfAccess;
 use crate::ws::{WsConnection, WsErr, WsMessage};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -210,8 +209,6 @@ fn connect_with_fsm(
     tls_cfg: &Arc<rustls::ClientConfig>,
     dial: &crate::proxy::Dialer,
 ) -> Result<Connection, WsErr> {
-    let cf_access = CfAccess::from_config(config);
-
     match fsm.mode() {
         ProtocolMode::WsV2 | ProtocolMode::WsV1 => {
             let ws_path = match fsm.mode() {
@@ -219,17 +216,13 @@ fn connect_with_fsm(
                 ProtocolMode::WsV1 => "/api/clients/report",
                 _ => unreachable!(),
             };
-            let mut ws_headers: Vec<(String, String)> = Vec::new();
-            if let Some(ref cf) = cf_access {
-                cf.inject_ws_headers(&mut ws_headers);
-            }
             let conn = WsConnection::connect(
                 &config.endpoint,
                 ws_path,
                 &config.token,
                 Arc::clone(tls_cfg),
                 Duration::from_secs(30),
-                &ws_headers,
+                &[],
                 dial,
                 !config.disable_compression,
             )?;
@@ -237,16 +230,12 @@ fn connect_with_fsm(
         }
         ProtocolMode::HttpV2 | ProtocolMode::HttpV1 => {
             let url = build_http_url(config, fsm.mode());
-            let mut http_headers: Vec<(String, String)> = Vec::new();
-            if let Some(ref cf) = cf_access {
-                cf.inject_http_headers(&mut http_headers);
-            }
             http_post(
                 &url,
                 b"{}",
                 "application/json",
                 None,
-                &http_headers,
+                &[],
                 tls_cfg,
                 dial,
             )
@@ -271,16 +260,6 @@ fn build_http_url(config: &Config, mode: ProtocolMode) -> String {
     )
 }
 
-/// Build the CF Access extra headers Vec for HTTP requests.
-/// Returns empty Vec when CF Access is not configured.
-fn build_http_cf_headers(config: &Config) -> Vec<(String, String)> {
-    let mut headers: Vec<(String, String)> = Vec::new();
-    if let Some(ref cf) = CfAccess::from_config(config) {
-        cf.inject_http_headers(&mut headers);
-    }
-    headers
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HttpPingTask {
     id: u64,
@@ -298,8 +277,7 @@ fn poll_http_ping_tasks(
     let base = config.endpoint.trim_end_matches('/');
     let token = crate::ws::url_encode(&config.token);
     let url = format!("{base}/api/clients/ping/tasks?token={token}");
-    let headers = build_http_cf_headers(config);
-    let resp = match http_get(&url, &headers, tls_cfg, dial) {
+    let resp = match http_get(&url, &[], tls_cfg, dial) {
         Ok(resp) if resp.status_code == 200 => resp,
         Ok(resp) => {
             eprintln!(
@@ -347,7 +325,7 @@ fn upload_http_ping_result(
         &payload,
         "application/json",
         None,
-        &build_http_cf_headers(config),
+        &[],
         tls_cfg,
         dial,
     ) {
@@ -470,7 +448,7 @@ fn run_tick_loop(
                     &body,
                     "application/json",
                     encoding,
-                    &build_http_cf_headers(config),
+                    &[],
                     tls_cfg,
                     dial,
                 )?;
@@ -484,7 +462,7 @@ fn run_tick_loop(
                     report,
                     "application/json",
                     None,
-                    &build_http_cf_headers(config),
+                    &[],
                     tls_cfg,
                     dial,
                 )?;
@@ -681,13 +659,6 @@ fn handle_terminal_request(
         let disable_compression = config.disable_compression;
         let dial = dial.clone();
         let tls_cfg = Arc::clone(tls_cfg);
-        let cf_headers: Vec<(String, String)> = {
-            let mut headers = Vec::new();
-            if let Some(ref cf) = CfAccess::from_config(config) {
-                cf.inject_ws_headers(&mut headers);
-            }
-            headers
-        };
 
         // Concurrency gate: refuse rather than unbounded PTY fork.
         let prev = TERMINAL_SESSIONS.fetch_add(1, Ordering::SeqCst);
@@ -713,7 +684,7 @@ fn handle_terminal_request(
                     disable_compression,
                     &dial,
                     &tls_cfg,
-                    &cf_headers,
+                    &[],
                 );
             });
         if let Err(e) = spawn_result {
@@ -822,16 +793,12 @@ fn upload_task_result(
     let base = config.endpoint.trim_end_matches('/');
     let token = crate::ws::url_encode(&config.token);
     let url = format!("{base}/api/clients/task/result?token={token}");
-    let mut headers: Vec<(String, String)> = Vec::new();
-    if let Some(ref cf) = CfAccess::from_config(config) {
-        cf.inject_http_headers(&mut headers);
-    }
     match http_post(
         &url,
         body,
         "application/json",
         None,
-        &headers,
+        &[],
         tls_cfg,
         dial,
     ) {

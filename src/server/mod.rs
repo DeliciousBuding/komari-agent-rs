@@ -20,7 +20,6 @@
 //! - [`build_static_heartbeat`] — fallback heartbeat (until monitor wired)
 
 pub mod backoff;
-pub mod cf_access;
 #[cfg(feature = "ping")]
 pub mod ping_http;
 #[cfg(feature = "ping")]
@@ -115,12 +114,6 @@ pub(super) fn update_basic_info(
         &[true, false]
     };
 
-    let cf_access = crate::server::cf_access::CfAccess::from_config(config);
-    let mut extra_headers: Vec<(String, String)> = Vec::new();
-    if let Some(ref cf) = cf_access {
-        cf.inject_http_headers(&mut extra_headers);
-    }
-
     let mut last_code: u16 = 0;
     'outer: for &is_v2 in protos {
         let url = if is_v2 {
@@ -142,7 +135,7 @@ pub(super) fn update_basic_info(
                 &body,
                 "application/json",
                 None,
-                &extra_headers,
+                &[],
                 tls_cfg,
                 dial,
             ) {

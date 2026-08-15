@@ -144,10 +144,97 @@ fn to_wide_null(s: &str) -> Vec<u16> {
 
 // ── Entry point ────────────────────────────────────────────────────────────
 
-/// Detect GPUs via DXGI COM.  This is the sole entry point on Windows.
+/// Detect GPUs on Windows. Priority: 1) nvidia-smi CSV (full metrics) 2) DXGI (base only).
+///
+/// DXGI COM only exposes adapter name + dedicated VRAM; it cannot report
+/// per-adapter utilisation, temperature, or used VRAM. When an NVIDIA driver
+/// is present, `nvidia-smi` CSV fills those fields. This mirrors upstream
+/// komari-agent-go, which uses `nvidia-smi -q -x` on Windows for detailed
+/// NVIDIA telemetry (commit `e5aefd4f`, feat(gpu): nvidia-smi detailed GPU).
 pub fn detect() -> Result<(GpuBackend, SmallVec<GpuInfo, MAX_GPUS>), GpuDetectErr> {
+    if let Ok(gpus) = detect_nvidia_smi_csv() {
+        return Ok((GpuBackend::NvidiaSmi, gpus));
+    }
     let gpus = detect_dxgi()?;
     Ok((GpuBackend::Dxgi, gpus))
+}
+
+// ── 1. NVIDIA: nvidia-smi CSV mode ─────────────────────────────────────────
+// Windows nvidia-smi ships with the driver at C:\Windows\System32\nvidia-smi.exe
+// and is normally on PATH. Same CSV schema as linux.rs detect_nvidia_smi_csv.
+
+fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
+    use crate::monitor::run_with_timeout;
+    use std::process::Command;
+
+    let mut cmd = Command::new("nvidia-smi");
+    cmd.args([
+        "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
+        "--format=csv,noheader,nounits",
+    ]);
+    // Suppress the console window when spawned from a background agent.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = run_with_timeout(&mut cmd, 30)
+        .map_err(|e| GpuDetectErr::Subprocess(format!("nvidia-smi: {}", e)))?;
+    if !output.status.success() {
+        return Err(GpuDetectErr::Subprocess(
+            "nvidia-smi exited non-zero".into(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut gpus: SmallVec<GpuInfo, MAX_GPUS> = SmallVec::new();
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // CSV: name, memory_total, memory_used, utilization, temperature
+        let fields: Vec<&str> = trimmed.split(',').map(|s| s.trim()).collect();
+        if fields.len() < 5 {
+            continue;
+        }
+
+        let name = fields[0].to_string();
+        // nvidia-smi reports memory in MiB with --nounits.
+        let mem_total: u64 = fields[1]
+            .parse::<f64>()
+            .map(|v| (v * 1_048_576.0) as u64)
+            .unwrap_or(0);
+        let mem_used: u64 = fields[2]
+            .parse::<f64>()
+            .map(|v| (v * 1_048_576.0) as u64)
+            .unwrap_or(0);
+        let utilization: f64 = fields[3].parse().unwrap_or(0.0);
+        let temperature: u64 = fields[4].parse::<f64>().map(|v| v as u64).unwrap_or(0);
+
+        gpus.push(GpuInfo {
+            name,
+            memory_total: mem_total,
+            memory_used: mem_used,
+            utilization,
+            temperature,
+            vendor_id: 0x10DE, // NVIDIA
+            device_id: 0,
+        })
+        .map_err(|_| GpuDetectErr::TooManyGpus)?;
+    }
+
+    if gpus.is_empty() {
+        Err(GpuDetectErr::Parse(
+            "nvidia-smi: no GPU lines parsed".into(),
+        ))
+    } else {
+        Ok(gpus)
+    }
 }
 
 fn detect_dxgi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {

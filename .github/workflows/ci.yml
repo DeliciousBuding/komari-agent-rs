@@ -1,17 +1,24 @@
 name: CI
 on: [push, pull_request]
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         feature: ["", "gpu-detection", "terminal", "ping", "self-update"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.feature }}
       - run: cargo check --features "${{ matrix.feature }}"
       - run: cargo test --all-features
       - run: cargo fmt --check
@@ -20,10 +27,13 @@ jobs:
   build-linux-musl:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --target x86_64-unknown-linux-musl --features full
       - name: Check binary size < 2MB
@@ -40,8 +50,11 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-msvc
       - run: cargo build --release --features full
       - name: Check binary size < 2MB
         shell: pwsh
@@ -59,8 +72,11 @@ jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos
       - run: cargo build --release --features full
       - name: Check binary size < 2MB
         run: |

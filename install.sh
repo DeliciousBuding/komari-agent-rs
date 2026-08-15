@@ -11,6 +11,7 @@ warn(){ echo -e "${YELLOW}[WARN]${NC} $1"; }
 info(){ echo "  $1"; }
 
 BIN_NAME="komari-agent-rs"
+USER_MODE=false
 BIN_PATH="/usr/local/bin/${BIN_NAME}"
 CONFIG_DIR="/etc/komari-agent"
 CONFIG_PATH="${CONFIG_DIR}/config.json"
@@ -28,6 +29,7 @@ Usage: install.sh [OPTIONS]
   --endpoint URL     Server endpoint URL (written to config.json)
   --version VERSION  Install a specific release (default: latest)
   --ghproxy URL      GitHub proxy base URL
+  --user             Install per-user (systemd user service, no root)
   --help             Show this help
 EOF
   exit 0
@@ -40,12 +42,21 @@ while [[ $# -gt 0 ]]; do
     --endpoint) ENDPOINT="$2"; shift 2 ;;
     --version)  VERSION="$2"; shift 2 ;;
     --ghproxy)  GH_PROXY="$2"; shift 2 ;;
+    --user)     USER_MODE=true; shift ;;
     --help)     usage ;;
     *) err "Unknown option: $1" ;;
   esac
 done
 
-[ "${EUID:-0}" -ne 0 ] && err "Please run as root (sudo ./install.sh)"
+# Non-root installs go through the systemd user service path.
+if [ "${EUID:-0}" -ne 0 ]; then
+  if [ "${USER_MODE}" = "false" ]; then
+    err "Please run as root (sudo ./install.sh), or pass --user for a per-user install"
+  fi
+  BIN_PATH="${HOME}/.local/bin/${BIN_NAME}"
+  CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/komari-agent"
+  CONFIG_PATH="${CONFIG_DIR}/config.json"
+fi
 
 # banner
 echo -e "  komari-agent-rs installer  |  version: ${CYAN}${VERSION:-latest}${NC}"
@@ -140,8 +151,34 @@ fi
 
 info "Setting up service (${os}) ..."
 
-# systemd (Linux)
-if command -v systemctl >/dev/null 2>&1 && systemctl list-units >/dev/null 2>&1; then
+# systemd (Linux) — root system service, or per-user service with --user
+if [ "${USER_MODE}" = "true" ]; then
+  # Per-user systemd service. Requires a lingering user session.
+  command -v loginctl >/dev/null 2>&1 && loginctl enable-linger "$(id -un)" 2>/dev/null || true
+  SERVICE_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/${SERVICE_NAME}.service"
+  mkdir -p "$(dirname "${SERVICE_FILE}")"
+  cat > "${SERVICE_FILE}" <<EOF
+[Unit]
+Description=komari-agent-rs monitoring agent (user)
+After=network.target
+Documentation=https://github.com/${REPO}
+
+[Service]
+Type=simple
+ExecStart=${BIN_PATH} --config ${CONFIG_PATH}
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable "${SERVICE_NAME}.service"
+  systemctl --user start "${SERVICE_NAME}.service" 2>/dev/null || warn "Start failed — check: journalctl --user -u ${SERVICE_NAME}"
+  ok "systemd user service registered and started"
+
+elif command -v systemctl >/dev/null 2>&1 && systemctl list-units >/dev/null 2>&1; then
   SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
   cat > "${SERVICE_FILE}" <<EOF
 [Unit]

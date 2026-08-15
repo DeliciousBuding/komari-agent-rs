@@ -111,10 +111,6 @@ pub struct Config {
     pub custom_ipv6: String,       // AGENT_CUSTOM_IPV6,       --custom-ipv6,             default ""
     pub custom_dns: Vec<String>, // AGENT_CUSTOM_DNS,        --custom-dns,              default [] (comma-sep)
 
-    // -- Cloudflare Access --
-    pub cf_access_client_id: String, // AGENT_CF_ACCESS_CLIENT_ID,     --cf-access-client-id,     default ""
-    pub cf_access_client_secret: String, // AGENT_CF_ACCESS_CLIENT_SECRET, --cf-access-client-secret, default ""
-
     // -- Lists (Go uses comma/semicolon-separated strings; we store as Vec) --
     pub include_nics: Vec<String>, // AGENT_INCLUDE_NICS,        --include-nics,        default [] (comma-sep)
     pub exclude_nics: Vec<String>, // AGENT_EXCLUDE_NICS,        --exclude-nics,        default [] (comma-sep)
@@ -159,8 +155,6 @@ impl Default for Config {
             custom_ipv4: String::new(),
             custom_ipv6: String::new(),
             custom_dns: Vec::new(),
-            cf_access_client_id: String::new(),
-            cf_access_client_secret: String::new(),
             include_nics: Vec::new(),
             exclude_nics: Vec::new(),
             include_mountpoints: Vec::new(),
@@ -316,8 +310,6 @@ pub fn help_text() -> &'static str {
      --debug-log                     Verbose debug logging\n  \
      --show-warning                  Show non-fatal warnings\n  \
      --host-proc <path>              Host /proc path (for container host mode)\n  \
-     --cf-access-client-id <id>      Cloudflare Access client ID\n  \
-     --cf-access-client-secret <sec> Cloudflare Access client secret\n  \
      --auto-discovery <key>          Auto-discovery shared key\n\
      \n\
      Meta:\n  \
@@ -471,13 +463,6 @@ fn apply_long_flag(config: &mut Config, name: &str, val: Option<&str>) -> Result
         }
         "custom-ipv4" => config.custom_ipv4 = require_val("--custom-ipv4", val)?.to_string(),
         "custom-ipv6" => config.custom_ipv6 = require_val("--custom-ipv6", val)?.to_string(),
-        "cf-access-client-id" => {
-            config.cf_access_client_id = require_val("--cf-access-client-id", val)?.to_string()
-        }
-        "cf-access-client-secret" => {
-            config.cf_access_client_secret =
-                require_val("--cf-access-client-secret", val)?.to_string()
-        }
         "auto-discovery" => {
             config.auto_discovery_key = require_val("--auto-discovery", val)?.to_string()
         }
@@ -676,16 +661,6 @@ pub fn load_env(config: &mut Config) {
         && !v.is_empty()
     {
         config.custom_ipv6 = v;
-    }
-    if let Ok(v) = env::var("AGENT_CF_ACCESS_CLIENT_ID")
-        && !v.is_empty()
-    {
-        config.cf_access_client_id = v;
-    }
-    if let Ok(v) = env::var("AGENT_CF_ACCESS_CLIENT_SECRET")
-        && !v.is_empty()
-    {
-        config.cf_access_client_secret = v;
     }
     if let Ok(v) = env::var("AGENT_AUTO_DISCOVERY_KEY")
         && !v.is_empty()
@@ -1307,12 +1282,6 @@ fn apply_json_map(config: &mut Config, map: &std::collections::HashMap<String, J
     }
     if let Some(v) = get_str("custom_ipv6") {
         config.custom_ipv6 = v.to_string();
-    }
-    if let Some(v) = get_str("cf_access_client_id") {
-        config.cf_access_client_id = v.to_string();
-    }
-    if let Some(v) = get_str("cf_access_client_secret") {
-        config.cf_access_client_secret = v.to_string();
     }
     if let Some(v) = get_str("auto_discovery_key") {
         config.auto_discovery_key = v.to_string();
