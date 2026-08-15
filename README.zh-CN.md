@@ -99,6 +99,19 @@ chmod +x komari-agent
 
 ## 安装
 
+Linux/macOS/FreeBSD 推荐使用 `install.sh` 脚本 —— 自动下载二进制、校验 SHA-256、写入配置并注册 systemd/launchd/rc.d 服务：
+
+```bash
+# root 模式：系统级服务，二进制装到 /usr/local/bin，配置在 /etc/komari-agent
+curl -fsSL https://raw.githubusercontent.com/DeliciousBuding/komari-agent-rs/main/install.sh | bash -s -- \
+  --token 你的TOKEN --endpoint https://你的komari服务端
+
+# 用户模式：systemd user 服务（无需 root，XDG 路径，自动 enable-linger）
+./install.sh --user --token 你的TOKEN --endpoint https://你的komari服务端
+```
+
+也可手动下载二进制（不注册服务）：
+
 ### Linux
 
 ```bash
