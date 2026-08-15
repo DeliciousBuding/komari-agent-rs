@@ -133,7 +133,7 @@ jobs:
         if: ${{ matrix.size_check && runner.os == 'Windows' }}
         shell: pwsh
         run: |
-          $size = (Get-Item target\release\komari-agent-rs.exe).Length
+          $size = (Get-Item "target\${{ matrix.target }}\release\komari-agent-rs.exe").Length
           if ($size -ge 2097152) {
             Write-Error "Binary size $size bytes exceeds 2MB limit"
             exit 1
@@ -144,9 +144,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/komari-agent-rs.exe "${{ matrix.artifact }}"
+            cp "target/${{ matrix.target }}/release/komari-agent-rs.exe" "${{ matrix.artifact }}"
           else
-            cp target/${{ matrix.target }}/release/komari-agent-rs "${{ matrix.artifact }}"
+            cp "target/${{ matrix.target }}/release/komari-agent-rs" "${{ matrix.artifact }}"
           fi
 
       - uses: actions/upload-artifact@v7
