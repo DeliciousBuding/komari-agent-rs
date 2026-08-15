@@ -5,7 +5,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  # ── Feature-gate check: each feature must compile standalone ──
+  check:
+    name: check (${{ matrix.feature || 'default' }})
     strategy:
       fail-fast: false
       matrix:
@@ -14,16 +16,55 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: check-${{ matrix.feature }}
+      - run: cargo check --features "${{ matrix.feature }}"
+
+  # ── Lints: fmt + clippy, single pass ──
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: test-${{ matrix.feature }}
-      - run: cargo check --features "${{ matrix.feature }}"
-      - run: cargo test --all-features
+          key: lint
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --all-features -- -D warnings
 
+  # ── Tests: full suite once (was duplicated across feature matrix) ──
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+      - run: cargo test --all-features
+
+  # ── Coverage (free tier): llvm-cov → Codecov ──
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+      - uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+
+  # ── Binary size gate: Linux musl (release profile parity) ──
   build-linux-musl:
     runs-on: ubuntu-latest
     steps:
@@ -39,8 +80,7 @@ jobs:
       - name: Check binary size < 2MB
         run: |
           SIZE=$(stat -c%s target/x86_64-unknown-linux-musl/release/komari-agent-rs)
-          echo "Binary size: $SIZE bytes ($(du -h target/x86_64-unknown-linux-musl/release/komari-agent-rs | cut -f1))"
-          ls -lh target/x86_64-unknown-linux-musl/release/komari-agent-rs
+          echo "Binary size: $SIZE bytes"
           if [ "$SIZE" -ge 2097152 ]; then
             echo "::error::Binary size $SIZE bytes exceeds 2MB limit"
             exit 1
@@ -59,10 +99,8 @@ jobs:
       - name: Check binary size < 2MB
         shell: pwsh
         run: |
-          $path = "target\release\komari-agent-rs.exe"
-          $size = (Get-Item $path).Length
+          $size = (Get-Item target\release\komari-agent-rs.exe).Length
           Write-Host "Binary size: $size bytes"
-          Get-Item $path | Format-List Name, Length
           if ($size -ge 2097152) {
             Write-Error "Binary size $size bytes exceeds 2MB limit"
             exit 1
@@ -82,7 +120,6 @@ jobs:
         run: |
           SIZE=$(stat -f%z target/release/komari-agent-rs)
           echo "Binary size: $SIZE bytes"
-          ls -lh target/release/komari-agent-rs
           if [ "$SIZE" -ge 2097152 ]; then
             echo "::error::Binary size $SIZE bytes exceeds 2MB limit"
             exit 1

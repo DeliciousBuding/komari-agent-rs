@@ -223,11 +223,6 @@ mod win_icmp {
         fn IcmpCloseHandle(icmp_handle: *mut std::ffi::c_void) -> bool;
     }
 
-    #[link(name = "ws2_32")]
-    unsafe extern "system" {
-        fn inet_addr(cp: *const u8) -> u32;
-    }
-
     /// Send one ICMP echo via IcmpSendEcho2.  Returns RTT in ms or -1.
     pub fn send_icmp(ip: Ipv4Addr, timeout_ms: u64) -> i64 {
         let handle = unsafe { IcmpCreateFile() };

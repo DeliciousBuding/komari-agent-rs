@@ -99,6 +99,21 @@ The binary is **TLS-bound**: rustls + ring + webpki (~70%) is the irreducible co
 
 ## Installation
 
+The `install.sh` script is the recommended path on Linux/macOS/FreeBSD — it
+downloads the binary, verifies the SHA-256 checksum, writes a config, and
+registers a systemd/launchd/rc.d service:
+
+```bash
+# Root: system-wide service under /usr/local/bin + /etc/komari-agent
+curl -fsSL https://raw.githubusercontent.com/DeliciousBuding/komari-agent-rs/main/install.sh | bash -s -- \
+  --token YOUR_TOKEN --endpoint https://your-komari-server
+
+# Per-user: systemd user service (no root, XDG paths, enable-linger)
+./install.sh --user --token YOUR_TOKEN --endpoint https://your-komari-server
+```
+
+Manual download also works (no service registration):
+
 ### Linux
 
 ```bash
