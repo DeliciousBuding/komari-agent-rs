@@ -61,11 +61,11 @@ jobs:
             artifact: komari-agent-rs-windows-x86_64.exe
             size_check: true
 
-          # Intel Mac binary. macos-13 is the last Intel runner; if GitHub
-          # retires it, switch to cargo-zigbuild cross-compilation from Linux.
+          # Intel Mac binary. macos-13 was retired 2025-12-04; the current
+          # Intel runner is macos-15-intel (supported until Aug 2027).
           - name: macos-x86_64
             target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
             features: full
             use_cross: false
             artifact: komari-agent-rs-macos-x86_64
