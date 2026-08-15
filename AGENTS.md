@@ -1,6 +1,6 @@
 # AGENTS.md
 
-最后更新：2026-07-15
+最后更新：2026-08-15
 
 ## 身份
 
@@ -10,7 +10,7 @@
 
 ## 项目约束
 
-1. **硬约束**：二进制 <1 MB（Linux stripped），稳态 RSS <3 MB，外部依赖仅 rustls + ring
+1. **硬约束**：二进制 <2 MB（Linux stripped，实测 ~1.5MB），稳态 RSS <3 MB，外部依赖仅 rustls + ring
 2. **并发模型**：sync 单线程，事件循环驱动。禁止引入 tokio/async
 3. **工程方法**：spec-driven develop，6 阶段管线
 4. **功能 spec**：Go 原版 100% 复刻，不做子集
@@ -38,6 +38,7 @@
 
 ## Git 规则
 
-1. 默认分支 `main`，小范围提交，及时 push
-2. commit message 使用英文，格式：`feat:` / `fix:` / `docs:` / `refactor:` / `test:` / `chore:`
-3. 每个独立 task 完成后必须 commit
+1. 默认分支 `main`（主线）；功能/修复走 `feature/*` 或 `fix/*` 分支，完成后 PR 合并回 `main`
+2. 发布：`main` 上打 `v*` tag 触发 release workflow（matrix 并行出全平台二进制）
+3. 小范围提交，及时 push；commit message 英文，`feat:` / `fix:` / `docs:` / `refactor:` / `test:` / `chore:`
+4. **CI 为主，本地为辅**：验证靠 GitHub Actions（check/test/build/coverage/audit），本地只做 `cargo check` 快速自检，不本地跑全量 build/test
