@@ -11,10 +11,17 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::arena::{MAX_NETWORKS, SmallVec};
 use crate::config::Config;
+
+/// Warn about a zero-interface snapshot only once per process so a
+/// misconfigured `include_nics`/`exclude_nics` (or an unexpected
+/// `/proc/net/dev` read failure) surfaces prominently in the journal without
+/// spamming it every monitoring tick.
+static NET_EMPTY_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Per-interface network statistics for a single monitoring tick.
 ///
@@ -167,7 +174,14 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
 
     let file = match File::open("/proc/net/dev") {
         Ok(f) => f,
-        Err(_) => return out,
+        Err(err) => {
+            if !NET_EMPTY_WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "[komari] WARN: failed to open /proc/net/dev: {err} — net metrics will be zeros"
+                );
+            }
+            return out;
+        }
     };
 
     // Staging buffers for the next snapshot (written back to `prev` at end).
@@ -176,6 +190,12 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     let mut nr = [0u64; MAX_NETWORKS];
     let mut nt = [0u64; MAX_NETWORKS];
     let mut nc: u8 = 0;
+
+    // Counts physical (non-virtual, non-loopback) interfaces that were still
+    // filtered out by include/exclude — the classic misconfiguration that
+    // silently zeros every net metric (e.g. `include_nics: "ens3"` on a host
+    // whose real NIC is `enp0s6`).
+    let mut filtered_physical = 0usize;
 
     for line in BufReader::new(file).lines().skip(2) {
         let line = match line {
@@ -186,7 +206,11 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
             Some(v) => v,
             None => continue,
         };
-        if is_virtual(name) || !include_nic(name, config) {
+        if is_virtual(name) {
+            continue;
+        }
+        if !include_nic(name, config) {
+            filtered_physical += 1;
             continue;
         }
         let nums = match parse_stats(rest) {
@@ -244,6 +268,17 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     prev.tx = nt;
     prev.ts = now;
     prev.len = nc;
+
+    if out.is_empty() && !NET_EMPTY_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[komari] WARN: no eligible network interface after filtering \
+             (include_nics={:?}, exclude_nics={:?}, physical filtered={}) — net metrics \
+             will be zeros; verify against `ip -s link`",
+            config.include_nics,
+            config.exclude_nics,
+            filtered_physical
+        );
+    }
 
     out
 }

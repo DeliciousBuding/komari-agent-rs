@@ -90,8 +90,19 @@ for cmd in curl sha256sum; do
   fi
 done
 
-# download URLs
-file="${BIN_NAME}-${os}-${arch}"
+# download URLs — asset names follow the release convention
+# komari-agent-rs-<os>-<arch>[-variant]; Linux ships default & full variants
+# (both include ping since v0.3.0), everything else ships full only.
+# We install the `full` variant so gpu-detection/terminal/self-update are
+# available; the `default` variant exists for minimal-footprint deployments.
+case "${os}-${arch}" in
+  linux-amd64)   file="${BIN_NAME}-linux-x86_64-full" ;;
+  linux-arm64)   file="${BIN_NAME}-linux-arm64-full" ;;
+  darwin-amd64)  file="${BIN_NAME}-macos-x86_64" ;;
+  darwin-arm64)  file="${BIN_NAME}-macos-arm64" ;;
+  freebsd-amd64) file="${BIN_NAME}-freebsd-x86_64" ;;
+  *)             err "No release asset for ${os}/${arch}" ;;
+esac
 checksums="checksums.txt"
 rel="latest/download"; [ -n "${VERSION}" ] && rel="download/${VERSION}"
 base="https://github.com/${REPO}/releases/${rel}"
@@ -252,6 +263,13 @@ RCEOF
 
 else
   err "No supported init system detected (systemd / launchd / rc.d)"
+fi
+
+# post-install self-check: `--version` now includes the compiled feature set
+# (e.g. `(features: ping,gpu-detection,terminal,self-update)`), so a missing
+# capability is visible immediately instead of surfacing later as odd metrics.
+if "${BIN_PATH}" --version >/dev/null 2>&1; then
+  ok "Version: $("${BIN_PATH}" --version)"
 fi
 
 # done

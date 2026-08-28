@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed
+- **`default` build now includes `ping`** — ping is a core monitoring feature;
+  shipping it only in `full` let fleet installs of the `default` asset silently
+  report 100% packet loss in Komari while the network was fine. Kept heavy
+  extras (gpu-detection/terminal/self-update) behind `full`.
+- **Net collector self-checks**: zero eligible interfaces (e.g. a misconfigured
+  `include_nics` that matches no real NIC) now logs a one-shot WARN naming the
+  filter, instead of silently reporting all-zero net metrics.
+- **`--version` prints features** (`komari-agent-rs 0.2.2 (features: ping)`),
+  so a deployment's capabilities are inspectable without touching the binary.
+- **Asset naming unified**: Linux arm64 now publishes both
+  `linux-arm64-default` and `linux-arm64-full` (previously one bare
+  `linux-arm64` full build), matching the x86_64 `-default`/`-full` pair.
+- **`install.sh` asset mapping fixed**: it previously requested
+  `komari-agent-rs-linux-amd64` — a name no release ever published — and now
+  maps to the actual `-full` assets (Linux) / platform assets (macOS/FreeBSD),
+  and prints the installed `--version` after installation.
+
 ### Added
 - **Windows NVIDIA detailed GPU metrics**: `nvidia-smi` CSV fallback fills
   per-GPU utilization, temperature, and used VRAM that DXGI cannot report
