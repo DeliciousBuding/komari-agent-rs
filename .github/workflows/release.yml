@@ -11,6 +11,11 @@ env:
 
 jobs:
   # Single matrix job: every platform/feature builds in parallel.
+  # Asset naming convention: komari-agent-rs-<os>-<arch>-<variant>
+  #   - default: core monitoring (ping + metrics) — ALWAYS includes ping
+  #   - full:    default + gpu-detection/terminal/self-update
+  # Every platform publishes BOTH variants so no platform accidentally ships a
+  # ping-less build under a bare <os>-<arch> name.
   # - Linux x86_64 musl (default + full) and arm64 use cross/musl for static binaries.
   # - macOS x86_64 runs on the Intel runner (macos-13), arm64 on Apple Silicon.
   # - Windows builds natively on windows-latest (MSVC).
@@ -37,12 +42,20 @@ jobs:
             artifact: komari-agent-rs-linux-x86_64-full
             size_check: true
 
-          - name: linux-arm64
+          - name: linux-arm64-default
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            features: default
+            use_cross: true
+            artifact: komari-agent-rs-linux-arm64-default
+            size_check: true
+
+          - name: linux-arm64-full
             target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             features: full
             use_cross: true
-            artifact: komari-agent-rs-linux-arm64
+            artifact: komari-agent-rs-linux-arm64-full
             size_check: true
 
           - name: freebsd-x86_64

@@ -1,6 +1,6 @@
 [package]
 name = "komari-agent-rs"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 description = "Featherweight Komari monitoring agent — sync single-threaded, <2MB binary, <3MB RSS"
 license = "MIT"
@@ -11,7 +11,12 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 ring = { version = "0.17", optional = true }
 
 [features]
-default = []
+# `ping` is a core monitoring capability (ICMP/TCP/HTTP probes fired by the
+# server's ping tasks). It must NOT be opt-in: fleet installs that relied on
+# `default` previously shipped without ping, surfacing as 100% packet loss in
+# Komari while the network was fine. Keep the heavy extras (gpu-detection /
+# terminal / self-update) behind `full`.
+default = ["ping"]
 gpu-detection = []
 terminal = []
 ping = []

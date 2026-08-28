@@ -43,13 +43,18 @@ Rust · sync single-threaded · ~1.5 MB binary · &lt;3 MB RSS · **10× less me
 ## Quick Start
 
 ```bash
-# Download and run (Linux)
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64 -o komari-agent
+# Download and run (Linux, full variant)
+curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64-full -o komari-agent
 chmod +x komari-agent
 ./komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
 ```
 
 One binary. No runtime deps. No OpenSSL.
+
+> Release assets follow `komari-agent-rs-<os>-<arch>[-variant]`. Linux ships
+> `-default` (core monitoring, **always includes ping**) and `-full`
+> (default + gpu/terminal/self-update); other platforms ship full only.
+> `--version` prints the compiled feature set, e.g. `(features: ping)`.
 
 ## Features
 
@@ -117,7 +122,7 @@ Manual download also works (no service registration):
 ### Linux
 
 ```bash
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64 -o komari-agent
+curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64-full -o komari-agent
 chmod +x komari-agent
 sudo mv komari-agent /usr/local/bin/
 komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
@@ -156,16 +161,15 @@ Requires Rust stable (1.75+).
 git clone https://github.com/DeliciousBuding/komari-agent-rs.git
 cd komari-agent-rs
 
-# Core build — monitoring + v1/v2 protocol + HTTP fallback
+# Core build — monitoring + v1/v2 protocol + HTTP fallback + ping probes
 cargo build --release
 
-# Full build — everything enabled
+# Full build — everything enabled (gpu/terminal/self-update on top of default)
 cargo build --release --features full
 
-# Feature-gated builds
+# Optional extras (default already includes ping; these add more on top)
 cargo build --release --features gpu-detection     # +GPU monitoring
 cargo build --release --features terminal           # +Interactive terminal
-cargo build --release --features ping               # +ICMP/TCP/HTTP ping
 cargo build --release --features self-update        # +Self-update
 ```
 

@@ -321,8 +321,31 @@ pub fn help_text() -> &'static str {
 }
 
 /// `--version` text.
+///
+/// Includes the compiled feature set so operators can verify at a glance that
+/// a deployment has the expected capabilities (e.g. `ping`). A default build
+/// that silently dropped ping previously surfaced as 100% packet loss in
+/// Komari while the network was fine.
 pub fn version_text() -> String {
-    format!("komari-agent-rs {}", env!("CARGO_PKG_VERSION"))
+    let mut features: Vec<&str> = Vec::new();
+    #[cfg(feature = "ping")]
+    features.push("ping");
+    #[cfg(feature = "gpu-detection")]
+    features.push("gpu-detection");
+    #[cfg(feature = "terminal")]
+    features.push("terminal");
+    #[cfg(feature = "self-update")]
+    features.push("self-update");
+    let features = if features.is_empty() {
+        "none".to_string()
+    } else {
+        features.join(",")
+    };
+    format!(
+        "komari-agent-rs {} (features: {})",
+        env!("CARGO_PKG_VERSION"),
+        features
+    )
 }
 
 pub fn parse_args(config: &mut Config, args: &[String]) -> Result<(), ConfigErr> {
