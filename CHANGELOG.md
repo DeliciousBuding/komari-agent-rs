@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 (2026-08-29)
 
 ### Fixed
 - **`default` build now includes `ping`** — ping is a core monitoring feature;
@@ -10,7 +10,7 @@
 - **Net collector self-checks**: zero eligible interfaces (e.g. a misconfigured
   `include_nics` that matches no real NIC) now logs a one-shot WARN naming the
   filter, instead of silently reporting all-zero net metrics.
-- **`--version` prints features** (`komari-agent-rs 0.2.2 (features: ping)`),
+- **`--version` prints features** (`komari-agent-rs 0.3.0 (features: ping)`),
   so a deployment's capabilities are inspectable without touching the binary.
 - **Asset naming unified**: Linux arm64 now publishes both
   `linux-arm64-default` and `linux-arm64-full` (previously one bare
@@ -19,6 +19,8 @@
   `komari-agent-rs-linux-amd64` — a name no release ever published — and now
   maps to the actual `-full` assets (Linux) / platform assets (macOS/FreeBSD),
   and prints the installed `--version` after installation.
+
+## v0.2.2 (2026-08-15)
 
 ### Added
 - **Windows NVIDIA detailed GPU metrics**: `nvidia-smi` CSV fallback fills
