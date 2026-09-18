@@ -60,15 +60,24 @@ pub struct ProtocolFsm {
 impl ProtocolFsm {
     pub const FALLBACK_THRESHOLD: u8 = 3;
 
-    /// Create a new FSM. Starts at `HttpV1` if `http_only`, else `WsV2` if
-    /// `protocol_version >= 2`, else `WsV1`.
+    /// Create a new FSM. Starts at `WsV2` (or `HttpV2` when `http_only`) if
+    /// `protocol_version >= 2`, else the matching v1 mode.
     ///
     /// `http_only` is an escape hatch for networks where a DPI / middlebox
     /// breaks the WebSocket upgrade (the agent reports over plain HTTP POST
-    /// and never attempts WS). `HttpV1` is terminal, so the FSM stays there.
+    /// and never attempts WS) — and for plain `http://` endpoints where the
+    /// WS client cannot do TLS. HTTP-only still speaks **v2** JSON-RPC over
+    /// `POST /api/clients/v2/rpc`; `HttpV1` is only the terminal fallback for
+    /// pre-v2 servers. (Pre-0.4.0 http_only started at HttpV1, which silently
+    /// pinned loopback/http deployments to the legacy endpoint removed in
+    /// Komari 1.5.0.)
     pub fn new(protocol_version: u8, http_only: bool) -> Self {
         let initial = if http_only {
-            ProtocolMode::HttpV1
+            if protocol_version >= 2 {
+                ProtocolMode::HttpV2
+            } else {
+                ProtocolMode::HttpV1
+            }
         } else if protocol_version >= 2 {
             ProtocolMode::WsV2
         } else {
@@ -91,6 +100,20 @@ impl ProtocolFsm {
     #[inline]
     pub fn is_terminal(&self) -> bool {
         self.mode == ProtocolMode::HttpV1
+    }
+
+    /// The mode the FSM started in (re-probe target).
+    #[inline]
+    pub fn initial_mode(&self) -> ProtocolMode {
+        self.initial_mode
+    }
+
+    /// Consecutive failures since the last success — used by the caller to
+    /// escalate out of the terminal HttpV1 mode when the v1 endpoint is gone
+    /// (server upgraded past v1).
+    #[inline]
+    pub fn consecutive_failures(&self) -> u8 {
+        self.consecutive_v2_failures
     }
 
     /// Reset all failure counters on success.
@@ -257,6 +280,17 @@ mod tests {
     fn starts_at_ws_v2() {
         let fsm = ProtocolFsm::new(2, false);
         assert_eq!(fsm.mode(), ProtocolMode::WsV2);
+    }
+
+    #[test]
+    fn http_only_starts_at_http_v2() {
+        // Regression: pre-0.4.0 http_only started at HttpV1, pinning
+        // loopback/plain-http deployments to the legacy endpoint that
+        // Komari 1.5.0 removed.
+        let fsm = ProtocolFsm::new(2, true);
+        assert_eq!(fsm.mode(), ProtocolMode::HttpV2);
+        let fsm_v1 = ProtocolFsm::new(1, true);
+        assert_eq!(fsm_v1.mode(), ProtocolMode::HttpV1);
     }
 
     #[test]

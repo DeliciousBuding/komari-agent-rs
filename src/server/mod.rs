@@ -97,22 +97,18 @@ pub(super) fn update_basic_info(
     let base = config.endpoint.trim_end_matches('/');
     let encoded_token = crate::ws::url_encode(&config.token);
 
-    // Protocol + payload ladder. HTTP-only deployments intentionally start at
-    // the v1 upload endpoint; probing v2 first only creates 404 noise on the
-    // current tokendance-komari server.
-    let protos: &[bool] = if config.http_only || config.protocol_version < 2 {
+    // Protocol ladder: v2 first (POST /api/clients/v2/rpc — plain HTTP, works
+    // for http_only deployments too), v1 upload endpoint as legacy fallback.
+    // Pre-0.4.0 http_only forced v1-only, which broke against Komari 1.5.0
+    // (v1 endpoints removed).
+    let protos: &[bool] = if config.protocol_version < 2 {
         &[false]
     } else {
         &[true, false]
     };
-    // The current server model accepts the compact v1 payload. Extended fields
-    // remain available for v2-capable upstreams, but HTTP-only should stay quiet
-    // and deterministic.
-    let payloads: &[bool] = if config.http_only {
-        &[false]
-    } else {
-        &[true, false]
-    };
+    // Extended fields first; older servers that reject them get the compact
+    // payload on retry (mirrors Go uploadBasicInfo fallback).
+    let payloads: &[bool] = &[true, false];
 
     let mut last_code: u16 = 0;
     'outer: for &is_v2 in protos {

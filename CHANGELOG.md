@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.4.0 (2026-09-18)
+
+Komari 1.5.0 compatibility release. Komari 1.5.0 removed every v1 agent
+endpoint (`POST /api/clients/report`, `uploadBasicInfo`, `task/result`,
+`ping/*`); only the v2 JSON-RPC transport (`/api/clients/v2/rpc`, WS or POST)
+remains. v0.3.0 agents against 1.5.0 lost all reporting (fleet blackout on
+2026-09-18, root-caused below).
+
+### Fixed
+- **`agent.report` params are now wrapped in `{"report": ...}`** — the server
+  binds params into `ReportParams{report}`; the bare flat report got a 200
+  but ingested nothing (silent data loss in all v2 modes).
+- **v2 ping/task-result params use snake_case** (`task_id`/`ping_type`/
+  `finished_at`), matching the server's `PingResultParams`/`TaskResultParams`
+  (camelCase was silently dropped).
+- **FSM downgrade now works when connect succeeds but the session dies
+  instantly**: counters only reset after a session survives 30 s
+  (`MIN_HEALTHY_SESSION`). Previously a middlebox/server closing the WS right
+  after upgrade caused infinite flapping in WsV2 with no downgrade.
+- **Terminal-mode self-healing**: 3 consecutive HttpV1 failures (e.g. v1
+  endpoint removed by a server upgrade) escalate back to the preferred mode
+  instead of retrying a dead endpoint forever; fallback modes are also
+  re-probed every 10 min.
+- **HttpV2 tick checks HTTP status** (404 → downgrade path, other non-200 →
+  tick failure); HttpV1 detects 404 (`v1 endpoint gone`) for escalation.
+
+### Added
+- **HTTP v2 pull thread** (`agent.pull` long-poll, 35 s timeout): HTTP-mode
+  agents now receive server-pushed events (ping/exec/terminal) in near real
+  time. Required for Komari 1.5.0, where `GET /api/clients/ping/tasks` is
+  gone and ping events carry a 3 s TTL. Mirrors the Go agent's
+  `runV2PullLoop` goroutine; thread lifecycle is owned by a generation
+  counter so stale pulls exit on mode change.
+- **v2 event bus**: dedup by event id + idempotent re-ack via
+  `ack_event_ids` on report/pull, shared between tick loop and pull thread.
+- Report responses' piggybacked events are dispatched (exec/task results use
+  `agent.taskResult` over v2 when in v2 mode).
+- `http_post_timeout` (configurable read/write timeout; default stays 30 s).
+
+### Changed
+- **`http_only` / plain-`http://` endpoints now start at HttpV2** (was
+  HttpV1). Loopback deployments (e.g. agent co-located with the server on
+  `http://127.0.0.1`) no longer pin themselves to the legacy protocol.
+- Basic-info upload tries v2 first in all modes (was v1-only in http_only).
 ## v0.3.0 (2026-08-29)
 
 ### Fixed

@@ -191,8 +191,11 @@ impl PingResult {
     pub fn build_payload(&self, task_id: u64, protocol_version: u8) -> Vec<u8> {
         let now = current_time_iso8601();
         if protocol_version >= 2 {
+            // v2 `agent.pingResult` params — snake_case, matching the server's
+            // `v2.PingResultParams{task_id,ping_type,value,finished_at}`.
+            // (Pre-0.4.0 sent camelCase, which the server silently dropped.)
             format!(
-                r#"{{"type":"ping_result","taskId":{},"pingType":"{}","value":{},"finishedAt":"{}"}}"#,
+                r#"{{"task_id":{},"ping_type":"{}","value":{},"finished_at":"{}"}}"#,
                 task_id, self.ping_type, self.value, now
             )
             .into_bytes()
@@ -667,11 +670,11 @@ pub fn build_task_result(task_id: &str, result: &str, exit_code: i32) -> Vec<u8>
 }
 
 /// Build the v2 `agent.taskResult` JSON-RPC notification wrapping the same
-/// payload fields (camelCase).
+/// payload fields — snake_case, matching the server's `v2.TaskResultParams`.
 pub fn build_task_result_v2(task_id: &str, result: &str, exit_code: i32) -> Vec<u8> {
     let now = current_time_iso8601();
     let params = format!(
-        r#"{{"taskId":"{}","result":"{}","exitCode":{},"finishedAt":"{}"}}"#,
+        r#"{{"task_id":"{}","result":"{}","exit_code":{},"finished_at":"{}"}}"#,
         json_escape(task_id),
         json_escape(result),
         exit_code,

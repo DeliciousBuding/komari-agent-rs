@@ -95,6 +95,34 @@ pub fn http_post(
     tls_cfg: &Arc<rustls::ClientConfig>,
     dial: &crate::proxy::Dialer,
 ) -> Result<HttpResponse, HttpErr> {
+    http_post_timeout(
+        url,
+        body,
+        content_type,
+        content_encoding,
+        extra_headers,
+        tls_cfg,
+        dial,
+        Duration::from_secs(30),
+    )
+}
+
+/// `http_post` with a caller-chosen read/write timeout.
+///
+/// The v2 `agent.pull` long-poll blocks server-side for up to 25 s, so the
+/// default 30 s budget leaves almost no margin for slow edges; the pull loop
+/// uses 35 s (same as the Go agent's HTTP client).
+#[allow(clippy::too_many_arguments)]
+pub fn http_post_timeout(
+    url: &str,
+    body: &[u8],
+    content_type: &str,
+    content_encoding: Option<&str>,
+    extra_headers: &[(String, String)],
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
+    timeout: Duration,
+) -> Result<HttpResponse, HttpErr> {
     http_request(
         "POST",
         url,
@@ -104,6 +132,7 @@ pub fn http_post(
         extra_headers,
         tls_cfg,
         dial,
+        timeout,
     )
 }
 
@@ -113,7 +142,7 @@ pub fn http_get(
     tls_cfg: &Arc<rustls::ClientConfig>,
     dial: &crate::proxy::Dialer,
 ) -> Result<HttpResponse, HttpErr> {
-    http_request("GET", url, None, None, None, extra_headers, tls_cfg, dial)
+    http_request("GET", url, None, None, None, extra_headers, tls_cfg, dial, Duration::from_secs(30))
 }
 
 #[allow(clippy::too_many_arguments)] // HTTP request surface genuinely needs method/url/body/headers/tls/dial
@@ -126,6 +155,7 @@ fn http_request(
     extra_headers: &[(String, String)],
     tls_cfg: &Arc<rustls::ClientConfig>,
     dial: &crate::proxy::Dialer,
+    timeout: Duration,
 ) -> Result<HttpResponse, HttpErr> {
     let body = body.unwrap_or(&[]);
     // 1. Parse URL → host, port, path, query
@@ -146,8 +176,8 @@ fn http_request(
             crate::proxy::NetErr::Proxy(s) => HttpErr::Io(io::Error::other(s)),
         })?;
 
-    tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+    tcp.set_read_timeout(Some(timeout))?;
+    tcp.set_write_timeout(Some(timeout))?;
 
     // 3. Wrap stream: https:// → TLS (rustls), http:// → plain TCP (local server).
     let mut stream = if url.starts_with("https://") {
