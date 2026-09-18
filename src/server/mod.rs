@@ -126,15 +126,8 @@ pub(super) fn update_basic_info(
             } else {
                 build_basic_info_v1(config, extended)
             };
-            match crate::http::http_post(
-                &url,
-                &body,
-                "application/json",
-                None,
-                &[],
-                tls_cfg,
-                dial,
-            ) {
+            match crate::http::http_post(&url, &body, "application/json", None, &[], tls_cfg, dial)
+            {
                 Ok(resp) if resp.status_code == 200 => {
                     info!(
                         "Basic info uploaded (v{}, {})",

@@ -274,9 +274,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
             "[komari] WARN: no eligible network interface after filtering \
              (include_nics={:?}, exclude_nics={:?}, physical filtered={}) — net metrics \
              will be zeros; verify against `ip -s link`",
-            config.include_nics,
-            config.exclude_nics,
-            filtered_physical
+            config.include_nics, config.exclude_nics, filtered_physical
         );
     }
 

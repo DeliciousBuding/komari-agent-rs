@@ -175,8 +175,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
         // trigger the 3-strike downgrade (WsV2 → WsV1 → HttpV2 → HttpV1).
         // Exception: every 10 min in a fallback mode, re-probe the preferred
         // mode once (self-heal after server upgrade / network repair).
-        if fsm.mode() != fsm.initial_mode() && last_reprobe.elapsed() >= Duration::from_secs(600)
-        {
+        if fsm.mode() != fsm.initial_mode() && last_reprobe.elapsed() >= Duration::from_secs(600) {
             eprintln!(
                 "[komari] re-probing preferred protocol mode {:?} (currently {:?})",
                 fsm.initial_mode(),
@@ -311,16 +310,8 @@ fn connect_with_fsm(
         }
         ProtocolMode::HttpV2 | ProtocolMode::HttpV1 => {
             let url = build_http_url(config, fsm.mode());
-            http_post(
-                &url,
-                b"{}",
-                "application/json",
-                None,
-                &[],
-                tls_cfg,
-                dial,
-            )
-            .map_err(|e| WsErr::Io(format!("HTTP probe failed: {}", e)))?;
+            http_post(&url, b"{}", "application/json", None, &[], tls_cfg, dial)
+                .map_err(|e| WsErr::Io(format!("HTTP probe failed: {}", e)))?;
             Ok(Connection::Http)
         }
     }
@@ -394,7 +385,14 @@ fn upload_http_ping_result(
     tls_cfg: &Arc<rustls::ClientConfig>,
     task: &HttpPingTask,
 ) {
-    run_ping_and_upload_v2(config, dial, tls_cfg, task.id as i64, &task.ping_type, &task.target);
+    run_ping_and_upload_v2(
+        config,
+        dial,
+        tls_cfg,
+        task.id as i64,
+        &task.ping_type,
+        &task.target,
+    );
 }
 
 /// Execute one ping task and upload the result as a v2 `agent.pingResult`
@@ -811,9 +809,7 @@ fn run_tick_loop(
                 match resp.status_code {
                     200 => {}
                     404 => {
-                        return Err(TickErr::Other(
-                            "v2 rpc endpoint missing (HTTP 404)".into(),
-                        ));
+                        return Err(TickErr::Other("v2 rpc endpoint missing (HTTP 404)".into()));
                     }
                     code => {
                         return Err(TickErr::Other(format!("v2 report HTTP {code}")));
@@ -1181,15 +1177,7 @@ fn upload_task_result(
         let token = crate::ws::url_encode(&config.token);
         format!("{base}/api/clients/task/result?token={token}")
     };
-    match http_post(
-        &url,
-        body,
-        "application/json",
-        None,
-        &[],
-        tls_cfg,
-        dial,
-    ) {
+    match http_post(&url, body, "application/json", None, &[], tls_cfg, dial) {
         Ok(r) if r.status_code == 200 => Ok(()),
         Ok(r) => Err(format!("task/result returned HTTP {}", r.status_code)),
         Err(e) => Err(format!("task/result upload error: {e}")),
@@ -1263,10 +1251,7 @@ mod tests {
     #[test]
     fn wrap_report_params_wraps_flat_report() {
         let out = wrap_report_params(br#"{"cpu":{"usage":1.0}}"#, &[]);
-        assert_eq!(
-            out,
-            br#"{"report":{"cpu":{"usage":1.0}}}"#.to_vec()
-        );
+        assert_eq!(out, br#"{"report":{"cpu":{"usage":1.0}}}"#.to_vec());
     }
 
     #[test]

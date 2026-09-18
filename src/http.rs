@@ -142,7 +142,17 @@ pub fn http_get(
     tls_cfg: &Arc<rustls::ClientConfig>,
     dial: &crate::proxy::Dialer,
 ) -> Result<HttpResponse, HttpErr> {
-    http_request("GET", url, None, None, None, extra_headers, tls_cfg, dial, Duration::from_secs(30))
+    http_request(
+        "GET",
+        url,
+        None,
+        None,
+        None,
+        extra_headers,
+        tls_cfg,
+        dial,
+        Duration::from_secs(30),
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // HTTP request surface genuinely needs method/url/body/headers/tls/dial
