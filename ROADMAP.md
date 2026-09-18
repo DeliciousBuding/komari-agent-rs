@@ -1,7 +1,7 @@
 # komari-agent-rs ROADMAP
 最后更新：2026-08-15
 
-> 基于 Go upstream（komari-monitor/komari-agent）持续跟踪对比。当前上游基线：**v1.2.60**（2026-07-15）+ 08-07 Snapshot。
+> 基于 Go upstream（komari-monitor/komari-agent）持续跟踪对比。当前上游基线：v2 协议时代（komari server 1.5.0-fix1，v1 端点已移除）；v0.4.0 起本 agent 全量 v2 兼容（report 包络 / pull 长轮询 / 事件 ack）
 
 ## v0.2 ✅ 已完成（2026-07-14 → 07-15）
 
