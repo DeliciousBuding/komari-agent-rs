@@ -1210,7 +1210,14 @@ fn handle_ping_task(
     let result = super::task::handle_ping(ping_type, target, None);
     let is_v2 = matches!(mode, ProtocolMode::WsV2 | ProtocolMode::HttpV2);
     let id = if task_id < 0 { 0 } else { task_id as u64 };
-    let payload = result.build_payload(id, if is_v2 { 2 } else { 1 });
+    let params = result.build_payload(id, if is_v2 { 2 } else { 1 });
+    // v2 requires the JSON-RPC envelope — bare params parse as method=""
+    // server-side and are dropped (method not found).
+    let payload = if is_v2 {
+        v2::new_notification(v2::METHOD_AGENT_PING_RESULT, &params)
+    } else {
+        params
+    };
     if let Some(ws) = ws {
         if let Err(e) = ws.send_text(&payload) {
             eprintln!("[komari] WARN: failed to send ping result: {e:?}");
