@@ -33,8 +33,8 @@ fn build_echo_request(seq: u16) -> Vec<u8> {
     pkt[5] = 0; // Identifier LSB
     pkt[6] = (seq >> 8) as u8; // Sequence MSB
     pkt[7] = seq as u8; // Sequence LSB
-    for i in 8..40 {
-        pkt[i] = i as u8;
+    for (i, b) in pkt.iter_mut().enumerate().skip(8).take(32) {
+        *b = i as u8;
     }
     let cs = icmp_checksum(&pkt);
     pkt[2] = (cs >> 8) as u8;
@@ -303,13 +303,15 @@ pub fn ping_icmp(target: &str, timeout_ms: Option<u64>) -> i64 {
         },
     };
 
+    // Exactly one cfg block survives stripping; it occupies the tail
+    // expression position and its value is the return value.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     {
-        return unix_raw::send_icmp(ip, timeout);
+        unix_raw::send_icmp(ip, timeout)
     }
     #[cfg(target_os = "windows")]
     {
-        return win_icmp::send_icmp(ip, timeout);
+        win_icmp::send_icmp(ip, timeout)
     }
     #[cfg(not(any(
         target_os = "linux",

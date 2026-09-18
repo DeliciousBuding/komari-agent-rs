@@ -19,14 +19,57 @@
 use super::backoff::Backoff;
 use crate::arena::ScratchArena;
 use crate::config::Config;
-use crate::http::{HttpErr, http_get, http_post};
+use crate::http::{HttpErr, http_get, http_post, http_post_timeout};
 use crate::monitor::{Monitor, generate_report};
 use crate::protocol::fsm::{FailureKind, ProtocolFsm, ProtocolMode};
 use crate::protocol::v2;
 use crate::ws::{WsConnection, WsErr, WsMessage};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Bumped whenever the v2 HTTP pull session changes ownership; stale pull
+/// threads exit on their next iteration.
+static HTTP_V2_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// A session shorter than this does not prove the current mode is healthy
+/// (connect succeeded but the tick loop died immediately — e.g. server or
+/// middlebox closed the WS right after upgrade).
+const MIN_HEALTHY_SESSION: Duration = Duration::from_secs(30);
+
+/// v2 event bookkeeping shared between the tick loop (report piggyback) and
+/// the pull thread (long-poll). Events can arrive twice until the server
+/// receives our ack, so dispatches are deduped by event id while acks are
+/// re-sent idempotently on every sighting.
+#[derive(Default)]
+struct V2EventBus {
+    pending_acks: Vec<String>,
+    seen: Vec<String>,
+}
+
+impl V2EventBus {
+    const SEEN_CAP: usize = 256;
+
+    /// Record `id`; returns true when the event was already dispatched.
+    fn mark_seen(&mut self, id: &str) -> bool {
+        if id.is_empty() {
+            return false;
+        }
+        if self.seen.iter().any(|s| s == id) {
+            return true;
+        }
+        if self.seen.len() >= Self::SEEN_CAP {
+            self.seen.remove(0);
+        }
+        self.seen.push(id.to_string());
+        false
+    }
+
+    fn drain_acks(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_acks)
+    }
+}
 
 #[cfg(feature = "terminal")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -109,6 +152,10 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
     let mut arena = ScratchArena::new();
     let mut last_info_refresh = Instant::now();
     let info_interval = Duration::from_secs(runtime_cfg.info_report_interval * 60);
+    let bus = Arc::new(Mutex::new(V2EventBus::default()));
+    // Periodic re-probe of the initial (preferred) protocol mode so a
+    // historical downgrade does not pin the agent to a fallback forever.
+    let mut last_reprobe = Instant::now();
 
     eprintln!(
         "[komari] capabilities: {}",
@@ -126,9 +173,25 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
 
         // Do NOT on_reconnect() here — connect failures must accumulate to
         // trigger the 3-strike downgrade (WsV2 → WsV1 → HttpV2 → HttpV1).
+        // Exception: every 10 min in a fallback mode, re-probe the preferred
+        // mode once (self-heal after server upgrade / network repair).
+        if fsm.mode() != fsm.initial_mode() && last_reprobe.elapsed() >= Duration::from_secs(600) {
+            eprintln!(
+                "[komari] re-probing preferred protocol mode {:?} (currently {:?})",
+                fsm.initial_mode(),
+                fsm.mode()
+            );
+            fsm.on_reconnect();
+            last_reprobe = Instant::now();
+        }
         let conn = match connect_with_fsm(&fsm, &runtime_cfg, &tls_cfg, &dial) {
             Ok(conn) => {
-                fsm.on_success();
+                // Do NOT reset FSM failure counters here: a connection that
+                // dies within seconds of the handshake (e.g. middlebox kills
+                // the WS upgrade) must still accumulate strikes, otherwise
+                // the agent flaps forever in a mode that can connect but
+                // cannot hold a session. Counters reset only after a session
+                // survives MIN_HEALTHY_SESSION (see below).
                 backoff.reset();
                 // Client is now registered server-side — upload basic info.
                 // Non-fatal: the periodic refresh retries on failure.
@@ -161,6 +224,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
             }
         };
 
+        let session_start = Instant::now();
         if let Err(e) = run_tick_loop(
             conn,
             &mut fsm,
@@ -169,6 +233,7 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
             &runtime_cfg,
             &tls_cfg,
             &dial,
+            Arc::clone(&bus),
         ) {
             // Auto-degrade: permessage-deflate inflate bugs force a reconnect
             // without compression instead of flapping forever.
@@ -187,6 +252,21 @@ pub fn run_reconnection_loop(config: &Config) -> ! {
                 if downgraded { " -- DOWNSHIFTED" } else { "" },
                 e
             );
+            if session_start.elapsed() >= MIN_HEALTHY_SESSION {
+                // The session held long enough to prove this mode works.
+                fsm.on_success();
+            }
+            // Terminal-mode escalation: when the v1 endpoint is gone for good
+            // (server upgraded past v1 — Komari 1.5.0 removed /api/clients/report),
+            // climbing back to v2 is the only way to recover. Without this the
+            // agent retries a dead endpoint forever (2026-09-18 fleet blackout).
+            if fsm.is_terminal() && fsm.consecutive_failures() >= ProtocolFsm::FALLBACK_THRESHOLD {
+                eprintln!(
+                    "[komari] HttpV1 unreachable — escalating back to {:?}",
+                    fsm.initial_mode()
+                );
+                fsm.on_reconnect();
+            }
         }
 
         if backoff.exhausted() {
@@ -230,16 +310,8 @@ fn connect_with_fsm(
         }
         ProtocolMode::HttpV2 | ProtocolMode::HttpV1 => {
             let url = build_http_url(config, fsm.mode());
-            http_post(
-                &url,
-                b"{}",
-                "application/json",
-                None,
-                &[],
-                tls_cfg,
-                dial,
-            )
-            .map_err(|e| WsErr::Io(format!("HTTP probe failed: {}", e)))?;
+            http_post(&url, b"{}", "application/json", None, &[], tls_cfg, dial)
+                .map_err(|e| WsErr::Io(format!("HTTP probe failed: {}", e)))?;
             Ok(Connection::Http)
         }
     }
@@ -313,12 +385,30 @@ fn upload_http_ping_result(
     tls_cfg: &Arc<rustls::ClientConfig>,
     task: &HttpPingTask,
 ) {
-    eprintln!(
-        "[komari] ping task {}: {} -> {}",
-        task.id, task.ping_type, task.target
+    run_ping_and_upload_v2(
+        config,
+        dial,
+        tls_cfg,
+        task.id as i64,
+        &task.ping_type,
+        &task.target,
     );
-    let result = super::task::handle_ping(&task.ping_type, &task.target, None);
-    let params = result.build_payload(task.id, 2);
+}
+
+/// Execute one ping task and upload the result as a v2 `agent.pingResult`
+/// notification (shared by the legacy HTTP poll path and v2 event dispatch).
+fn run_ping_and_upload_v2(
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    task_id: i64,
+    ping_type: &str,
+    target: &str,
+) {
+    eprintln!("[komari] ping task {task_id}: {ping_type} -> {target}");
+    let result = super::task::handle_ping(ping_type, target, None);
+    let id = if task_id < 0 { 0 } else { task_id as u64 };
+    let params = result.build_payload(id, 2);
     let payload = v2::new_notification(v2::METHOD_AGENT_PING_RESULT, &params);
     match http_post(
         &build_http_url(config, ProtocolMode::HttpV2),
@@ -335,6 +425,245 @@ fn upload_http_ping_result(
             resp.status_code
         ),
         Err(e) => eprintln!("[komari] WARN: ping result upload failed: {e}"),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v2 event intake (report piggyback + pull long-poll)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Wrap a flat monitoring report in the v2 `agent.report` params envelope:
+/// `{"report": <report>, "ack_event_ids": [...]}`.
+fn wrap_report_params(report: &[u8], ack_ids: &[String]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(report.len() + 48 + ack_ids.len() * 36);
+    v.extend_from_slice(b"{\"report\":");
+    v.extend_from_slice(report);
+    if !ack_ids.is_empty() {
+        v.extend_from_slice(b",\"ack_event_ids\":[");
+        for (i, id) in ack_ids.iter().enumerate() {
+            if i > 0 {
+                v.push(b',');
+            }
+            v.push(b'"');
+            v.extend_from_slice(id.as_bytes());
+            v.push(b'"');
+        }
+        v.push(b']');
+    }
+    v.push(b'}');
+    v
+}
+
+/// Build `agent.pull` params: capabilities + drained ack ids.
+fn build_pull_params(caps: &[&str], ack_ids: &[String]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(96 + caps.len() * 12 + ack_ids.len() * 36);
+    v.extend_from_slice(b"{\"capabilities\":[");
+    for (i, c) in caps.iter().enumerate() {
+        if i > 0 {
+            v.push(b',');
+        }
+        v.push(b'"');
+        v.extend_from_slice(c.as_bytes());
+        v.push(b'"');
+    }
+    v.push(b']');
+    if !ack_ids.is_empty() {
+        v.extend_from_slice(b",\"ack_event_ids\":[");
+        for (i, id) in ack_ids.iter().enumerate() {
+            if i > 0 {
+                v.push(b',');
+            }
+            v.push(b'"');
+            v.extend_from_slice(id.as_bytes());
+            v.push(b'"');
+        }
+        v.push(b']');
+    }
+    v.push(b'}');
+    v
+}
+
+/// Split the top-level objects of the `"events"` array in a v2 RPC response.
+/// Tolerates the absent/empty array; string-aware so braces inside string
+/// values do not break the split.
+fn extract_event_objects(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(pos) = body.find("\"events\"") else {
+        return out;
+    };
+    let Some(arr) = body[pos..].find('[').map(|i| pos + i) else {
+        return out;
+    };
+    let mut depth = 0i32;
+    let mut start = None;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, ch) in body[arr..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(arr + idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0
+                    && let Some(s) = start.take()
+                {
+                    out.push(body[s..=arr + idx].to_string());
+                }
+            }
+            ']' if depth == 0 => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Handle the events array of a v2 RPC response: ack bookkeeping + dedup,
+/// then dispatch each fresh event.
+fn process_v2_response_events(
+    body: &[u8],
+    bus: &Arc<Mutex<V2EventBus>>,
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+) {
+    let text = match std::str::from_utf8(body) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let events = extract_event_objects(text);
+    if events.is_empty() {
+        return;
+    }
+    let mut fresh = Vec::new();
+    if let Ok(mut b) = bus.lock() {
+        for ev in &events {
+            let id = super::task::extract_json_string(ev.as_bytes(), "id").unwrap_or_default();
+            if !id.is_empty() {
+                // Re-ack on every sighting: the server re-sends until acked.
+                b.pending_acks.push(id.clone());
+            }
+            if b.mark_seen(&id) {
+                continue;
+            }
+            fresh.push(ev.clone());
+        }
+    }
+    for ev in fresh {
+        dispatch_v2_event(&ev, config, dial, tls_cfg);
+    }
+}
+
+/// Dispatch one v2 event object (`{"id","method","params",...}`).
+fn dispatch_v2_event(
+    event_json: &str,
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+) {
+    let data = event_json.as_bytes();
+    let method = super::task::extract_json_string(data, "method").unwrap_or_default();
+    match method.as_str() {
+        "agent.ping" => {
+            if let Some((tid, pt, tgt)) = extract_ping_fields(data) {
+                run_ping_and_upload_v2(config, dial, tls_cfg, tid, &pt, &tgt);
+            }
+        }
+        "agent.exec" => {
+            let task_id = super::task::extract_json_string(data, "task_id").unwrap_or_default();
+            let command = super::task::extract_json_string(data, "command").unwrap_or_default();
+            handle_exec_task(config, dial, tls_cfg, &task_id, &command, true);
+        }
+        "agent.terminal.request" => {
+            let request_id =
+                super::task::extract_json_string(data, "request_id").unwrap_or_default();
+            handle_terminal_request(config, dial, tls_cfg, &request_id);
+        }
+        "agent.message" | "agent.event" => {
+            eprintln!("[komari] server message/event: {}", abbreviate(event_json));
+        }
+        other => {
+            eprintln!("[komari] unhandled v2 event method '{other}'");
+        }
+    }
+}
+
+/// Long-poll loop for HTTP v2 mode: `POST agent.pull` blocks server-side up
+/// to 25 s and returns queued events (ping/exec/terminal/message). Mirrors
+/// the Go agent's `runV2PullLoop` goroutine — the single-threaded tick loop
+/// cannot afford a 25 s blocking call, so this runs on a dedicated thread.
+fn spawn_pull_thread(
+    config: &Config,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
+    bus: Arc<Mutex<V2EventBus>>,
+) {
+    let generation = HTTP_V2_GENERATION
+        .fetch_add(1, AtomicOrdering::SeqCst)
+        .wrapping_add(1);
+    eprintln!("[komari] v2 pull thread spawning (gen {generation})");
+    let url = build_http_url(config, ProtocolMode::HttpV2);
+    let caps: Vec<String> = agent_capabilities(config)
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let config = config.clone();
+    let dial = dial.clone();
+    let tls_cfg = Arc::clone(tls_cfg);
+    let spawn = std::thread::Builder::new()
+        .name("v2-pull".into())
+        .spawn(move || {
+            let caps: Vec<&str> = caps.iter().map(String::as_str).collect();
+            loop {
+                if HTTP_V2_GENERATION.load(AtomicOrdering::SeqCst) != generation {
+                    return; // a newer pull thread owns the session
+                }
+                let acks = match bus.lock() {
+                    Ok(mut b) => b.drain_acks(),
+                    Err(_) => Vec::new(),
+                };
+                let params = build_pull_params(&caps, &acks);
+                let req = v2::new_request("pull", v2::METHOD_AGENT_PULL, &params);
+                match http_post_timeout(
+                    &url,
+                    &req,
+                    "application/json",
+                    None,
+                    &[],
+                    &tls_cfg,
+                    &dial,
+                    Duration::from_secs(35),
+                ) {
+                    Ok(resp) if resp.status_code == 200 => {
+                        process_v2_response_events(&resp.body, &bus, &config, &dial, &tls_cfg);
+                    }
+                    Ok(resp) => {
+                        eprintln!("[komari] WARN: v2 pull HTTP {}", resp.status_code);
+                        std::thread::sleep(Duration::from_secs(config.reconnect_interval.max(1)));
+                    }
+                    Err(e) => {
+                        eprintln!("[komari] WARN: v2 pull failed: {e}");
+                        std::thread::sleep(Duration::from_secs(config.reconnect_interval.max(1)));
+                    }
+                }
+            }
+        });
+    if let Err(e) = spawn {
+        eprintln!("[komari] WARN: failed to spawn v2 pull thread: {e}");
     }
 }
 
@@ -406,6 +735,7 @@ fn parse_http_ping_task_object(obj: &str) -> Option<HttpPingTask> {
 // run_tick_loop — main 1-second monitoring loop
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[allow(clippy::too_many_arguments)]
 fn run_tick_loop(
     mut conn: Connection,
     fsm: &mut ProtocolFsm,
@@ -414,10 +744,21 @@ fn run_tick_loop(
     config: &Config,
     tls_cfg: &Arc<rustls::ClientConfig>,
     dial: &crate::proxy::Dialer,
+    bus: Arc<Mutex<V2EventBus>>,
 ) -> Result<(), TickErr> {
     let mut last_heartbeat = Instant::now();
     let mut last_http_ping_poll = Instant::now() - Duration::from_secs(10);
     let mut http_ping_last_run: HashMap<u64, Instant> = HashMap::new();
+
+    // HTTP v2 mode needs the long-poll loop to receive server-pushed events
+    // (ping tasks have a 3 s TTL server-side — report-piggyback alone would
+    // miss nearly all of them). WS modes get pushes on the socket instead.
+    if matches!(fsm.mode(), ProtocolMode::HttpV2) {
+        spawn_pull_thread(config, tls_cfg, dial, Arc::clone(&bus));
+    } else {
+        // Kill any stale pull thread from a previous HttpV2 stint.
+        HTTP_V2_GENERATION.fetch_add(1, AtomicOrdering::SeqCst);
+    }
 
     loop {
         // 1. Collect metrics.
@@ -426,7 +767,12 @@ fn run_tick_loop(
         // 2. Send report.
         match (&mut conn, fsm.mode()) {
             (Connection::Ws(ws), ProtocolMode::WsV2) => {
-                let notif = v2::new_notification(v2::METHOD_AGENT_REPORT, report);
+                // v2 params MUST wrap the flat report in {"report": ...} —
+                // the server binds params into ReportParams{report}; sending
+                // the bare report returns success but ingests nothing
+                // (silent data loss pre-0.4.0).
+                let params = wrap_report_params(report, &[]);
+                let notif = v2::new_notification(v2::METHOD_AGENT_REPORT, &params);
                 ws.send_text(&notif)?;
             }
             (Connection::Ws(ws), ProtocolMode::WsV1) => {
@@ -441,7 +787,12 @@ fn run_tick_loop(
                 ws.send_text(report)?;
             }
             (Connection::Http, ProtocolMode::HttpV2) => {
-                let req = v2::new_request("0", v2::METHOD_AGENT_REPORT, report);
+                let acks = match bus.lock() {
+                    Ok(mut b) => b.drain_acks(),
+                    Err(_) => Vec::new(),
+                };
+                let params = wrap_report_params(report, &acks);
+                let req = v2::new_request("report", v2::METHOD_AGENT_REPORT, &params);
                 let (body, encoding) = gzip_if_enabled(&req, config);
                 let resp = http_post(
                     &build_http_url(config, ProtocolMode::HttpV2),
@@ -452,9 +803,20 @@ fn run_tick_loop(
                     tls_cfg,
                     dial,
                 )?;
-                if !resp.body.is_empty() {
-                    dispatch_server_message(&resp.body, config, dial, tls_cfg, None, fsm.mode());
+                // Status discipline: pre-0.4.0 ignored the status code, so a
+                // rejected report (400/401/404) was indistinguishable from
+                // success and the FSM never reacted.
+                match resp.status_code {
+                    200 => {}
+                    404 => {
+                        return Err(TickErr::Other("v2 rpc endpoint missing (HTTP 404)".into()));
+                    }
+                    code => {
+                        return Err(TickErr::Other(format!("v2 report HTTP {code}")));
+                    }
                 }
+                // The report response piggybacks queued server events.
+                process_v2_response_events(&resp.body, &bus, config, dial, tls_cfg);
             }
             (Connection::Http, ProtocolMode::HttpV1) => {
                 let resp = http_post(
@@ -466,6 +828,13 @@ fn run_tick_loop(
                     tls_cfg,
                     dial,
                 )?;
+                if resp.status_code == 404 {
+                    // v1 endpoint removed (Komari >= 1.5.0) — fail the tick so
+                    // the FSM escalation logic can climb back to v2.
+                    return Err(TickErr::Other(
+                        "v1 report endpoint gone (HTTP 404); server likely upgraded".into(),
+                    ));
+                }
                 // The v1 report response is normally a bare ack like
                 // {"status":"success"}; only dispatch if it looks like a real
                 // server-pushed message (task/exec/ping carry a "method" or
@@ -480,7 +849,10 @@ fn run_tick_loop(
             _ => return Err(TickErr::Other("mode/connection mismatch".into())),
         }
 
+        // Legacy ping-task polling only makes sense against pre-1.5.0 servers
+        // (HttpV1); v2 modes receive ping tasks as events (pull / piggyback).
         if matches!(conn, Connection::Http)
+            && fsm.mode() == ProtocolMode::HttpV1
             && last_http_ping_poll.elapsed() >= Duration::from_secs(5)
         {
             poll_http_ping_tasks(config, dial, tls_cfg, &mut http_ping_last_run);
@@ -554,7 +926,7 @@ fn dispatch_server_message(
             "agent.exec" => {
                 let task_id = super::task::extract_json_string(data, "task_id").unwrap_or_default();
                 let command = super::task::extract_json_string(data, "command").unwrap_or_default();
-                handle_exec_task(config, dial, tls_cfg, &task_id, &command);
+                handle_exec_task(config, dial, tls_cfg, &task_id, &command, true);
             }
             "agent.ping" => {
                 if let Some((tid, pt, tgt)) = extract_ping_fields(data) {
@@ -583,7 +955,7 @@ fn dispatch_server_message(
             "exec" => {
                 let task_id = super::task::extract_json_string(data, "task_id").unwrap_or_default();
                 let command = super::task::extract_json_string(data, "command").unwrap_or_default();
-                handle_exec_task(config, dial, tls_cfg, &task_id, &command);
+                handle_exec_task(config, dial, tls_cfg, &task_id, &command, false);
             }
             "ping" => {
                 if let Some((tid, pt, tgt)) = extract_ping_fields(data) {
@@ -770,6 +1142,7 @@ fn handle_exec_task(
     tls_cfg: &Arc<rustls::ClientConfig>,
     task_id: &str,
     command: &str,
+    v2_mode: bool,
 ) {
     if task_id.is_empty() {
         eprintln!("[komari] exec request without task_id, ignoring");
@@ -777,31 +1150,34 @@ fn handle_exec_task(
     }
     eprintln!("[komari] exec task {task_id}: {}", abbreviate(command));
     let result = super::task::execute_exec(command, config.disable_exec);
-    let body = super::task::build_task_result(task_id, &result.output, result.exit_code);
-    if let Err(e) = upload_task_result(config, dial, tls_cfg, &body) {
-        eprintln!("[komari] WARN: task/result upload failed: {e}");
+    let body = if v2_mode {
+        super::task::build_task_result_v2(task_id, &result.output, result.exit_code)
+    } else {
+        super::task::build_task_result(task_id, &result.output, result.exit_code)
+    };
+    if let Err(e) = upload_task_result(config, dial, tls_cfg, &body, v2_mode) {
+        eprintln!("[komari] WARN: task result upload failed: {e}");
     }
 }
 
-/// POST a task result body to the task/result endpoint.
+/// POST a task result — v1 flat body to `/api/clients/task/result`, or a v2
+/// `agent.taskResult` JSON-RPC notification to `/api/clients/v2/rpc`
+/// (the v1 endpoint was removed in Komari 1.5.0).
 fn upload_task_result(
     config: &Config,
     dial: &crate::proxy::Dialer,
     tls_cfg: &Arc<rustls::ClientConfig>,
     body: &[u8],
+    v2_mode: bool,
 ) -> Result<(), String> {
-    let base = config.endpoint.trim_end_matches('/');
-    let token = crate::ws::url_encode(&config.token);
-    let url = format!("{base}/api/clients/task/result?token={token}");
-    match http_post(
-        &url,
-        body,
-        "application/json",
-        None,
-        &[],
-        tls_cfg,
-        dial,
-    ) {
+    let url = if v2_mode {
+        build_http_url(config, ProtocolMode::HttpV2)
+    } else {
+        let base = config.endpoint.trim_end_matches('/');
+        let token = crate::ws::url_encode(&config.token);
+        format!("{base}/api/clients/task/result?token={token}")
+    };
+    match http_post(&url, body, "application/json", None, &[], tls_cfg, dial) {
         Ok(r) if r.status_code == 200 => Ok(()),
         Ok(r) => Err(format!("task/result returned HTTP {}", r.status_code)),
         Err(e) => Err(format!("task/result upload error: {e}")),
@@ -822,7 +1198,14 @@ fn handle_ping_task(
     let result = super::task::handle_ping(ping_type, target, None);
     let is_v2 = matches!(mode, ProtocolMode::WsV2 | ProtocolMode::HttpV2);
     let id = if task_id < 0 { 0 } else { task_id as u64 };
-    let payload = result.build_payload(id, if is_v2 { 2 } else { 1 });
+    let params = result.build_payload(id, if is_v2 { 2 } else { 1 });
+    // v2 requires the JSON-RPC envelope — bare params parse as method=""
+    // server-side and are dropped (method not found).
+    let payload = if is_v2 {
+        v2::new_notification(v2::METHOD_AGENT_PING_RESULT, &params)
+    } else {
+        params
+    };
     if let Some(ws) = ws {
         if let Err(e) = ws.send_text(&payload) {
             eprintln!("[komari] WARN: failed to send ping result: {e:?}");
@@ -864,6 +1247,56 @@ fn abbreviate(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrap_report_params_wraps_flat_report() {
+        let out = wrap_report_params(br#"{"cpu":{"usage":1.0}}"#, &[]);
+        assert_eq!(out, br#"{"report":{"cpu":{"usage":1.0}}}"#.to_vec());
+    }
+
+    #[test]
+    fn wrap_report_params_appends_ack_ids() {
+        let out = wrap_report_params(b"{}", &["a1".to_string(), "b2".to_string()]);
+        assert_eq!(
+            out,
+            br#"{"report":{},"ack_event_ids":["a1","b2"]}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn extract_event_objects_splits_array() {
+        let body = r#"{"jsonrpc":"2.0","id":"report","result":{"status":"success","events":[{"id":"e1","method":"agent.ping","params":{"ping_task_id":1,"ping_type":"icmp","ping_target":"1.1.1.1"}},{"id":"e2","method":"agent.message","params":{"content":"hi } ] \"}"}}]}}"#;
+        let events = extract_event_objects(body);
+        assert_eq!(events.len(), 2);
+        assert!(events[0].contains("\"e1\""));
+        assert!(events[1].contains("\"e2\""));
+    }
+
+    #[test]
+    fn extract_event_objects_empty_or_missing() {
+        assert!(extract_event_objects(r#"{"result":{"events":[]}}"#).is_empty());
+        assert!(extract_event_objects(r#"{"result":{"status":"success"}}"#).is_empty());
+    }
+
+    #[test]
+    fn build_pull_params_includes_caps_and_acks() {
+        let out = build_pull_params(&["ping", "exec"], &["e1".to_string()]);
+        let s = String::from_utf8(out).unwrap();
+        assert_eq!(
+            s,
+            r#"{"capabilities":["ping","exec"],"ack_event_ids":["e1"]}"#
+        );
+    }
+
+    #[test]
+    fn event_bus_dedups_and_drains() {
+        let mut bus = V2EventBus::default();
+        assert!(!bus.mark_seen("e1"));
+        assert!(bus.mark_seen("e1"));
+        bus.pending_acks.push("e1".to_string());
+        assert_eq!(bus.drain_acks(), vec!["e1".to_string()]);
+        assert!(bus.pending_acks.is_empty());
+    }
 
     #[test]
     fn parses_http_ping_tasks_from_komari_response() {

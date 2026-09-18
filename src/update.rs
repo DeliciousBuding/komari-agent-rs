@@ -222,10 +222,11 @@ fn https_fetch(
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| UpdateErr::Http("no header/body separator".into()))?;
     let head = &buf[..sep];
-    if !(head.starts_with(b"HTTP/1.1 200") || head.starts_with(b"HTTP/1.0 200"))
-        && !head.starts_with(b"HTTP/1.1 302")
-        && !head.starts_with(b"HTTP/2 200")
-    {
+    let status_ok = head.starts_with(b"HTTP/1.1 200")
+        || head.starts_with(b"HTTP/1.0 200")
+        || head.starts_with(b"HTTP/1.1 302")
+        || head.starts_with(b"HTTP/2 200");
+    if !status_ok {
         return Err(UpdateErr::Http(format!(
             "status: {}",
             String::from_utf8_lossy(&head[..head.len().min(64)])
