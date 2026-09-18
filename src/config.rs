@@ -326,6 +326,7 @@ pub fn help_text() -> &'static str {
 /// a deployment has the expected capabilities (e.g. `ping`). A default build
 /// that silently dropped ping previously surfaced as 100% packet loss in
 /// Komari while the network was fine.
+#[allow(clippy::vec_init_then_push)] // feature set is cfg-gated; cannot be a literal
 pub fn version_text() -> String {
     let mut features: Vec<&str> = Vec::new();
     #[cfg(feature = "ping")]

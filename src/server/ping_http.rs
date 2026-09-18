@@ -100,7 +100,7 @@ pub fn ping_http(target: &str, timeout_ms: Option<u64>) -> i64 {
                 if let Some(loc) = resp_str
                     .lines()
                     .find(|l| l.to_lowercase().starts_with("location:"))
-                    .and_then(|l| l.splitn(2, ':').nth(1))
+                    .and_then(|l| l.split_once(':').map(|(_, v)| v))
                 {
                     url = loc.trim().to_string();
                     if !url.starts_with("http") {
