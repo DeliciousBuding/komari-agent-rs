@@ -65,6 +65,7 @@ chmod +x komari-agent
 - **IP** —— 公网 IP 自动探测
 - **系统信息** —— OS 名称、内核版本、虚拟化检测
 - **v1/v2 协议** —— JSON-RPC 2.0 over WebSocket,带 HTTP POST 回退(JSON-RPC 1.0 兼容)
+- **v2 agent 控制事件** —— 响应 `agent.startupConfig` 回传脱敏启动快照（凭据不出节点）；`agent.switchVersion` 策略性不支持（更新走手动哈希钉版）
 - **远程执行** —— 通过服务端在 Agent 上执行命令
 - **ICMP/TCP/HTTP ping** —— 三级 ping 自动降级
 - **交互式终端** —— PTY(Linux/macOS/FreeBSD)+ ConPTY(Windows)

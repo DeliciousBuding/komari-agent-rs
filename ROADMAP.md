@@ -1,7 +1,7 @@
 # komari-agent-rs ROADMAP
-最后更新：2026-08-15
+最后更新：2026-09-23
 
-> 基于 Go upstream（komari-monitor/komari-agent）持续跟踪对比。当前上游基线：v2 协议时代（komari server 1.5.0-fix1，v1 端点已移除）；v0.4.0 起本 agent 全量 v2 兼容（report 包络 / pull 长轮询 / 事件 ack）
+> 基于 Go upstream（komari-monitor/komari-agent）持续跟踪对比。当前上游基线：v2 协议时代（komari server 1.5.0-fix1，v1 端点已移除）；v0.4.0 起本 agent 全量 v2 兼容（report 包络 / pull 长轮询 / 事件 ack）。**协议 spec 事实源 = server 仓 `protocol/v2/jsonrpc.go`**（`komari-monitor/komari-protocol` 契约仓 2026-08-04 起停更，不再代表线上协议；新方法直接在 server 仓落地）
 
 ## v0.2 ✅ 已完成（2026-07-14 → 07-15）
 
@@ -34,15 +34,23 @@
 | — | `install.sh --user`（非 root systemd user service） | ✅ |
 | — | release workflow matrix 并行 + rust-cache + macOS x86_64 架构修复 | ✅ |
 
+## v0.5.0 ✅（2026-09-23）— v2 agent 控制面事件
+
+| 项 | 功能 | 状态 |
+|:--:|------|:----:|
+| — | `agent.startupConfig`（capability `startup_config`）：启动配置快照回传（含 version/features 戳），**token / auto_discovery_key 脱敏为 `[REDACTED]`**（刻意偏离上游——Go agent 连凭据一起回传） | ✅ |
+| — | `agent.switchVersion`：识别后记 policy 日志并忽略；**策略性永久不支持**，不 advertise capability（见「不追」） | ✅ |
+
 ## 后续规划
 
-- **持续跟官方**：Go agent 新功能逐项评估吸收（Windows nvidia-smi 多卡细节、snapshot 自动更新轨道、非 root 安装增强）
+- **持续跟官方**：Go agent 新功能逐项评估吸收（Windows nvidia-smi 多卡细节、非 root 安装增强）；上游 snapshot 轨道的远程换版已评估并拒绝（见「不追」）
 - **架构**：`loongarch64` 待 Rust tier 稳定后跟进（当前 tier 3，需 nightly build-std，暂缓）
 - **CI**：引入 cargo-nextest 提速、codecov 覆盖率门禁、cargo-audit 安全审计（见 `.github/workflows`）
 
 ## 不追
 
 - Auto-discovery（舰队手动部署）
+- 远程换版 `agent.switchVersion`（上游 2026-09 新增；与 `disable_auto_update` + SHA-256 手动钉版 SOP 冲突，v0.5.0 起识别+日志+忽略）
 - SoC/嵌入式 GPU Device Tree（非服务器场景）
 - Windows Service via nssm（Scheduled Task 够用）
 - 终端 Ctrl+C 优雅关闭（直接关 PTY 更确定）

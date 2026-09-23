@@ -2,7 +2,7 @@
 
 同一 Komari 协议、四种独立实现的横向对比。所有 binary 为 **Windows x86_64 release stripped** 实测（workflower 编译），同 target 公平对比。
 
-最后更新：2026-06-21
+最后更新：2026-09-23
 
 ---
 
@@ -41,6 +41,8 @@
 | self-update | ✅ | ✅ | ❌ | ✅ |
 | GPU 监控 | ✅ | ✅ | ❌（硬编码空） | ✅ |
 | v2 JSON-RPC 协议 | ✅ | ✅ | ❌ | ✅ |
+| startupConfig 启动参数回传（2026-09 上游新增） | ✅（含凭据明文） | ❌ | ❌ | ✅（**凭据脱敏**） |
+| switchVersion 远程换版（2026-09 上游新增） | ✅ | ❌ | ❌ | ❌（**策略性不支持**，见「不追」） |
 | JSON config 文件 | ✅ | ✅ | ❌ | ✅ |
 | 跨平台 | Linux/Win/macOS/BSD | Linux/Win/macOS/BSD | Win/Linux | Linux/Win/macOS/BSD |
 | CLI flags | 28 | 35 | 21 | ~30 |

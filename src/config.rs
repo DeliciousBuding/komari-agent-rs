@@ -320,14 +320,10 @@ pub fn help_text() -> &'static str {
      Unknown flags are ignored (Go-compatible).\n"
 }
 
-/// `--version` text.
-///
-/// Includes the compiled feature set so operators can verify at a glance that
-/// a deployment has the expected capabilities (e.g. `ping`). A default build
-/// that silently dropped ping previously surfaced as 100% packet loss in
-/// Komari while the network was fine.
+/// Compiled feature set as a comma-separated string (`none` when empty) —
+/// shared by `--version` and the startup-config snapshot.
 #[allow(clippy::vec_init_then_push)] // feature set is cfg-gated; cannot be a literal
-pub fn version_text() -> String {
+fn compiled_features_csv() -> String {
     let mut features: Vec<&str> = Vec::new();
     #[cfg(feature = "ping")]
     features.push("ping");
@@ -337,16 +333,168 @@ pub fn version_text() -> String {
     features.push("terminal");
     #[cfg(feature = "self-update")]
     features.push("self-update");
-    let features = if features.is_empty() {
+    if features.is_empty() {
         "none".to_string()
     } else {
         features.join(",")
-    };
+    }
+}
+
+/// `--version` text.
+///
+/// Includes the compiled feature set so operators can verify at a glance that
+/// a deployment has the expected capabilities (e.g. `ping`). A default build
+/// that silently dropped ping previously surfaced as 100% packet loss in
+/// Komari while the network was fine.
+pub fn version_text() -> String {
     format!(
         "komari-agent-rs {} (features: {})",
         env!("CARGO_PKG_VERSION"),
-        features
+        compiled_features_csv()
     )
+}
+
+// ============================================================================
+// Startup-config snapshot (v2 `agent.startupConfig`)
+// ============================================================================
+
+/// Marker sent in place of a configured secret value.
+///
+/// The upstream Go agent uploads the complete config **including
+/// credentials** (`CaptureStartupConfig`: "No fields, credentials, false
+/// values or empty values are omitted"). We deliberately deviate: the
+/// snapshot is an audit surface for fleet posture (`http_only`,
+/// `include_nics`, intervals, ...), where credentials add no audit value
+/// while expanding token exposure to the server process and every admin
+/// panel response. Empty secrets stay empty so set/unset state remains
+/// auditable.
+const REDACTED: &str = "[REDACTED]";
+
+impl Config {
+    /// Build the v2 `agent.startupConfig` config payload: every effective
+    /// field with snake_case keys mirroring the Go agent's JSON tags, plus
+    /// `version`/`features` build stamps. Cold path (admin-initiated
+    /// request), so heap allocation is fine.
+    pub fn startup_config_json(&self) -> Vec<u8> {
+        let mut b = SnapshotBuilder::new();
+        b.str_field("endpoint", &self.endpoint);
+        b.redacted_field("token", &self.token);
+        b.f64_field("interval", self.interval);
+        b.u64_field("info_report_interval", self.info_report_interval);
+        b.u64_field("reconnect_interval", self.reconnect_interval);
+        b.u64_field("max_retries", self.max_retries);
+        b.bool_field("disable_web_ssh", self.disable_web_ssh);
+        b.bool_field("disable_exec", self.disable_exec);
+        b.bool_field("disable_auto_update", self.disable_auto_update);
+        b.bool_field("disable_compression", self.disable_compression);
+        b.bool_field("http_only", self.http_only);
+        b.bool_field("enable_gpu", self.enable_gpu);
+        b.bool_field("ignore_unsafe_cert", self.ignore_unsafe_cert);
+        b.bool_field("debug_log", self.debug_log);
+        b.bool_field("show_warning", self.show_warning);
+        b.bool_field("get_ip_addr_from_nic", self.get_ip_addr_from_nic);
+        b.bool_field("memory_include_cache", self.memory_include_cache);
+        b.bool_field("memory_report_raw_used", self.memory_report_raw_used);
+        b.bool_field("memory_mode_available", self.memory_mode_available);
+        b.str_field("prefer_ip_version", &self.prefer_ip_version);
+        b.str_field("custom_ipv4", &self.custom_ipv4);
+        b.str_field("custom_ipv6", &self.custom_ipv6);
+        b.str_list("custom_dns", &self.custom_dns);
+        b.str_list("include_nics", &self.include_nics);
+        b.str_list("exclude_nics", &self.exclude_nics);
+        b.str_list("include_mountpoints", &self.include_mountpoints);
+        b.str_list("exclude_mountpoints", &self.exclude_mountpoints);
+        b.u64_field("protocol_version", u64::from(self.protocol_version));
+        b.u64_field("month_rotate", u64::from(self.month_rotate));
+        b.redacted_field("auto_discovery_key", &self.auto_discovery_key);
+        b.str_field("host_proc", &self.host_proc);
+        b.str_field("config_file", &self.config_file);
+        // Build stamps (ours, not upstream): make fleet drift visible in the
+        // admin UI snapshot without shelling into the node.
+        b.str_field("version", env!("CARGO_PKG_VERSION"));
+        b.str_field("features", &compiled_features_csv());
+        b.finish()
+    }
+}
+
+/// Minimal JSON object builder for the snapshot. The startup-config path is
+/// cold (one admin request at a time), so this favours clarity over the
+/// zero-alloc `crate::json::JsonBuf` discipline used on hot paths.
+struct SnapshotBuilder {
+    out: Vec<u8>,
+    first: bool,
+}
+
+impl SnapshotBuilder {
+    fn new() -> Self {
+        Self {
+            out: vec![b'{'],
+            first: true,
+        }
+    }
+
+    fn key(&mut self, name: &str) {
+        if !self.first {
+            self.out.push(b',');
+        }
+        self.first = false;
+        self.out.push(b'"');
+        self.out.extend_from_slice(name.as_bytes());
+        self.out.extend_from_slice(b"\":");
+    }
+
+    fn str_field(&mut self, name: &str, value: &str) {
+        self.key(name);
+        crate::json::write_json_string(&mut self.out, value);
+    }
+
+    fn redacted_field(&mut self, name: &str, value: &str) {
+        let shown = if value.is_empty() { "" } else { REDACTED };
+        self.str_field(name, shown);
+    }
+
+    fn bool_field(&mut self, name: &str, value: bool) {
+        self.key(name);
+        self.out.extend_from_slice(if value {
+            b"true".as_slice()
+        } else {
+            b"false".as_slice()
+        });
+    }
+
+    fn u64_field(&mut self, name: &str, value: u64) {
+        self.key(name);
+        self.out.extend_from_slice(value.to_string().as_bytes());
+    }
+
+    fn f64_field(&mut self, name: &str, value: f64) {
+        self.key(name);
+        // Rust Display matches Go encoding/json for finite floats (integral
+        // values render without a trailing `.0`). JSON has no NaN/Infinity —
+        // emit null, same convention as `crate::json::push_f64_one_decimal`.
+        if value.is_finite() {
+            self.out.extend_from_slice(value.to_string().as_bytes());
+        } else {
+            self.out.extend_from_slice(b"null");
+        }
+    }
+
+    fn str_list(&mut self, name: &str, values: &[String]) {
+        self.key(name);
+        self.out.push(b'[');
+        for (i, v) in values.iter().enumerate() {
+            if i > 0 {
+                self.out.push(b',');
+            }
+            crate::json::write_json_string(&mut self.out, v);
+        }
+        self.out.push(b']');
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        self.out.push(b'}');
+        self.out
+    }
 }
 
 pub fn parse_args(config: &mut Config, args: &[String]) -> Result<(), ConfigErr> {
@@ -1378,6 +1526,49 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn startup_config_snapshot_redacts_secrets() {
+        let mut c = Config::default();
+        c.endpoint = "https://status.example.com".to_string();
+        c.token = "supersecret-token".to_string();
+        c.auto_discovery_key = "discovery-secret".to_string();
+        c.interval = 2.5;
+        c.include_nics = vec!["eth0".to_string(), "enp0s6".to_string()];
+        let s = String::from_utf8(c.startup_config_json()).unwrap();
+        // Secrets: set -> marker, never the plaintext.
+        assert!(s.contains("\"token\":\"[REDACTED]\""));
+        assert!(s.contains("\"auto_discovery_key\":\"[REDACTED]\""));
+        assert!(!s.contains("supersecret-token"));
+        assert!(!s.contains("discovery-secret"));
+        // Posture fields survive verbatim.
+        assert!(s.contains("\"endpoint\":\"https://status.example.com\""));
+        assert!(s.contains("\"interval\":2.5"));
+        assert!(s.contains("\"include_nics\":[\"eth0\",\"enp0s6\"]"));
+        assert!(s.contains("\"http_only\":false"));
+        assert!(s.contains("\"disable_auto_update\":true"));
+        // Build stamps.
+        assert!(s.contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
+        assert!(s.contains("\"features\":"));
+    }
+
+    #[test]
+    fn startup_config_snapshot_keeps_empty_secrets_empty() {
+        // Set/unset state stays auditable: empty secrets are "" (not the
+        // redaction marker), so the admin can tell "no token configured"
+        // apart from "token configured but hidden".
+        let c = Config::default();
+        let s = String::from_utf8(c.startup_config_json()).unwrap();
+        assert!(s.contains("\"token\":\"\""));
+        assert!(s.contains("\"auto_discovery_key\":\"\""));
+    }
+
+    #[test]
+    fn startup_config_snapshot_escapes_strings() {
+        let mut c = Config::default();
+        c.endpoint = "https://ex\"ample\n.com".to_string();
+        let s = String::from_utf8(c.startup_config_json()).unwrap();
+        assert!(s.contains("\"endpoint\":\"https://ex\\\"ample\\n.com\""));
+    }
     #[test]
     fn help_text_lists_key_flags() {
         // Every user-facing flag must be discoverable from --help. This guards

@@ -432,6 +432,57 @@ fn run_ping_and_upload_v2(
 // v2 event intake (report piggyback + pull long-poll)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Answer an `agent.startupConfig` event: POST the redacted startup-config
+/// snapshot back as an `agent.startupConfig.result` **request** whose id
+/// echoes the server-assigned request id. Mirrors the upstream Go agent,
+/// which uses the authenticated POST transport for both WS and pull
+/// delivery; the server binds the result to the authenticated UUID.
+/// The payload is never logged (it carries operator-identifying fields).
+fn handle_startup_config_request(
+    config: &Config,
+    dial: &crate::proxy::Dialer,
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    request_id: &str,
+) {
+    if request_id.is_empty() {
+        eprintln!("[komari] WARN: agent.startupConfig without request_id, ignoring");
+        return;
+    }
+    let params = v2::build_startup_config_params(request_id, &config.startup_config_json());
+    let payload = v2::new_request(request_id, v2::METHOD_AGENT_STARTUP_CONFIG_RESULT, &params);
+    let (body, encoding) = gzip_if_enabled(&payload, config);
+    match http_post(
+        &build_http_url(config, ProtocolMode::HttpV2),
+        &body,
+        "application/json",
+        encoding,
+        &[],
+        tls_cfg,
+        dial,
+    ) {
+        Ok(resp) if resp.status_code == 200 => {
+            eprintln!("[komari] startup config returned to server (request {request_id})")
+        }
+        Ok(resp) => eprintln!(
+            "[komari] WARN: startup config result returned HTTP {}",
+            resp.status_code
+        ),
+        Err(e) => eprintln!("[komari] WARN: startup config result upload failed: {e}"),
+    }
+}
+
+/// `agent.switchVersion` is permanently unsupported by fleet policy: remote
+/// version switching conflicts with `--disable-auto-update` plus the
+/// SHA-256-pinned manual rollout SOP. The event is fire-and-forget (the
+/// server has already answered `queued: true`), so we only log — loudly and
+/// specifically, not the generic unhandled-method line — and deliberately do
+/// not advertise the `switch_version` capability.
+fn log_switch_version_policy() {
+    eprintln!(
+        "[komari] policy: agent.switchVersion ignored (remote version switching is \
+         unsupported; fleet updates are manual and hash-pinned)"
+    );
+}
 /// Wrap a flat monitoring report in the v2 `agent.report` params envelope:
 /// `{"report": <report>, "ack_event_ids": [...]}`.
 fn wrap_report_params(report: &[u8], ack_ids: &[String]) -> Vec<u8> {
@@ -593,6 +644,12 @@ fn dispatch_v2_event(
                 super::task::extract_json_string(data, "request_id").unwrap_or_default();
             handle_terminal_request(config, dial, tls_cfg, &request_id);
         }
+        "agent.startupConfig" => {
+            let request_id =
+                super::task::extract_json_string(data, "request_id").unwrap_or_default();
+            handle_startup_config_request(config, dial, tls_cfg, &request_id);
+        }
+        "agent.switchVersion" => log_switch_version_policy(),
         "agent.message" | "agent.event" => {
             eprintln!("[komari] server message/event: {}", abbreviate(event_json));
         }
@@ -938,6 +995,12 @@ fn dispatch_server_message(
                     super::task::extract_json_string(data, "request_id").unwrap_or_default();
                 handle_terminal_request(config, dial, tls_cfg, &request_id);
             }
+            "agent.startupConfig" => {
+                let request_id =
+                    super::task::extract_json_string(data, "request_id").unwrap_or_default();
+                handle_startup_config_request(config, dial, tls_cfg, &request_id);
+            }
+            "agent.switchVersion" => log_switch_version_policy(),
             "agent.message" | "agent.event" => {
                 eprintln!("[komari] server message/event: {}", abbreviate(text));
             }
@@ -1367,7 +1430,7 @@ fn is_deflate_failure(e: &TickErr) -> bool {
 /// Always includes control-plane basics; `exec` / `terminal` are gated by
 /// config (+ compile feature for terminal).
 pub(crate) fn agent_capabilities(config: &Config) -> Vec<&'static str> {
-    let mut caps = vec!["message", "event"];
+    let mut caps = vec!["message", "event", "startup_config"];
     if cfg!(feature = "ping") {
         caps.push("ping");
     }
@@ -1405,6 +1468,28 @@ mod p8_tests {
     }
 
     #[test]
+    fn startup_config_params_echo_request_id_and_redact() {
+        let mut c = Config::default();
+        c.endpoint = "https://status.example.com".to_string();
+        c.token = "fleet-secret".to_string();
+        let params = v2::build_startup_config_params("req-42", &c.startup_config_json());
+        let s = String::from_utf8(params).unwrap();
+        assert!(s.starts_with("{\"request_id\":\"req-42\",\"config\":{"));
+        assert!(s.ends_with("}}"));
+        assert!(!s.contains("fleet-secret"));
+        // Envelope: the result travels as a request whose id echoes the
+        // server-assigned request id (upstream Go agent behaviour).
+        let req = v2::new_request(
+            "req-42",
+            v2::METHOD_AGENT_STARTUP_CONFIG_RESULT,
+            s.as_bytes(),
+        );
+        let r = String::from_utf8(req).unwrap();
+        assert!(r.contains("\"method\":\"agent.startupConfig.result\""));
+        assert!(r.contains("\"id\":\"req-42\""));
+    }
+
+    #[test]
     fn capabilities_hide_terminal_when_http_only_or_disabled() {
         let mut c = Config::default();
         c.http_only = true;
@@ -1412,6 +1497,7 @@ mod p8_tests {
         c.disable_exec = false;
         let caps = agent_capabilities(&c);
         assert!(caps.contains(&"message"));
+        assert!(caps.contains(&"startup_config"));
         assert!(caps.contains(&"exec"));
         assert!(!caps.contains(&"terminal"), "http_only must hide terminal");
 

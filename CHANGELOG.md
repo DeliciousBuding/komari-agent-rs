@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.5.0 (2026-09-23)
+
+Follows the upstream server's post-1.5.0-fix1 agent-control additions
+(`komari-monitor/komari@main`, snapshot track): `agent.startupConfig` and
+`agent.switchVersion`. Both are inert against servers <= 1.5.0-fix1, which
+never emit these events, so this release is safe to deploy ahead of the next
+server upgrade.
+
+### Added
+- **`agent.startupConfig` support** (capability `startup_config`): answers
+  the server's admin-initiated request with a snapshot of every effective
+  config field plus `version`/`features` build stamps. The result returns as
+  an `agent.startupConfig.result` **request** (id echoes the server-assigned
+  `request_id`) over the authenticated POST transport for both WS and pull
+  modes, same as the upstream Go agent.
+- **`agent.switchVersion` policy log**: the event is recognised and logged as
+  ignored by policy, instead of the generic "unhandled method" line.
+
+### Deliberate deviations from upstream
+- **Secrets are redacted in the startup-config snapshot**: `token` and
+  `auto_discovery_key` are reported as `"[REDACTED]"` (empty stays empty, so
+  set/unset state remains auditable). The Go agent uploads the full config
+  including credentials; a fleet audit surface must not expand credential
+  exposure to the server process and admin panel responses.
+- **`agent.switchVersion` is permanently unsupported**: remote version
+  switching conflicts with `disable_auto_update` + SHA-256-pinned manual
+  rollout. The `switch_version` capability is not advertised.
+
+### Notes
+- Protocol spec source of truth is the server repo's
+  `protocol/v2/jsonrpc.go`; the `komari-monitor/komari-protocol` contract
+  repo has not moved since 2026-08-04 and no longer reflects the live wire.
+
 ## v0.4.0 (2026-09-18)
 
 Komari 1.5.0 compatibility release. Komari 1.5.0 removed every v1 agent
