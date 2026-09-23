@@ -70,6 +70,7 @@ One binary. No runtime deps. No OpenSSL.
 - **IP** — public IP auto-detection
 - **OS info** — OS name, kernel version, virtualization detection
 - **v1/v2 protocol** — JSON-RPC 2.0 over WebSocket with HTTP POST fallback (JSON-RPC 1.0 compatibility)
+- **v2 agent-control events** — answers `agent.startupConfig` with a redacted startup snapshot (secrets never leave the node); `agent.switchVersion` is deliberately unsupported (updates stay manual and hash-pinned)
 - **Remote exec** — execute commands on agent via server
 - **ICMP/TCP/HTTP ping** — three-tier ping with automatic fallback
 - **Interactive terminal** — PTY (Linux/macOS/FreeBSD) and ConPTY (Windows)

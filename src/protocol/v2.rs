@@ -34,6 +34,12 @@ pub const METHOD_AGENT_EVENT: &str = "agent.event";
 pub const METHOD_AGENT_TERMINAL: &str = "agent.terminal.request";
 pub const METHOD_AGENT_PULL: &str = "agent.pull";
 
+// Server-initiated agent-control events (upstream server `main` after
+// 1.5.0-fix1; no-op on servers <= 1.5.0-fix1, which never emit these).
+pub const METHOD_AGENT_STARTUP_CONFIG: &str = "agent.startupConfig";
+pub const METHOD_AGENT_STARTUP_CONFIG_RESULT: &str = "agent.startupConfig.result";
+pub const METHOD_AGENT_SWITCH_VERSION: &str = "agent.switchVersion";
+
 // ── JSON-RPC 2.0 request/response id ─────────────────────────────────────
 
 /// A JSON-RPC 2.0 `id` value (string, integer, or null).
@@ -129,5 +135,23 @@ pub fn new_request(id: &str, method: &str, params: &[u8]) -> Vec<u8> {
     v.extend_from_slice(b",\"id\":\"");
     v.extend_from_slice(id.as_bytes());
     v.extend_from_slice(b"\"}");
+    v
+}
+
+/// Build `agent.startupConfig.result` params:
+/// `{"request_id":"<id>","config":{...}}`.
+///
+/// `config_json` must be a complete JSON object (see
+/// `Config::startup_config_json`). The result travels as a **request** whose
+/// `id` echoes `request_id`, matching the upstream Go agent; the server
+/// binds the answer to the authenticated connection UUID, never to a
+/// body-supplied id.
+pub fn build_startup_config_params(request_id: &str, config_json: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(config_json.len() + 40);
+    v.extend_from_slice(b"{\"request_id\":");
+    crate::json::write_json_string(&mut v, request_id);
+    v.extend_from_slice(b",\"config\":");
+    v.extend_from_slice(config_json);
+    v.push(b'}');
     v
 }

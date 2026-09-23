@@ -441,6 +441,33 @@ pub fn push_json_str(buf: &mut JsonBuf, s: &str) -> Result<(), JsonErr> {
     buf.push_byte(b'"')
 }
 
+/// Escape `s` as a JSON string literal (including the surrounding quotes)
+/// and append it to `out`.
+///
+/// Same escape table as [`push_json_str`], but writes onto a heap `Vec<u8>`
+/// for cold paths that do not use [`JsonBuf`] (e.g. the startup-config
+/// snapshot, where favouring clarity over the stack-buffer discipline is
+/// deliberate).
+pub fn write_json_string(out: &mut Vec<u8>, s: &str) {
+    out.push(b'"');
+    for &b in s.as_bytes() {
+        match b {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            0x00..=0x1F => {
+                out.extend_from_slice(b"\\u00");
+                out.push(hex_digit(b >> 4));
+                out.push(hex_digit(b & 0x0F));
+            }
+            _ => out.push(b),
+        }
+    }
+    out.push(b'"');
+}
+
 /// Push a `u64` as decimal ASCII, with comma if needed at the current
 /// nesting level.  Uses a stack-local `[u8; 20]` buffer and fills it in
 /// reverse — no heap, no `format!`.
