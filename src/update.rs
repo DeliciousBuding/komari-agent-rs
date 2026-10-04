@@ -70,28 +70,25 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
         return Ok(false);
     }
 
-    // 3. Find download URL for this platform's asset + SHA256SUMS
+    // 3. Find download URL for this platform's asset + checksums.txt
     let name = platform_asset();
     let dl_url =
         json_asset_url(&json, name).ok_or_else(|| UpdateErr::Other(format!("no asset: {name}")))?;
-    let sums_url = json_asset_url(&json, "SHA256SUMS")
-        .ok_or_else(|| UpdateErr::Other("no SHA256SUMS asset".into()))?;
+    let sums_url = json_asset_url(&json, CHECKSUMS_ASSET)
+        .ok_or_else(|| UpdateErr::Other(format!("no {CHECKSUMS_ASSET} asset")))?;
 
     // 4. Download binary
     let bin = https_download(&dl_url, &tls, github_token.as_deref())?;
 
-    // 5. Download SHA256SUMS, extract expected hash for our asset
+    // 5. Download checksums.txt, extract expected hash for our asset
     let sums = String::from_utf8(https_download(&sums_url, &tls, github_token.as_deref())?)
-        .map_err(|_| UpdateErr::Other("SHA256SUMS is not UTF-8".into()))?;
-    let expected = sums
-        .lines()
-        .find(|l| l.contains(name))
-        .and_then(|l| l.split_whitespace().next())
-        .ok_or_else(|| UpdateErr::Other(format!("{name} not in SHA256SUMS")))?;
+        .map_err(|_| UpdateErr::Other(format!("{CHECKSUMS_ASSET} is not UTF-8")))?;
+    let expected = find_checksum(&sums, name)
+        .ok_or_else(|| UpdateErr::Other(format!("{name} not in {CHECKSUMS_ASSET}")))?;
 
     // 6. Verify SHA256 before replacing binary (CRITICAL)
     let actual = sha256_hex(&bin);
-    if actual != expected {
+    if !actual.eq_ignore_ascii_case(expected) {
         return Err(UpdateErr::Other(format!(
             "SHA256 mismatch: expected {expected}, computed {actual}"
         )));
@@ -300,11 +297,17 @@ fn semver_gt(a: &str, b: &str) -> bool {
 
 // ── Platform detection ──────────────────────────────────────────────────────
 
+/// Release asset holding `sha256sum` output for every binary (see release.yml).
+const CHECKSUMS_ASSET: &str = "checksums.txt";
+
+/// Name of this platform's release asset. Self-update is only compiled into
+/// the `full` feature set, so Linux resolves to the `-full` artifacts (the
+/// release also ships `-default` ones, which have no updater).
 fn platform_asset() -> &'static str {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "komari-agent-rs-linux-x86_64"
+        "komari-agent-rs-linux-x86_64-full"
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        "komari-agent-rs-linux-arm64"
+        "komari-agent-rs-linux-arm64-full"
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         "komari-agent-rs-windows-x86_64.exe"
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
@@ -316,6 +319,18 @@ fn platform_asset() -> &'static str {
     } else {
         "komari-agent-rs-unknown"
     }
+}
+
+/// Find the hash for exactly `name` in `sha256sum` output (`<hash>  <file>`,
+/// with an optional `*` binary marker). Exact match so that `foo-linux` never
+/// picks up the line for `foo-linux-full`.
+fn find_checksum<'a>(sums: &'a str, name: &str) -> Option<&'a str> {
+    sums.lines().find_map(|l| {
+        let mut it = l.split_whitespace();
+        let hash = it.next()?;
+        let file = it.next()?.trim_start_matches('*');
+        (file == name).then_some(hash)
+    })
 }
 
 // ── SHA256 (ring) ───────────────────────────────────────────────────────────
@@ -339,4 +354,23 @@ unsafe extern "system" {
     /// `BOOL MoveFileExW(LPCWSTR lpExisting, LPCWSTR lpNew, DWORD dwFlags)`
     /// Passing NULL for lpNew with MOVEFILE_DELAY_UNTIL_REBOOT schedules deletion.
     fn MoveFileExW(lpExisting: *const u16, lpNew: *const u16, dwFlags: u32) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checksum_exact_match_only() {
+        let sums = "aaa  komari-agent-rs-linux-x86_64-default\nbbb  komari-agent-rs-linux-x86_64-full\nccc *komari-agent-rs-macos-arm64\n";
+        assert_eq!(find_checksum(sums, "komari-agent-rs-linux-x86_64-full"), Some("bbb"));
+        assert_eq!(find_checksum(sums, "komari-agent-rs-macos-arm64"), Some("ccc"));
+        assert_eq!(find_checksum(sums, "komari-agent-rs-linux-x86_64"), None);
+    }
+
+    #[test]
+    fn asset_url_lookup() {
+        let json = r#"{"assets":[{"name":"a","browser_download_url":"https://x/a"},{"name":"checksums.txt","browser_download_url":"https://x/c"}]}"#;
+        assert_eq!(json_asset_url(json, CHECKSUMS_ASSET).as_deref(), Some("https://x/c"));
+    }
 }
