@@ -57,7 +57,7 @@ if ($Version) {
 $asset    = "komari-agent-rs-windows-$arch.exe"
 $base     = if ($GitHubProxy) { "$GitHubProxy/https://github.com" } else { "https://github.com" }
 $dlUrl    = "$base/$Repo/releases/download/$tag/$asset"
-$sha256Url = "$dlUrl.sha256"
+$sha256Url = ($dlUrl -replace '/[^/]+$', '/checksums.txt')
 
 # ── Prepare install directory ────────────────────────────────────────
 $null = New-Item -ItemType Directory -Path $InstallDir -Force
@@ -79,22 +79,33 @@ $binSize = (Get-Item $binPath).Length
 ok "Downloaded $asset ($('{0:N0}' -f $binSize) bytes)"
 
 # ── SHA256 verification ──────────────────────────────────────────────
-info "Downloading SHA256 checksum..."
+info "Downloading checksums.txt..."
 try {
     $sha256Resp = Invoke-WebRequest -Uri $sha256Url -UseBasicParsing
-    $expectedHash = ($sha256Resp.Content -split '\s+')[0].Trim().ToLower()
+    # Release assets are served as application/octet-stream -> byte[]; tolerate string too.
+    $sumsText = if ($sha256Resp.Content -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($sha256Resp.Content) } else { [string]$sha256Resp.Content }
 } catch {
-    warn "Could not download SHA256 from $sha256Url (skipping verification)"
-    $expectedHash = $null
+    Remove-Item $binPath -Force -ErrorAction SilentlyContinue
+    fatal "Could not download $sha256Url - refusing to install an unverified binary"
 }
-if ($expectedHash) {
-    $actualHash = (Get-FileHash -Path $binPath -Algorithm SHA256).Hash.ToLower()
-    if ($actualHash -eq $expectedHash) {
-        ok "SHA256 verified: $actualHash"
-    } else {
-        Remove-Item $binPath -Force
-        fatal "SHA256 mismatch! Expected: $expectedHash  Got: $actualHash"
+$expectedHash = $null
+foreach ($line in ($sumsText -split "`r?`n")) {
+    $parts = $line.Trim() -split '\s+'
+    if ($parts.Count -ge 2 -and $parts[1].TrimStart('*') -eq $asset) {
+        $expectedHash = $parts[0].ToLower()
+        break
     }
+}
+if (-not $expectedHash) {
+    Remove-Item $binPath -Force -ErrorAction SilentlyContinue
+    fatal "No checksum entry for $asset in checksums.txt - refusing to install"
+}
+$actualHash = (Get-FileHash -Path $binPath -Algorithm SHA256).Hash.ToLower()
+if ($actualHash -eq $expectedHash) {
+    ok "SHA256 verified: $actualHash"
+} else {
+    Remove-Item $binPath -Force
+    fatal "SHA256 mismatch! Expected: $expectedHash  Got: $actualHash"
 }
 
 # ── Create config template ───────────────────────────────────────────

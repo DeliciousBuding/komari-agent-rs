@@ -120,7 +120,7 @@ ok "Binary downloaded"
 # sha256 verify
 info "Verifying checksum ..."
 if curl -fSL --progress-bar -o "${TMP_DIR}/${checksums}" "${chk_url}" 2>/dev/null; then
-  expected=$(grep "${file}" "${TMP_DIR}/${checksums}" | awk '{print $1}' | head -1)
+  expected=$(awk -v f="${file}" '{n=$2; sub(/^\*/,"",n)} n==f {print $1; exit}' "${TMP_DIR}/${checksums}")
   if [ -n "${expected}" ]; then
     if command -v sha256sum >/dev/null 2>&1; then
       actual=$(sha256sum "${TMP_DIR}/${file}" | awk '{print $1}')
@@ -130,10 +130,10 @@ if curl -fSL --progress-bar -o "${TMP_DIR}/${checksums}" "${chk_url}" 2>/dev/nul
     [ "${expected}" = "${actual}" ] || err "SHA256 mismatch!\n  Expected: ${expected}\n  Actual:   ${actual}"
     ok "SHA256 verified"
   else
-    warn "Hash entry not found — skipping verification"
+    err "No checksum entry for ${file} in ${checksums} — refusing to install"
   fi
 else
-  warn "Checksums not available — skipping verification"
+  err "Could not download ${checksums} — refusing to install an unverified binary"
 fi
 
 # install binary
