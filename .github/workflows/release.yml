@@ -22,6 +22,9 @@ jobs:
   build:
     name: build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    env:
+      # See ci.yml build-macos: keep ring's objects and the linker on one target.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     strategy:
       fail-fast: false
       matrix:
