@@ -50,122 +50,171 @@ impl TaskKind {
 // Ping handler (feature-gated)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Minimal byte-scanner: extract a JSON string value for `key` from raw JSON bytes.
-/// Handles both `"key":"value"` (v1) and `"key":"value"` (v2 camelCase).
-/// Returns `None` if the key is not found or the JSON is malformed.
-pub(crate) fn extract_json_string(params: &[u8], key: &str) -> Option<String> {
-    let text = std::str::from_utf8(params).ok()?;
+// ── Minimal JSON field scanner ───────────────────────────────────────────
+//
+// Server events arrive as `{"id","method","params":{...}}` (Komari 1.5.x), so
+// payload fields (`task_id`, `command`, `ping_type`, ...) live in the nested
+// `params` object, while v1 / older servers put them at the top level. The
+// lookup therefore checks the top-level object first and then descends into
+// `params`. Only keys of the object being scanned are matched — a key buried
+// inside some other nested value (or inside a string) never matches.
 
-    // Manual scan: find `"key":`
-    let mut i = 0;
-    while i < text.len() {
-        // Skip whitespace
-        while i < text.len() && text.as_bytes()[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= text.len() {
-            break;
-        }
-
-        // Expect a quote
-        if text.as_bytes()[i] != b'"' {
-            i += 1;
-            continue;
-        }
-        i += 1; // skip opening quote
-
-        // Match key bytes
-        let key_start = i;
-        while i < text.len() && text.as_bytes()[i] != b'"' {
-            i += 1;
-        }
-        let found_key = &text[key_start..i];
-        i += 1; // skip closing quote
-
-        // Skip `:`
-        while i < text.len() && text.as_bytes()[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= text.len() || text.as_bytes()[i] != b':' {
-            continue;
-        }
-        i += 1; // skip colon
-        while i < text.len() && text.as_bytes()[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        if found_key == key {
-            // Extract the value — expect a JSON string
-            if i < text.len() && text.as_bytes()[i] == b'"' {
-                i += 1;
-                let val_start = i;
-                while i < text.len() && text.as_bytes()[i] != b'"' {
-                    i += 1;
-                }
-                return Some(text[val_start..i].to_string());
-            }
-            return None;
-        }
-
-        // Skip the value (handle string, number, object, array)
-        if i < text.len() {
-            match text.as_bytes()[i] {
-                b'"' => {
-                    i += 1;
-                    while i < text.len() && text.as_bytes()[i] != b'"' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-                b'{' | b'[' => {
-                    let open = text.as_bytes()[i];
-                    let close = if open == b'{' { b'}' } else { b']' };
-                    let mut depth = 1u32;
-                    i += 1;
-                    while i < text.len() && depth > 0 {
-                        match text.as_bytes()[i] {
-                            c if c == open => depth += 1,
-                            c if c == close => depth -= 1,
-                            _ => {}
-                        }
-                        i += 1;
-                    }
-                }
-                _ => {
-                    // number, true, false, null — skip until comma or closing brace
-                    while i < text.len() && text.as_bytes()[i] != b',' && text.as_bytes()[i] != b'}'
-                    {
-                        i += 1;
-                    }
-                }
-            }
-        }
+fn skip_ws(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
     }
-    None
+    i
 }
 
-/// Extract a JSON number value for `key` (used for numeric `task_id` fields).
-/// Returns the parsed i64, or None if absent / not a number.
-pub(crate) fn extract_json_number(params: &[u8], key: &str) -> Option<i64> {
-    let text = std::str::from_utf8(params).ok()?;
-    let needle = format!("\"{key}\"");
-    let mut idx = text.find(&needle)?;
-    idx += needle.len();
-    let bytes = text.as_bytes();
-    // Skip whitespace + colon + whitespace.
-    while idx < bytes.len()
-        && (bytes[idx] == b' ' || bytes[idx] == b':' || bytes[idx] == b'\t' || bytes[idx] == b'\n')
-    {
-        idx += 1;
+/// Return the index just past the string whose opening quote is at `i`.
+fn skip_string(b: &[u8], mut i: usize) -> usize {
+    i += 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
     }
-    let start = idx;
-    while idx < bytes.len() && (bytes[idx].is_ascii_digit() || bytes[idx] == b'-') {
-        idx += 1;
+    b.len()
+}
+
+/// Return the index just past the JSON value starting at `i`.
+fn skip_value(b: &[u8], i: usize) -> usize {
+    if i >= b.len() {
+        return b.len();
     }
-    if start == idx {
+    match b[i] {
+        b'"' => skip_string(b, i),
+        b'{' | b'[' => {
+            let mut depth = 0u32;
+            let mut j = i;
+            while j < b.len() {
+                match b[j] {
+                    b'"' => {
+                        j = skip_string(b, j);
+                        continue;
+                    }
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return j + 1;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            b.len()
+        }
+        _ => {
+            let mut j = i;
+            while j < b.len() && !matches!(b[j], b',' | b'}' | b']') && !b[j].is_ascii_whitespace()
+            {
+                j += 1;
+            }
+            j
+        }
+    }
+}
+
+/// Raw value slice of `key` among the direct members of the object in `b`.
+fn object_field<'a>(b: &'a [u8], key: &str) -> Option<&'a [u8]> {
+    let mut i = skip_ws(b, 0);
+    if b.get(i) != Some(&b'{') {
         return None;
     }
-    text[start..idx].parse::<i64>().ok()
+    i += 1;
+    loop {
+        i = skip_ws(b, i);
+        match b.get(i)? {
+            b'}' => return None,
+            b',' => {
+                i += 1;
+                continue;
+            }
+            b'"' => {}
+            _ => return None,
+        }
+        let key_end = skip_string(b, i);
+        let name = &b[i + 1..key_end.saturating_sub(1).max(i + 1)];
+        i = skip_ws(b, key_end);
+        if b.get(i) != Some(&b':') {
+            return None;
+        }
+        i = skip_ws(b, i + 1);
+        let end = skip_value(b, i);
+        if name == key.as_bytes() {
+            return Some(&b[i..end]);
+        }
+        i = end;
+    }
+}
+
+/// Look `key` up at the top level, then inside the nested `params` object.
+fn lookup_field<'a>(data: &'a [u8], key: &str) -> Option<&'a [u8]> {
+    object_field(data, key).or_else(|| object_field(object_field(data, "params")?, key))
+}
+
+/// Decode a raw JSON string token (with quotes) into a `String`.
+fn decode_json_string(raw: &[u8]) -> Option<String> {
+    if raw.len() < 2 || raw[0] != b'"' || raw[raw.len() - 1] != b'"' {
+        return None;
+    }
+    let text = std::str::from_utf8(&raw[1..raw.len() - 1]).ok()?;
+    if !text.contains('\\') {
+        return Some(text.to_string());
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next()? {
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'b' => out.push('\u{8}'),
+            'f' => out.push('\u{c}'),
+            'u' => {
+                let hex: String = it.by_ref().take(4).collect();
+                let mut cp = u32::from_str_radix(&hex, 16).ok()?;
+                if (0xD800..0xDC00).contains(&cp) {
+                    // High surrogate: must be followed by `\uXXXX` low surrogate.
+                    if it.next()? != '\\' || it.next()? != 'u' {
+                        return None;
+                    }
+                    let lo_hex: String = it.by_ref().take(4).collect();
+                    let lo = u32::from_str_radix(&lo_hex, 16).ok()?;
+                    if !(0xDC00..0xE000).contains(&lo) {
+                        return None;
+                    }
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                }
+                out.push(char::from_u32(cp)?);
+            }
+            other => out.push(other), // `"`, `\`, `/`
+        }
+    }
+    Some(out)
+}
+
+/// Extract a JSON string value for `key` (top level, else nested `params`).
+/// Escape sequences are decoded. Returns `None` if the key is missing, the
+/// value is not a string, or the JSON is malformed.
+pub(crate) fn extract_json_string(params: &[u8], key: &str) -> Option<String> {
+    decode_json_string(lookup_field(params, key)?)
+}
+
+/// Extract an integer value for `key` (top level, else nested `params`).
+/// Accepts both `123` and a quoted `"123"` (servers differ on task id type).
+pub(crate) fn extract_json_number(params: &[u8], key: &str) -> Option<i64> {
+    let raw = lookup_field(params, key)?;
+    let text = std::str::from_utf8(raw).ok()?;
+    text.trim_matches('"').parse::<i64>().ok()
 }
 
 /// Extract the `"method":"..."` value from a JSON-RPC message.
@@ -875,5 +924,52 @@ mod ping_retry_tests {
         });
         assert_eq!(rtt, 800);
         assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn extract_string_nested_params() {
+        let ev = br#"{"id":"e1","method":"agent.exec","params":{"task_id":"t9","command":"echo hi"}}"#;
+        assert_eq!(extract_json_string(ev, "task_id").as_deref(), Some("t9"));
+        assert_eq!(extract_json_string(ev, "command").as_deref(), Some("echo hi"));
+        assert_eq!(extract_json_string(ev, "method").as_deref(), Some("agent.exec"));
+    }
+
+    #[test]
+    fn extract_string_top_level_wins_and_flat_v1() {
+        let flat = br#"{"message":"exec","task_id":"a","command":"ls"}"#;
+        assert_eq!(extract_json_string(flat, "task_id").as_deref(), Some("a"));
+        let both = br#"{"task_id":"top","params":{"task_id":"inner"}}"#;
+        assert_eq!(extract_json_string(both, "task_id").as_deref(), Some("top"));
+    }
+
+    #[test]
+    fn extract_string_decodes_escapes() {
+        let ev = br#"{"params":{"command":"echo \"a\"\nls \\ \u00e9 \ud83d\ude00"}}"#;
+        assert_eq!(
+            extract_json_string(ev, "command").as_deref(),
+            Some("echo \"a\"\nls \\ \u{e9} \u{1f600}")
+        );
+    }
+
+    #[test]
+    fn extract_string_ignores_keys_inside_strings_and_other_objects() {
+        let ev = br#"{"note":"\"task_id\":\"fake\"","other":{"task_id":"deep"},"params":{}}"#;
+        assert_eq!(extract_json_string(ev, "task_id"), None);
+    }
+
+    #[test]
+    fn extract_number_nested_and_quoted() {
+        let ev = br#"{"method":"agent.ping","params":{"ping_task_id":42,"x":"7"}}"#;
+        assert_eq!(extract_json_number(ev, "ping_task_id"), Some(42));
+        assert_eq!(extract_json_number(ev, "x"), Some(7));
+        assert_eq!(extract_json_number(ev, "missing"), None);
+    }
+
+    #[test]
+    fn extract_malformed_does_not_panic() {
+        for bad in [&b"{"[..], b"{\"a\"", b"{\"a\":", b"{\"a\":\"\\", b"", b"[1,2]"] {
+            let _ = extract_json_string(bad, "a");
+            let _ = extract_json_number(bad, "a");
+        }
     }
 }
