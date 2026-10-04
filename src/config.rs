@@ -81,7 +81,7 @@ pub struct Config {
     pub token: String,    // AGENT_TOKEN,    --token / -t
 
     // -- Timing --
-    pub interval: f64, // AGENT_INTERVAL,             --interval / -i,          default 1.0
+    pub interval: f64, // AGENT_INTERVAL,             --interval / -i,          default 3.0
     pub info_report_interval: u64, // AGENT_INFO_REPORT_INTERVAL, --info-report-interval,   default 5 (min)
     pub reconnect_interval: u64, // AGENT_RECONNECT_INTERVAL,   --reconnect-interval / -c, default 5 (sec)
     pub max_retries: u64,        // AGENT_MAX_RETRIES,          --max-retries / -r,       default 10
@@ -134,7 +134,7 @@ impl Default for Config {
         Self {
             endpoint: String::new(),
             token: String::new(),
-            interval: 1.0,
+            interval: 3.0,
             info_report_interval: 5,
             reconnect_interval: 5,
             max_retries: 10,
@@ -277,7 +277,7 @@ pub fn help_text() -> &'static str {
      \n\
      Connection & protocol:\n  \
      --config <file>                 JSON config file (highest priority; overrides flags + env)\n  \
-     --interval <sec>                Report interval in seconds (default 1.0)\n  \
+     --interval <sec>                Report interval in seconds (default 3.0)\n  \
      --info-report-interval <sec>    basicInfo upload interval (default 5)\n  \
      --reconnect-interval <sec>      Reconnect backoff (default 5)\n  \
      --max-retries <n>               Max retries before downshift (default 5)\n  \
@@ -1610,7 +1610,7 @@ mod tests {
     #[test]
     fn test_defaults() {
         let c = Config::default();
-        assert_eq!(c.interval, 1.0);
+        assert_eq!(c.interval, 3.0);
         assert_eq!(c.info_report_interval, 5);
         assert_eq!(c.reconnect_interval, 5);
         assert_eq!(c.max_retries, 10);

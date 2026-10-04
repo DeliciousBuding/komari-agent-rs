@@ -192,7 +192,7 @@ Every option can be passed as a CLI flag, an `AGENT_*` environment variable, or 
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--interval` / `-i` | `AGENT_INTERVAL` | `1` | Metrics reporting interval (seconds) |
+| `--interval` / `-i` | `AGENT_INTERVAL` | `3` | Metrics reporting interval (seconds) |
 | `--info-report-interval` | `AGENT_INFO_REPORT_INTERVAL` | `5` | Static basic-info refresh (minutes) |
 | `--reconnect-interval` / `-c` | `AGENT_RECONNECT_INTERVAL` | `5` | Reconnect base delay (seconds) |
 | `--max-retries` / `-r` | `AGENT_MAX_RETRIES` | `10` | Max reconnect attempts before giving up |
