@@ -85,6 +85,9 @@ fn parse_stat(stat: &str) -> Result<(u64, u64), MetricErr> {
 fn parse_cpuinfo(data: &str) -> (String, u32, u32) {
     let mut name = String::from("Unknown");
     let mut processors: u32 = 0;
+    // aarch64 /proc/cpuinfo has no "model name"; keep implementer/part as fallback.
+    let mut implementer: Option<u32> = None;
+    let mut part: Option<u32> = None;
     let mut phys = [u32::MAX; 256];
     let mut phys_n: u32 = 0;
 
@@ -96,6 +99,20 @@ fn parse_cpuinfo(data: &str) -> (String, u32, u32) {
                     break;
                 }
             }
+        }
+        if implementer.is_none()
+            && let Some(v) = line
+                .strip_prefix("CPU implementer")
+                .and_then(|r| r.strip_prefix("\t: "))
+        {
+            implementer = parse_hex(v);
+        }
+        if part.is_none()
+            && let Some(v) = line
+                .strip_prefix("CPU part")
+                .and_then(|r| r.strip_prefix("\t: "))
+        {
+            part = parse_hex(v);
         }
         if line
             .strip_prefix("processor")
@@ -116,5 +133,61 @@ fn parse_cpuinfo(data: &str) -> (String, u32, u32) {
             }
         }
     }
+    if name == "Unknown"
+        && let (Some(i), Some(p)) = (implementer, part)
+    {
+        name = arm_core_name(i, p);
+    }
     (name, processors.max(1), phys_n)
+}
+
+fn parse_hex(v: &str) -> Option<u32> {
+    u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok()
+}
+
+/// Human-readable name for an ARM `(implementer, part)` pair; unknown cores
+/// fall back to the raw ids so the display is never just "Unknown".
+fn arm_core_name(implementer: u32, part: u32) -> String {
+    let known = match (implementer, part) {
+        (0x41, 0xd03) => "Cortex-A53",
+        (0x41, 0xd05) => "Cortex-A55",
+        (0x41, 0xd07) => "Cortex-A57",
+        (0x41, 0xd08) => "Cortex-A72",
+        (0x41, 0xd09) => "Cortex-A73",
+        (0x41, 0xd0a) => "Cortex-A75",
+        (0x41, 0xd0b) => "Cortex-A76",
+        (0x41, 0xd0c) => "Neoverse-N1",
+        (0x41, 0xd40) => "Neoverse-V1",
+        (0x41, 0xd49) => "Neoverse-N2",
+        (0x41, 0xd4f) => "Neoverse-V2",
+        (0x61, _) => "Apple Silicon",
+        (0x51, _) => "Qualcomm Kryo",
+        _ => "",
+    };
+    if !known.is_empty() {
+        return format!("ARM {known}");
+    }
+    format!("ARM (implementer 0x{implementer:02x}, part 0x{part:03x})")
+}
+
+#[cfg(test)]
+mod arm_name_tests {
+    use super::*;
+
+    #[test]
+    fn aarch64_cpuinfo_without_model_name() {
+        let data = "processor\t: 0\nBogoMIPS\t: 50.00\nCPU implementer\t: 0x41\nCPU part\t: 0xd0c\n\nprocessor\t: 1\nCPU implementer\t: 0x41\nCPU part\t: 0xd0c\n";
+        let (name, cores, _) = parse_cpuinfo(data);
+        assert_eq!(name, "ARM Neoverse-N1");
+        assert_eq!(cores, 2);
+    }
+
+    #[test]
+    fn unknown_arm_core_shows_ids_and_model_name_wins() {
+        let (n, _, _) = parse_cpuinfo("processor\t: 0\nCPU implementer\t: 0xaa\nCPU part\t: 0x123\n");
+        assert_eq!(n, "ARM (implementer 0xaa, part 0x123)");
+        let (n, _, _) = parse_cpuinfo("model name\t: Foo CPU\nCPU implementer\t: 0x41\nCPU part\t: 0xd0c\n");
+        assert_eq!(n, "Foo CPU");
+        assert_eq!(parse_cpuinfo("processor\t: 0\n").0, "Unknown");
+    }
 }
