@@ -5,6 +5,7 @@ use super::usage_from_ticks;
 use crate::arena::ScratchArena;
 use std::fs;
 use std::io;
+use std::sync::OnceLock;
 
 #[derive(Debug)]
 pub enum MetricErr {
@@ -47,7 +48,17 @@ pub fn collect_cpu<'a>(
     prev.idle = idle;
 
     // ── /proc/cpuinfo: name, logical cores, physical cores ──
-    let (name, cores, physical_cores) = parse_cpuinfo(&fs::read_to_string("/proc/cpuinfo")?);
+    // Static for the process lifetime; reading + parsing it every tick is
+    // expensive on many-core hosts. Only a successful read is cached.
+    static STATIC_INFO: OnceLock<(String, u32, u32)> = OnceLock::new();
+    let (name, cores, physical_cores) = match STATIC_INFO.get() {
+        Some(v) => v,
+        None => {
+            let parsed = parse_cpuinfo(&fs::read_to_string("/proc/cpuinfo")?);
+            STATIC_INFO.get_or_init(|| parsed)
+        }
+    };
+    let (cores, physical_cores) = (*cores, *physical_cores);
 
     // Single arena alloc for both strings (avoids double &mut borrow).
     let nb = name.as_bytes();
