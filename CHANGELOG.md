@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Nested `params` parsing**: Komari 1.5.x delivers `task_id` / `command` /
+  `ping_*` / `request_id` inside the event's `params` object. The field scanner
+  now checks the top level, then `params`, and decodes JSON escapes (`\"`,
+  `\n`, `\uXXXX`) — previously `exec` was dropped with "without task_id" and
+  commands containing quotes were truncated.
+- **Self-update**: Linux asset names now carry the `-full` suffix and the
+  checksum file is `checksums.txt` (was `SHA256SUMS`, which the release never
+  shipped); checksum lookup is an exact filename match.
+- **`full` build on Rust >= 1.99**: PTY FFI declarations of `read`/`write`/`open`
+  now match libc's ABI (`open` is variadic) — was a deny-by-default lint error.
+- **Installers** (`install.sh`, `install.ps1`) refuse to install when the
+  checksum cannot be fetched or has no entry. `install.ps1` previously fetched
+  a non-existent `<asset>.sha256` and silently skipped verification.
+- **CPU name on aarch64** no longer reports `Unknown` when `/proc/cpuinfo` has
+  no `model name`; derived from `CPU implementer` / `CPU part`.
+
+### Changed
+- Default report `--interval` is now 3 s (matches the Go agent; was 1 s).
+- `/proc/cpuinfo` is parsed once per process instead of every tick.
+
 ## v0.5.0 (2026-09-23)
 
 Follows the upstream server's post-1.5.0-fix1 agent-control additions
