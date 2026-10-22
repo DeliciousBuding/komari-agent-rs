@@ -100,7 +100,7 @@ struct MIB_IF_ROW2 {
     interface_luid: u64,
     _pad0: [u8; 0x1C - 8],
     // 0x01C..0x21E: Alias [u16;257] = 514 bytes
-    _alias: [u16; IF_MAX_STRING_SIZE + 1], // offset 0x01C, size 514
+    alias: [u16; IF_MAX_STRING_SIZE + 1], // offset 0x01C, size 514
     description: [u16; IF_MAX_STRING_SIZE + 1], // offset 0x21E, size 514
     // 0x420..0x468: PhysicalAddressLength(4) + PhysicalAddress(32) +
     //                PermanentPhysicalAddress(32) + Mtu(4) = 72 bytes
@@ -138,11 +138,12 @@ unsafe extern "system" {
     fn FreeMibTable(memory: *mut std::ffi::c_void);
 }
 
-const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
 // MIB_IF_ROW2::InterfaceAndOperStatusFlags.FilterInterface (netioapi.h).
 // These NDIS filter rows duplicate an adapter rather than a traffic source.
 const FILTER_INTERFACE: u8 = 1 << 1;
+#[cfg(test)]
 const IF_OPER_STATUS_UP: u32 = 1;
+#[cfg(test)]
 const MEDIA_CONNECT_STATE_CONNECTED: u32 = 1;
 const NO_ERROR: u32 = 0;
 
@@ -200,35 +201,14 @@ fn collect_rows(
         if row.interface_flags & FILTER_INTERFACE != 0 {
             continue;
         }
-        if row.oper_status != IF_OPER_STATUS_UP {
+        // Go gopsutil uses net.Interfaces().Name (the Windows alias), not the
+        // hardware description. Keep inactive cumulative counters as Go does.
+        let name = wide_to_utf8(&row.alias);
+        if name.is_empty() || !super::include_nic(&name, config) {
             continue;
         }
-        if row.media_connect_state != MEDIA_CONNECT_STATE_CONNECTED {
-            continue;
-        }
-        if row.if_type == IF_TYPE_SOFTWARE_LOOPBACK {
-            continue;
-        }
-
-        let desc = wide_to_utf8(&row.description);
-        if desc.is_empty() || desc == "Unknown" {
-            continue;
-        }
-
-        let use_whitelist = !config.include_nics.is_empty();
-        let included = if use_whitelist {
-            config
-                .include_nics
-                .iter()
-                .any(|p| desc.contains(p.as_str()))
-        } else {
-            true
-        };
-        let excluded = config
-            .exclude_nics
-            .iter()
-            .any(|p| desc.contains(p.as_str()));
-        if !included || excluded {
+        // NDIS filter rows and duplicate LUIDs must not inflate traffic.
+        if luids[..nc as usize].contains(&row.interface_luid) {
             continue;
         }
 
@@ -250,7 +230,7 @@ fn collect_rows(
             None => (0, 0),
         };
 
-        let (name_buf, name_len) = fit_name(&desc);
+        let (name_buf, name_len) = fit_name(&name);
 
         let _ = out.push(NetInfo {
             name_buf,
@@ -291,7 +271,7 @@ mod tests {
         row.oper_status = IF_OPER_STATUS_UP;
         row.media_connect_state = MEDIA_CONNECT_STATE_CONNECTED;
         row.if_type = 6; // ethernet
-        for (dst, src) in row.description.iter_mut().zip(name.encode_utf16()) {
+        for (dst, src) in row.alias.iter_mut().zip(name.encode_utf16()) {
             *dst = src;
         }
         row.in_octets = rx;
@@ -361,12 +341,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn selection_uses_alias_globs_and_include_wins() {
+        let mut adapter = row(1, "Ethernet 2", 0, 10, 20);
+        for (dst, src) in adapter
+            .description
+            .iter_mut()
+            .zip("Synthetic hardware".encode_utf16())
+        {
+            *dst = src;
+        }
+        let mut config = Config::default();
+        config.include_nics = vec!["Ethernet ?".into()];
+        config.exclude_nics = vec!["Ethernet*".into()];
+        let nets = collect_rows(
+            std::slice::from_ref(&adapter),
+            &config,
+            &mut PrevNetSnapshot::new(),
+            Instant::now(),
+        );
+        assert_eq!(nets.len(), 1);
+        assert_eq!(nets[0].name(), "Ethernet 2");
+        config.include_nics = vec!["Ethernet".into()];
+        let nets = collect_rows(
+            std::slice::from_ref(&adapter),
+            &config,
+            &mut PrevNetSnapshot::new(),
+            Instant::now(),
+        );
+        assert!(
+            nets.is_empty(),
+            "patterns match the whole alias, not substrings"
+        );
+        config.include_nics = vec!["Synthetic*".into()];
+        let nets = collect_rows(
+            std::slice::from_ref(&adapter),
+            &config,
+            &mut PrevNetSnapshot::new(),
+            Instant::now(),
+        );
+        assert!(
+            nets.is_empty(),
+            "hardware description is not an interface alias"
+        );
+    }
+
+    #[test]
+    fn inactive_alias_counters_survive_and_duplicate_luids_do_not() {
+        let mut adapter = row(1, "Ethernet", 0, 10, 20);
+        adapter.oper_status = 2; // down: cumulative counters still count
+        adapter.media_connect_state = 2; // disconnected
+        let mut duplicate = row(1, "Ethernet", 0, 10, 20);
+        duplicate.oper_status = 2;
+        duplicate.media_connect_state = 2;
+        let nets = collect_rows(
+            &[adapter, duplicate],
+            &Config::default(),
+            &mut PrevNetSnapshot::new(),
+            Instant::now(),
+        );
+        assert_eq!(nets.len(), 1);
+        assert_eq!((nets[0].total_down, nets[0].total_up), (10, 20));
+    }
+
     /// Regression for the MIB_IF_ROW2 byte-offset fix.
     ///
     /// The struct's `InterfaceGuid` field is 4-byte aligned (its first member
     /// is a ULONG), so it lands at 0x00C, not 0x010. Hand-rolling the struct
     /// with 8-byte GUID alignment shifts every field after it by 4 bytes; the
-    /// Up+Connected+non-loopback filter then rejects every adapter and
+    /// Status fields then read incorrectly and
     /// `total_up`/`total_down` read as 0 even on hosts with heavy traffic. On
     /// any active Windows host at least one qualifying adapter must survive
     /// the filter — if none do, the offsets have regressed. We assert on the
@@ -402,7 +445,7 @@ mod tests {
         // NIC can be momentarily quiet); they are printed above for diagnosis.
         assert!(
             !nets.is_empty(),
-            "MIB_IF_ROW2 offsets regressed: no adapter passed the Up+Connected filter"
+            "MIB_IF_ROW2 offsets regressed: no named non-filter adapter was collected"
         );
     }
 }
