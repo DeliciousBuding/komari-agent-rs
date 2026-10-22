@@ -9,6 +9,212 @@
 // dead_code for the complete encoder surface.
 #![allow(dead_code)]
 
+// Shared field scanner for cold-path server events and release metadata.
+fn skip_ws(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Return the index just past the string whose opening quote is at `i`.
+fn skip_string(b: &[u8], mut i: usize) -> usize {
+    i += 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    b.len()
+}
+
+/// Return the exclusive end of a value; malformed values return the input length.
+pub(crate) fn skip_value(b: &[u8], i: usize) -> usize {
+    value_end(b, i, 0).unwrap_or(b.len())
+}
+
+fn value_end(b: &[u8], i: usize, depth: usize) -> Option<usize> {
+    if depth > 32 {
+        return None;
+    }
+    match *b.get(i)? {
+        b'"' => {
+            let end = skip_string(b, i);
+            decode_json_string(b.get(i..end)?)?;
+            Some(end)
+        }
+        open @ (b'{' | b'[') => {
+            let close = if open == b'{' { b'}' } else { b']' };
+            let mut j = skip_ws(b, i + 1);
+            if b.get(j) == Some(&close) {
+                return Some(j + 1);
+            }
+            loop {
+                if open == b'{' {
+                    if b.get(j) != Some(&b'"') {
+                        return None;
+                    }
+                    j = value_end(b, j, depth + 1)?;
+                    j = skip_ws(b, j);
+                    if b.get(j) != Some(&b':') {
+                        return None;
+                    }
+                    j = skip_ws(b, j + 1);
+                }
+                j = skip_ws(b, value_end(b, j, depth + 1)?);
+                if b.get(j) == Some(&close) {
+                    return Some(j + 1);
+                }
+                if b.get(j) != Some(&b',') {
+                    return None;
+                }
+                j = skip_ws(b, j + 1);
+            }
+        }
+        _ => {
+            let end = b[i..]
+                .iter()
+                .position(|c| matches!(c, b',' | b'}' | b']') || c.is_ascii_whitespace())
+                .map_or(b.len(), |n| i + n);
+            let token = std::str::from_utf8(&b[i..end]).ok()?;
+            if matches!(token, "true" | "false" | "null") {
+                return Some(end);
+            }
+            let bytes = token.as_bytes();
+            let mut n = usize::from(bytes.first() == Some(&b'-'));
+            match bytes.get(n)? {
+                b'0' => n += 1,
+                b'1'..=b'9' => {
+                    n += 1;
+                    while bytes.get(n).is_some_and(u8::is_ascii_digit) {
+                        n += 1;
+                    }
+                }
+                _ => return None,
+            }
+            if bytes.get(n) == Some(&b'.') {
+                n += 1;
+                let start = n;
+                while bytes.get(n).is_some_and(u8::is_ascii_digit) {
+                    n += 1;
+                }
+                if n == start {
+                    return None;
+                }
+            }
+            if matches!(bytes.get(n), Some(b'e' | b'E')) {
+                n += 1;
+                if matches!(bytes.get(n), Some(b'+' | b'-')) {
+                    n += 1;
+                }
+                let start = n;
+                while bytes.get(n).is_some_and(u8::is_ascii_digit) {
+                    n += 1;
+                }
+                if n == start {
+                    return None;
+                }
+            }
+            (n == bytes.len()).then_some(end)
+        }
+    }
+}
+
+/// Direct object lookup. Reject malformed/trailing data and duplicate target keys.
+pub(crate) fn object_field<'a>(b: &'a [u8], key: &str) -> Option<&'a [u8]> {
+    let start = skip_ws(b, 0);
+    if b.get(start) != Some(&b'{') {
+        return None;
+    }
+    let end = value_end(b, start, 0)?;
+    if skip_ws(b, end) != b.len() {
+        return None;
+    }
+    let mut i = skip_ws(b, start + 1);
+    let mut found = None;
+    while b.get(i) != Some(&b'}') {
+        let key_end = value_end(b, i, 1)?;
+        let name = decode_json_string(&b[i..key_end])?;
+        i = skip_ws(b, key_end);
+        if b.get(i) != Some(&b':') {
+            return None;
+        }
+        i = skip_ws(b, i + 1);
+        let value_end = value_end(b, i, 1)?;
+        if name == key {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(&b[i..value_end]);
+        }
+        i = skip_ws(b, value_end);
+        if b.get(i) == Some(&b',') {
+            i = skip_ws(b, i + 1);
+        }
+    }
+    found
+}
+
+/// Decode a raw JSON string token (with quotes) into a `String`.
+pub(crate) fn decode_json_string(raw: &[u8]) -> Option<String> {
+    if raw.len() < 2 || raw[0] != b'"' || raw[raw.len() - 1] != b'"' {
+        return None;
+    }
+    let text = std::str::from_utf8(&raw[1..raw.len() - 1]).ok()?;
+    if text.chars().any(|c| c <= '\u{1f}' || c == '"') && !text.contains('\\') {
+        return None;
+    }
+    if !text.contains('\\') {
+        return Some(text.to_string());
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            if c <= '\u{1f}' || c == '"' {
+                return None;
+            }
+            out.push(c);
+            continue;
+        }
+        match it.next()? {
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'b' => out.push('\u{8}'),
+            'f' => out.push('\u{c}'),
+            'u' => {
+                let hex: String = it.by_ref().take(4).collect();
+                if hex.len() != 4 {
+                    return None;
+                }
+                let mut cp = u32::from_str_radix(&hex, 16).ok()?;
+                if (0xD800..0xDC00).contains(&cp) {
+                    // High surrogate: must be followed by `\uXXXX` low surrogate.
+                    if it.next()? != '\\' || it.next()? != 'u' {
+                        return None;
+                    }
+                    let lo_hex: String = it.by_ref().take(4).collect();
+                    if lo_hex.len() != 4 {
+                        return None;
+                    }
+                    let lo = u32::from_str_radix(&lo_hex, 16).ok()?;
+                    if !(0xDC00..0xE000).contains(&lo) {
+                        return None;
+                    }
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                }
+                out.push(char::from_u32(cp)?);
+            }
+            other @ ('"' | '\\' | '/') => out.push(other),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -627,5 +833,31 @@ impl<T: EncodeJson> EncodeJson for &[T] {
             item.encode_json(j)?;
         }
         j.end_arr()
+    }
+}
+
+#[cfg(test)]
+mod scanner_regressions {
+    use super::*;
+    #[test]
+    fn reject_invalid_escapes_and_unescaped_controls() {
+        for raw in [
+            r#""\q""#,
+            r#""\u1""#,
+            r#""\uZZZZ""#,
+            r#""\uD800""#,
+            r#""\uDC00""#,
+            "\"a\nb\"",
+            "\"a\u{0}b\"",
+        ] {
+            assert!(
+                decode_json_string(raw.as_bytes()).is_none(),
+                "accepted {raw:?}"
+            );
+        }
+        assert_eq!(
+            decode_json_string(br#""\uD83D\uDE00\n\"\\\/""#).as_deref(),
+            Some("😀\n\"\\/")
+        );
     }
 }

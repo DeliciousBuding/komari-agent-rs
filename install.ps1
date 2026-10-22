@@ -1,12 +1,4 @@
-# komari-agent-rs Windows Installer
-# Downloads binary from GitHub Releases, verifies SHA256, creates config,
-# and registers a Scheduled Task for continuous execution.
-#
-# Usage:
-#   .\install.ps1 -Token "mytoken" -Endpoint "https://komari.example.com"
-#   .\install.ps1 -Token "mytoken" -Endpoint "..." -Version "v0.2.0"
-#   .\install.ps1 -Token "mytoken" -Endpoint "..." -GitHubProxy "https://ghproxy.com"
-
+# Windows installer. Downloads and verifies before touching a running installation.
 param(
     [string]$Token,
     [string]$Endpoint,
@@ -14,135 +6,137 @@ param(
     [string]$InstallDir = "$env:ProgramData\komari-agent",
     [string]$GitHubProxy = ""
 )
-
 $ErrorActionPreference = "Stop"
-$Repo       = "DeliciousBuding/komari-agent-rs"
-$BinaryName = "komari-agent-rs.exe"
-$ConfigName = "config.json"
-$TaskName   = "komari-agent-rs"
 
-# ── Logging ──────────────────────────────────────────────────────────
-function info  { Write-Host "  $args" -ForegroundColor Cyan }
-function ok    { Write-Host "  [OK] $args" -ForegroundColor Green }
-function warn  { Write-Host "  [WARN] $args" -ForegroundColor Yellow }
-function fatal { Write-Host "[FATAL] $args" -ForegroundColor Red; exit 1 }
-
-# ── Admin check ──────────────────────────────────────────────────────
-$isAdmin = [Security.Principal.WindowsPrincipal]::new(
-    [Security.Principal.WindowsIdentity]::GetCurrent()
-).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
-if (-not $isAdmin) { fatal "Please run this script as Administrator." }
-
-# ── Architecture detection ───────────────────────────────────────────
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
-    'AMD64' { 'amd64' }
-    'ARM64' { 'arm64' }
-    default { fatal "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
+function Get-AgentAsset([string]$Architecture) {
+    if ($Architecture -ne 'AMD64') { throw 'No Windows release asset for this architecture (x86_64 only).' }
+    return 'komari-agent-rs-windows-x86_64.exe'
 }
 
-# ── Determine version ────────────────────────────────────────────────
-if ($Version) {
-    $tag = $Version
-    info "Using specified version: $tag"
-} else {
-    info "Fetching latest release from GitHub API..."
-    try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
-        $tag = $release.tag_name
-        ok "Latest: $tag"
-    } catch { fatal "Failed to fetch latest version: $_" }
+function Get-AgentChecksum([string]$Text, [string]$Asset) {
+    $matchesFound = @($Text -split "\r?\n" | ForEach-Object {
+        $parts = $_.Trim() -split '\s+'
+        if ($parts.Count -eq 2 -and $parts[1].TrimStart('*') -ceq $Asset -and $parts[0] -match '^[a-fA-F0-9]{64}$') {
+            $parts[0].ToLowerInvariant()
+        }
+    })
+    if ($matchesFound.Count -ne 1) { throw 'Missing, duplicate, or malformed checksum entry; refusing installation.' }
+    return $matchesFound[0]
 }
 
-# ── Construct URLs ───────────────────────────────────────────────────
-$asset    = "komari-agent-rs-windows-$arch.exe"
-$base     = if ($GitHubProxy) { "$GitHubProxy/https://github.com" } else { "https://github.com" }
-$dlUrl    = "$base/$Repo/releases/download/$tag/$asset"
-$sha256Url = "$dlUrl.sha256"
-
-# ── Prepare install directory ────────────────────────────────────────
-$null = New-Item -ItemType Directory -Path $InstallDir -Force
-$binPath    = Join-Path $InstallDir $BinaryName
-$configPath = Join-Path $InstallDir $ConfigName
-
-# ── Remove existing task ─────────────────────────────────────────────
-$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if ($existing) {
-    info "Removing existing scheduled task '$TaskName'..."
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-}
-
-# ── Download binary ──────────────────────────────────────────────────
-info "Downloading: $dlUrl"
-try { Invoke-WebRequest -Uri $dlUrl -OutFile $binPath -UseBasicParsing }
-catch { fatal "Download failed: $_" }
-$binSize = (Get-Item $binPath).Length
-ok "Downloaded $asset ($('{0:N0}' -f $binSize) bytes)"
-
-# ── SHA256 verification ──────────────────────────────────────────────
-info "Downloading SHA256 checksum..."
-try {
-    $sha256Resp = Invoke-WebRequest -Uri $sha256Url -UseBasicParsing
-    $expectedHash = ($sha256Resp.Content -split '\s+')[0].Trim().ToLower()
-} catch {
-    warn "Could not download SHA256 from $sha256Url (skipping verification)"
-    $expectedHash = $null
-}
-if ($expectedHash) {
-    $actualHash = (Get-FileHash -Path $binPath -Algorithm SHA256).Hash.ToLower()
-    if ($actualHash -eq $expectedHash) {
-        ok "SHA256 verified: $actualHash"
+function Write-AgentConfig([string]$Path, [string]$NewToken, [string]$NewEndpoint) {
+    if (Test-Path -LiteralPath $Path) {
+        $config = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
     } else {
-        Remove-Item $binPath -Force
-        fatal "SHA256 mismatch! Expected: $expectedHash  Got: $actualHash"
+        $config = [pscustomobject]@{endpoint='';token='';disable_web_ssh=$true;disable_exec=$true;disable_auto_update=$true}
+    }
+    if ($NewToken) { $config | Add-Member -NotePropertyName token -NotePropertyValue $NewToken -Force }
+    if ($NewEndpoint) { $config | Add-Member -NotePropertyName endpoint -NotePropertyValue $NewEndpoint -Force }
+    $json = $config | ConvertTo-Json -Depth 32
+    [IO.File]::WriteAllText($Path, $json, [Text.UTF8Encoding]::new($false))
+    return [bool]($config.token -and $config.endpoint)
+}
+
+function Test-AgentAdministrator {
+    $admin = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $admin.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+}
+
+function Protect-AgentInstallDirectory([string]$Path) {
+    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not protect installation directory.' }
+}
+
+function Install-KomariAgent {
+    if (-not (Test-AgentAdministrator)) {
+        throw 'Run this installer as Administrator.'
+    }
+    $asset = Get-AgentAsset $env:PROCESSOR_ARCHITECTURE
+    $repo = 'DeliciousBuding/komari-agent-rs'
+    $tag = $Version
+    if (-not $tag) {
+        $tag = (Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -UseBasicParsing).tag_name
+    }
+    if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$') { throw 'Invalid release tag.' }
+    $base = "https://github.com/$repo/releases/download/$tag"
+    if ($GitHubProxy) {
+        if ($GitHubProxy -notmatch '^https://') { throw 'GitHub proxy must use HTTPS.' }
+        $base = "$($GitHubProxy.TrimEnd('/'))/$base"
+    }
+    $stage = Join-Path ([IO.Path]::GetTempPath()) ("komari-install-" + [Guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $stage
+    $bin = Join-Path $InstallDir 'komari-agent-rs.exe'
+    $cfg = Join-Path $InstallDir 'config.json'
+    $taskName = 'komari-agent-rs'
+    $oldTaskXml = $null
+    $wasRunning = $false
+    $backupBin = $null
+    $backupConfig = $null
+    $changed = $false
+    try {
+        $download = Join-Path $stage $asset
+        Invoke-WebRequest -Uri "$base/$asset" -OutFile $download -UseBasicParsing
+        $response = Invoke-WebRequest -Uri "$base/checksums.txt" -UseBasicParsing
+        $text = if ($response.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($response.Content) } else { [string]$response.Content }
+        $expected = Get-AgentChecksum $text $asset
+        if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'SHA256 mismatch; existing installation has not been changed.'
+        }
+        $null = New-Item -ItemType Directory -Path $InstallDir -Force
+        # Config contains a credential: limit the installation to SYSTEM/admins.
+        Protect-AgentInstallDirectory $InstallDir
+        $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if ($existing) {
+            $oldTaskXml = Export-ScheduledTask -TaskName $taskName
+            $wasRunning = $existing.State -eq 'Running'
+        }
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ')
+        if (Test-Path -LiteralPath $bin) {
+            $backupBin = "$bin.pre-$stamp"
+            Copy-Item -LiteralPath $bin -Destination $backupBin
+        }
+        if (Test-Path -LiteralPath $cfg) { $backupConfig = [IO.File]::ReadAllBytes($cfg) }
+        if ($existing) { Stop-ScheduledTask -TaskName $taskName }
+        $changed = $true
+        Copy-Item -LiteralPath $download -Destination $bin -Force
+        $ready = Write-AgentConfig $cfg $Token $Endpoint
+        $escapedBin = [Security.SecurityElement]::Escape($bin)
+        $escapedArgs = [Security.SecurityElement]::Escape('--config "' + $cfg + '"')
+        if ($oldTaskXml) {
+            [xml]$xml = $oldTaskXml
+            $xml.Task.Actions.Exec.Command = $bin
+            $xml.Task.Actions.Exec.Arguments = '--config "' + $cfg + '"'
+            $taskXml = $xml.OuterXml
+        } else {
+            $taskXml = @"
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+<Triggers><BootTrigger><Enabled>true</Enabled></BootTrigger></Triggers>
+<Principals><Principal id="System"><UserId>S-1-5-18</UserId><LogonType>ServiceAccount</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure></Settings>
+<Actions Context="System"><Exec><Command>$escapedBin</Command><Arguments>$escapedArgs</Arguments></Exec></Actions>
+</Task>
+"@
+        }
+        Register-ScheduledTask -TaskName $taskName -Xml $taskXml -Force | Out-Null
+        if ($ready) { Start-ScheduledTask -TaskName $taskName }
+        Write-Host "Installed $tag; SHA256 $expected"
+        Write-Host "Config: $cfg (existing fields preserved; credentials are not task arguments)"
+        if (-not $ready) { Write-Host 'Set endpoint/token in the config before starting the task.' }
+    } catch {
+        if ($changed) {
+            try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
+            if ($backupBin) { Copy-Item -LiteralPath $backupBin -Destination $bin -Force }
+            if ($backupConfig) { [IO.File]::WriteAllBytes($cfg, $backupConfig) }
+            if ($oldTaskXml) {
+                Register-ScheduledTask -TaskName $taskName -Xml $oldTaskXml -Force | Out-Null
+                if ($wasRunning) { Start-ScheduledTask -TaskName $taskName }
+            }
+        }
+        throw
+    } finally {
+        # Only the unique staging directory created above; never the install directory.
+        Remove-Item -LiteralPath $stage -Recurse -Force
     }
 }
-
-# ── Create config template ───────────────────────────────────────────
-$config = @{
-    endpoint = if ($Endpoint) { $Endpoint } else { "https://your-komari-server" }
-    token    = if ($Token)    { $Token }    else { "your-token-here" }
-}
-$config | ConvertTo-Json -Depth 3 | Set-Content -Path $configPath -Encoding UTF8
-ok "Config: $configPath"
-
-# ── Build agent arguments ────────────────────────────────────────────
-$agentArgs = @()
-if ($Token)    { $agentArgs += '--token';    $agentArgs += $Token }
-if ($Endpoint) { $agentArgs += '--endpoint'; $agentArgs += $Endpoint }
-$agentArgs += '--config'; $agentArgs += $configPath
-$argString = $agentArgs -join ' '
-
-# ── Register Scheduled Task ──────────────────────────────────────────
-info "Registering Scheduled Task '$TaskName'..."
-$action  = New-ScheduledTaskAction -Execute $binPath -Argument $argString
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
-    -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
-    -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew
-$principal = New-ScheduledTaskPrincipal -UserID "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Settings $settings -Principal $principal -Force | Out-Null
-
-# ── Start the task ───────────────────────────────────────────────────
-info "Starting Scheduled Task..."
-Start-ScheduledTask -TaskName $TaskName
-ok "Task '$TaskName' started"
-
-# ── Summary ──────────────────────────────────────────────────────────
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  komari-agent-rs v$tag installed" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Binary:     $binPath"
-Write-Host "  Config:     $configPath"
-Write-Host "  Task:       $TaskName (runs as SYSTEM at startup)"
-Write-Host "  Arguments:  $argString"
-if (-not $Token -or -not $Endpoint) {
-    Write-Host ""
-    Write-Host "  [NOTE] Edit $configPath with your token" -ForegroundColor Yellow
-    Write-Host "         and endpoint, then restart the task:" -ForegroundColor Yellow
-    Write-Host "           Restart-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Yellow
-}
-Write-Host "========================================" -ForegroundColor Green
+# Dot-sourcing exposes pure helpers for offline tests without installing anything.
+if ($MyInvocation.InvocationName -ne '.') { Install-KomariAgent }

@@ -183,7 +183,7 @@ cargo build --release --features self-update        # +自我更新
 | `--endpoint` / `-e` | `AGENT_ENDPOINT` | — | Komari 服务端 URL,如 `https://komari.example.com`(必填) |
 | `--token` / `-t` | `AGENT_TOKEN` | — | Agent 认证 token(必填) |
 | `--config` | `AGENT_CONFIG_FILE` | — | JSON 配置文件路径 |
-| `--interval` / `-i` | `AGENT_INTERVAL` | `1` | 指标上报间隔(秒) |
+| `--interval` / `-i` | `AGENT_INTERVAL` | `3` | 指标上报间隔(秒) |
 | `--protocol-version` | `AGENT_PROTOCOL_VERSION` | `2` | `2`=JSON-RPC v2,`1`=v1(被拒自动降级) |
 | `--http-only` | `AGENT_HTTP_ONLY` | `false` | DPI 逃生:仅 HTTP POST,不用 WS |
 | `--gpu` | `AGENT_ENABLE_GPU` | `false` | 启用 GPU 指标 |

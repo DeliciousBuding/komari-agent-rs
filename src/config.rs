@@ -81,7 +81,7 @@ pub struct Config {
     pub token: String,    // AGENT_TOKEN,    --token / -t
 
     // -- Timing --
-    pub interval: f64, // AGENT_INTERVAL,             --interval / -i,          default 1.0
+    pub interval: f64, // AGENT_INTERVAL,             --interval / -i,          default 3.0
     pub info_report_interval: u64, // AGENT_INFO_REPORT_INTERVAL, --info-report-interval,   default 5 (min)
     pub reconnect_interval: u64, // AGENT_RECONNECT_INTERVAL,   --reconnect-interval / -c, default 5 (sec)
     pub max_retries: u64,        // AGENT_MAX_RETRIES,          --max-retries / -r,       default 10
@@ -134,7 +134,7 @@ impl Default for Config {
         Self {
             endpoint: String::new(),
             token: String::new(),
-            interval: 1.0,
+            interval: 3.0,
             info_report_interval: 5,
             reconnect_interval: 5,
             max_retries: 10,
@@ -277,11 +277,11 @@ pub fn help_text() -> &'static str {
      \n\
      Connection & protocol:\n  \
      --config <file>                 JSON config file (highest priority; overrides flags + env)\n  \
-     --interval <sec>                Report interval in seconds (default 1.0)\n  \
+     --interval <sec>                Report interval in seconds (default 3.0)\n  \
      --info-report-interval <sec>    basicInfo upload interval (default 5)\n  \
      --reconnect-interval <sec>      Reconnect backoff (default 5)\n  \
      --max-retries <n>               Max retries before downshift (default 5)\n  \
-     --protocol-version <1|2>        Force protocol version (default 2)\n  \
+     --protocol-version <2>          Wire protocol (only 2 is supported)\n  \
      --http-only                     DPI/middlebox escape hatch: report over HTTP POST only, never WS\n  \
      --ignore-unsafe-cert            Skip TLS certificate verification (insecure)\n\
      \n\
@@ -739,10 +739,9 @@ pub fn load_env(config: &mut Config) {
     }
 
     // u8
-    if let Ok(v) = env::var("AGENT_PROTOCOL_VERSION")
-        && let Ok(n) = u8::from_str(&v)
-    {
-        config.protocol_version = n;
+    if let Ok(v) = env::var("AGENT_PROTOCOL_VERSION") {
+        // Invalid explicit versions must reach validation, not silently use 2.
+        config.protocol_version = u8::from_str(&v).unwrap_or(0);
     }
     if let Ok(v) = env::var("AGENT_MONTH_ROTATE")
         && let Ok(n) = u8::from_str(&v)
@@ -1397,8 +1396,13 @@ fn apply_json_map(config: &mut Config, map: &std::collections::HashMap<String, J
     if let Some(v) = get_f64("max_retries") {
         config.max_retries = v as u64;
     }
-    if let Some(v) = get_f64("protocol_version") {
-        config.protocol_version = v as u8;
+    if map.contains_key("protocol_version") {
+        // Do not truncate 2.5 to 2 or ignore a wrong-typed explicit version.
+        config.protocol_version = match get_f64("protocol_version") {
+            Some(2.0) => 2,
+            Some(1.0) => 1,
+            _ => 0,
+        };
     }
     if let Some(v) = get_f64("month_rotate") {
         config.month_rotate = v as u8;
@@ -1489,6 +1493,23 @@ fn apply_json_map(config: &mut Config, map: &std::collections::HashMap<String, J
 // Also checks prefer_ip_version is empty, "4", or "6" (matching Go).
 
 pub fn validate(config: &Config) -> Result<(), ConfigErr> {
+    if config.protocol_version != 2 {
+        return Err(ConfigErr::Validation(format!(
+            "protocol_version {} is no longer supported; set protocol_version to 2 (Komari >= 1.5)",
+            config.protocol_version
+        )));
+    }
+    if config.interval <= 0.0
+        || std::time::Duration::try_from_secs_f64(config.interval)
+            .ok()
+            .filter(|d| !d.is_zero())
+            .and_then(|d| std::time::Instant::now().checked_add(d))
+            .is_none()
+    {
+        return Err(ConfigErr::Validation(
+            "interval must be a finite positive duration supported by the platform".to_string(),
+        ));
+    }
     if config.endpoint.is_empty() {
         return Err(ConfigErr::Validation(
             "endpoint is required (set via --endpoint, AGENT_ENDPOINT, or JSON config)".to_string(),
@@ -1610,7 +1631,7 @@ mod tests {
     #[test]
     fn test_defaults() {
         let c = Config::default();
-        assert_eq!(c.interval, 1.0);
+        assert_eq!(c.interval, 3.0);
         assert_eq!(c.info_report_interval, 5);
         assert_eq!(c.reconnect_interval, 5);
         assert_eq!(c.max_retries, 10);
@@ -1739,6 +1760,44 @@ mod tests {
         let mut c = Config::default();
         c.endpoint = "https://x.com".to_string();
         c.token = "secret".to_string();
+        assert!(validate(&c).is_ok());
+    }
+
+    #[test]
+    fn test_validate_requires_v2_for_cli_and_json_config() {
+        for raw in ["0", "1", "3", "255"] {
+            let mut c = Config::default();
+            c.endpoint = "https://example.com".into();
+            c.token = "test-token".into();
+            parse_args(&mut c, &args_vec(&["--protocol-version", raw])).unwrap();
+            let err = validate(&c).unwrap_err().to_string();
+            assert!(err.contains("protocol_version"));
+            assert!(err.contains("set protocol_version to 2"));
+        }
+        for raw in ["0", "1", "3", "2.5", "258", "\"2\"", "null"] {
+            let bytes = format!("{{\"protocol_version\":{raw}}}");
+            let mut parser = Parser::new(tokenize(bytes.as_bytes()).unwrap());
+            let mut c = Config::default();
+            apply_json_map(&mut c, &parser.parse_object().unwrap());
+            assert_ne!(c.protocol_version, 2, "must not silently accept {raw}");
+        }
+        let mut parser = Parser::new(tokenize(br#"{"protocol_version":2}"#).unwrap());
+        let mut c = Config::default();
+        apply_json_map(&mut c, &parser.parse_object().unwrap());
+        assert_eq!(c.protocol_version, 2);
+    }
+
+    #[test]
+    fn test_validate_report_interval_cannot_panic_or_busy_loop() {
+        let mut c = Config::default();
+        c.endpoint = "https://example.com".into();
+        c.token = "test-token".into();
+        for interval in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MAX, 1e-30] {
+            c.interval = interval;
+            assert!(validate(&c).unwrap_err().to_string().contains("interval"));
+        }
+        // Large, valid intervals remain supported; control polling is separate.
+        c.interval = 300.0;
         assert!(validate(&c).is_ok());
     }
 

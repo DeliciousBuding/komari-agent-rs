@@ -28,7 +28,7 @@ use rustls::pki_types::ServerName;
 // ── Constants ────────────────────────────────────────────────────────────
 
 /// Maximum WebSocket frame payload accepted on read (16 MB).
-const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_FRAME_SIZE: u64 = 1024 * 1024;
 
 /// Chunk size for stack-based send masking.
 const MASK_CHUNK_SIZE: usize = 4096;
@@ -745,9 +745,9 @@ fn inflate_permessage_deflate(compressed: &[u8]) -> Result<Vec<u8>, WsErr> {
     let mut inflated = Vec::with_capacity(compressed.len().saturating_mul(2).max(64));
     crate::inflate::inflate_raw(&with_trailer, &mut inflated)
         .map_err(|e| WsErr::Protocol(format!("permessage-deflate inflate error: {e}")))?;
-    if inflated.len() > 64 * 1024 * 1024 {
+    if inflated.len() > MAX_FRAME_SIZE as usize {
         return Err(WsErr::Protocol(
-            "permessage-deflate output exceeded 64 MiB safety limit".to_string(),
+            "permessage-deflate output exceeded 1 MiB safety limit".to_string(),
         ));
     }
     Ok(inflated)

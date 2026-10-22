@@ -1,15 +1,15 @@
 //! Protocol negotiation and connection lifecycle state machines.
 //!
 //! Two independent, zero-allocation FSMs:
-//! - [`ProtocolFsm`] — v1/v2 protocol version with 3-strike fallback.
+//! - [`ProtocolFsm`] — v2 transport selection with 3-strike WS fallback.
 //! - [`ConnectionFsm`] — TCP → TLS → WS connection lifecycle.
 //!
-//! ## Fallback rules (match Go `protocol_fallback.go`)
+//! ## Fallback rules
 //!
 //! 1. Start at `WsV2`.
-//! 2. WS connect fails → retry WsV2 up to `max_retries` (caller-driven).
-//! 3. After 3 consecutive v2 failures → auto-downgrade to next mode.
-//! 4. WsV2 → HttpV2 → HttpV1 (terminal).
+//! 2. After 3 consecutive WS failures, use `HttpV2` indefinitely.
+//! 3. Periodically re-probe WS unless HTTP-only was explicitly selected.
+//! 4. Never change wire protocol: Komari >= 1.5 removed v1 endpoints.
 //!
 //! `ProtocolFsm` drives the live reconnection loop. `ConnectionFsm` (TCP → TLS →
 //! WS lifecycle) plus a few `FailureKind` variants are kept as a complete
@@ -17,20 +17,19 @@
 //! dead_code for that surface.
 #![allow(dead_code)]
 //! 5. On any successful connection → `on_success()` resets all counters.
-//! 6. On reconnect after disconnect → `on_reconnect()` retries from WsV2.
+//! 6. On preferred-transport re-probe → `on_reconnect()` clears counters.
 
-/// Which protocol version and transport is currently active.
+/// Which v2 transport is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolMode {
     /// WebSocket with v2 JSON-RPC 2.0 protocol (/api/clients/v2/rpc).
     WsV2,
-    /// WebSocket with v1 flat-report protocol (/api/clients/report).
-    WsV1,
     /// HTTP POST fallback with v2 JSON-RPC 2.0 protocol.
     HttpV2,
-    /// HTTP POST with v1 flat-report protocol (terminal fallback).
-    HttpV1,
 }
+
+/// Both transports use the same v2 endpoint; no legacy route is supported.
+pub const RPC_PATH: &str = "/api/clients/v2/rpc";
 
 /// What kind of failure occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,50 +44,31 @@ pub enum FailureKind {
     HttpStatus(u16),
 }
 
-/// Protocol-version state machine with 3-strike fallback.
+/// Transport state machine with 3-strike WS-to-HTTP fallback.
 ///
 /// All counters are `u8` — zero heap allocation. `Copy`-able.
 #[derive(Debug, Clone, Copy)]
 pub struct ProtocolFsm {
     mode: ProtocolMode,
     initial_mode: ProtocolMode,
-    consecutive_v2_failures: u8,
-    ws_v2_failures: u8,
-    http_v2_failures: u8,
+    consecutive_failures: u8,
 }
 
 impl ProtocolFsm {
     pub const FALLBACK_THRESHOLD: u8 = 3;
 
-    /// Create a new FSM. Starts at `WsV2` (or `HttpV2` when `http_only`) if
-    /// `protocol_version >= 2`, else the matching v1 mode.
-    ///
-    /// `http_only` is an escape hatch for networks where a DPI / middlebox
-    /// breaks the WebSocket upgrade (the agent reports over plain HTTP POST
-    /// and never attempts WS) — and for plain `http://` endpoints where the
-    /// WS client cannot do TLS. HTTP-only still speaks **v2** JSON-RPC over
-    /// `POST /api/clients/v2/rpc`; `HttpV1` is only the terminal fallback for
-    /// pre-v2 servers. (Pre-0.4.0 http_only started at HttpV1, which silently
-    /// pinned loopback/http deployments to the legacy endpoint removed in
-    /// Komari 1.5.0.)
-    pub fn new(protocol_version: u8, http_only: bool) -> Self {
+    /// Starts at `WsV2`, or permanently `HttpV2` when `http_only` is set.
+    /// Unsupported protocol-version settings are rejected by config validation.
+    pub fn new(http_only: bool) -> Self {
         let initial = if http_only {
-            if protocol_version >= 2 {
-                ProtocolMode::HttpV2
-            } else {
-                ProtocolMode::HttpV1
-            }
-        } else if protocol_version >= 2 {
-            ProtocolMode::WsV2
+            ProtocolMode::HttpV2
         } else {
-            ProtocolMode::WsV1
+            ProtocolMode::WsV2
         };
         Self {
             mode: initial,
             initial_mode: initial,
-            consecutive_v2_failures: 0,
-            ws_v2_failures: 0,
-            http_v2_failures: 0,
+            consecutive_failures: 0,
         }
     }
 
@@ -97,87 +77,48 @@ impl ProtocolFsm {
         self.mode
     }
 
-    #[inline]
-    pub fn is_terminal(&self) -> bool {
-        self.mode == ProtocolMode::HttpV1
-    }
-
     /// The mode the FSM started in (re-probe target).
     #[inline]
     pub fn initial_mode(&self) -> ProtocolMode {
         self.initial_mode
     }
 
-    /// Consecutive failures since the last success — used by the caller to
-    /// escalate out of the terminal HttpV1 mode when the v1 endpoint is gone
-    /// (server upgraded past v1).
+    /// Consecutive failures since the last success or transport switch.
     #[inline]
     pub fn consecutive_failures(&self) -> u8 {
-        self.consecutive_v2_failures
+        self.consecutive_failures
     }
 
     /// Reset all failure counters on success.
     #[inline]
     pub fn on_success(&mut self) {
-        self.consecutive_v2_failures = 0;
-        self.ws_v2_failures = 0;
-        self.http_v2_failures = 0;
+        self.consecutive_failures = 0;
     }
 
-    /// Record a failure. Returns `true` if mode was downgraded.
-    pub fn on_failure(&mut self, kind: FailureKind) -> bool {
-        if self.mode == ProtocolMode::HttpV1 {
-            self.consecutive_v2_failures = self.consecutive_v2_failures.saturating_add(1);
-            match kind {
-                FailureKind::WsConnect | FailureKind::WsWrite => {
-                    self.ws_v2_failures = self.ws_v2_failures.saturating_add(1);
-                }
-                FailureKind::HttpPost | FailureKind::HttpStatus(_) => {
-                    self.http_v2_failures = self.http_v2_failures.saturating_add(1);
-                }
-            }
-            return false;
-        }
-
-        self.consecutive_v2_failures = self.consecutive_v2_failures.saturating_add(1);
-        match kind {
-            FailureKind::WsConnect | FailureKind::WsWrite => {
-                self.ws_v2_failures = self.ws_v2_failures.saturating_add(1);
-            }
-            FailureKind::HttpPost | FailureKind::HttpStatus(_) => {
-                self.http_v2_failures = self.http_v2_failures.saturating_add(1);
-            }
-        }
-
-        if self.consecutive_v2_failures >= Self::FALLBACK_THRESHOLD {
-            let old = self.mode;
-            self.mode = match self.mode {
-                ProtocolMode::WsV2 => ProtocolMode::WsV1,
-                ProtocolMode::WsV1 => ProtocolMode::HttpV2,
-                ProtocolMode::HttpV2 => ProtocolMode::HttpV1,
-                ProtocolMode::HttpV1 => unreachable!(),
-            };
-            self.consecutive_v2_failures = 0;
-            self.ws_v2_failures = 0;
-            self.http_v2_failures = 0;
-            return self.mode != old;
+    /// Record a failure. Returns true only when switching WS to HTTP.
+    /// HTTP failures keep retrying v2; they never terminate or downgrade.
+    pub fn on_failure(&mut self, _kind: FailureKind) -> bool {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.mode == ProtocolMode::WsV2 && self.consecutive_failures >= Self::FALLBACK_THRESHOLD
+        {
+            self.mode = ProtocolMode::HttpV2;
+            self.consecutive_failures = 0;
+            return true;
         }
 
         false
     }
 
-    /// Reset mode to the initial protocol and clear all counters (called on reconnect).
+    /// Re-probe the preferred transport. HTTP-only can never select WS.
     pub fn on_reconnect(&mut self) {
         self.mode = self.initial_mode;
-        self.consecutive_v2_failures = 0;
-        self.ws_v2_failures = 0;
-        self.http_v2_failures = 0;
+        self.consecutive_failures = 0;
     }
 }
 
 impl Default for ProtocolFsm {
     fn default() -> Self {
-        Self::new(2, false)
+        Self::new(false)
     }
 }
 
@@ -278,58 +219,71 @@ mod tests {
 
     #[test]
     fn starts_at_ws_v2() {
-        let fsm = ProtocolFsm::new(2, false);
+        let fsm = ProtocolFsm::new(false);
         assert_eq!(fsm.mode(), ProtocolMode::WsV2);
     }
 
     #[test]
     fn http_only_starts_at_http_v2() {
-        // Regression: pre-0.4.0 http_only started at HttpV1, pinning
-        // loopback/plain-http deployments to the legacy endpoint that
-        // Komari 1.5.0 removed.
-        let fsm = ProtocolFsm::new(2, true);
+        let fsm = ProtocolFsm::new(true);
         assert_eq!(fsm.mode(), ProtocolMode::HttpV2);
-        let fsm_v1 = ProtocolFsm::new(1, true);
-        assert_eq!(fsm_v1.mode(), ProtocolMode::HttpV1);
     }
 
     #[test]
-    fn three_strikes_ws_v2_to_ws_v1() {
-        let mut fsm = ProtocolFsm::new(2, false);
+    fn three_strikes_ws_v2_to_http_v2() {
+        let mut fsm = ProtocolFsm::new(false);
         assert!(!fsm.on_failure(FailureKind::WsConnect));
         assert!(!fsm.on_failure(FailureKind::WsConnect));
         assert!(fsm.on_failure(FailureKind::WsConnect));
-        // 4-stage chain: WsV2 → WsV1 → HttpV2 → HttpV1.
-        assert_eq!(fsm.mode(), ProtocolMode::WsV1);
+        assert_eq!(fsm.mode(), ProtocolMode::HttpV2);
     }
 
     #[test]
-    fn full_chain_ws_v2_to_http_v1() {
-        let mut fsm = ProtocolFsm::new(2, false);
-        // Each stage needs 3 strikes to downshift.
-        for _ in 0..3 {
-            fsm.on_failure(FailureKind::WsConnect);
-        }
-        assert_eq!(fsm.mode(), ProtocolMode::WsV1);
+    fn http_failures_never_leave_v2() {
+        let mut fsm = ProtocolFsm::new(false);
         for _ in 0..3 {
             fsm.on_failure(FailureKind::WsConnect);
         }
         assert_eq!(fsm.mode(), ProtocolMode::HttpV2);
-        for _ in 0..3 {
-            fsm.on_failure(FailureKind::HttpPost);
+        for _ in 0..1000 {
+            assert!(!fsm.on_failure(FailureKind::HttpPost));
+            assert_eq!(fsm.mode(), ProtocolMode::HttpV2);
         }
-        assert_eq!(fsm.mode(), ProtocolMode::HttpV1);
+        assert_eq!(fsm.consecutive_failures(), u8::MAX);
     }
 
     #[test]
     fn reconnect_resets_to_ws_v2() {
-        let mut fsm = ProtocolFsm::new(2, false);
-        // Walk all the way to HttpV1 (9 failures across 3 stages).
-        for _ in 0..9 {
+        let mut fsm = ProtocolFsm::new(false);
+        for _ in 0..3 {
             fsm.on_failure(FailureKind::HttpPost);
         }
-        assert_eq!(fsm.mode(), ProtocolMode::HttpV1);
+        assert_eq!(fsm.mode(), ProtocolMode::HttpV2);
         fsm.on_reconnect();
+        assert_eq!(fsm.mode(), ProtocolMode::WsV2);
+        assert_eq!(fsm.consecutive_failures(), 0);
+        fsm.on_success();
+        assert!(!fsm.on_failure(FailureKind::WsConnect));
+        assert_eq!(fsm.mode(), ProtocolMode::WsV2);
+    }
+
+    #[test]
+    fn http_only_never_probes_ws_even_after_failures() {
+        let mut fsm = ProtocolFsm::new(true);
+        for _ in 0..1000 {
+            assert!(!fsm.on_failure(FailureKind::HttpStatus(503)));
+            fsm.on_reconnect();
+            assert_eq!(fsm.mode(), ProtocolMode::HttpV2);
+        }
+    }
+
+    #[test]
+    fn successful_session_clears_ws_failure_streak() {
+        let mut fsm = ProtocolFsm::new(false);
+        fsm.on_failure(FailureKind::WsWrite);
+        fsm.on_failure(FailureKind::WsWrite);
+        fsm.on_success();
+        assert!(!fsm.on_failure(FailureKind::WsWrite));
         assert_eq!(fsm.mode(), ProtocolMode::WsV2);
     }
 

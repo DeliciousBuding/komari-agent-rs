@@ -87,6 +87,11 @@ jobs:
           fi
           echo "Size OK: $SIZE bytes (< 2MB)"
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-musl-full
+          path: target/x86_64-unknown-linux-musl/release/komari-agent-rs
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -97,6 +102,9 @@ jobs:
           key: windows-msvc
       - run: cargo test --locked --all-features
       - run: cargo build --locked --release --features full
+      - name: Offline Windows installer regressions
+        shell: pwsh
+        run: ./tests/installers.ps1
       - name: Check binary size < 2MB
         shell: pwsh
         run: |
@@ -110,12 +118,16 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    env:
+      # Pin so cc-compiled objects (ring) and the linker agree; otherwise a
+      # cached ring built against the runner SDK (15.x) fails to link at 11.0.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: macos
+          key: macos-dt11
       - run: cargo build --locked --release --features full
       - name: Check binary size < 2MB
         run: |

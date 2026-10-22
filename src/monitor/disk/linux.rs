@@ -99,6 +99,13 @@ const EXCLUDED_FS: &[&str] = &[
     "bpf",
     "cgroup2",
     "selinuxfs",
+    "nfs",
+    "cifs",
+    "smb",
+    "vboxsf",
+    "9p",
+    "fuse",
+    "nullfs",
 ];
 
 fn is_excluded_fs(fstype: &str) -> bool {
@@ -106,7 +113,21 @@ fn is_excluded_fs(fstype: &str) -> bool {
     if fstype == "fuseblk" {
         return false;
     }
-    EXCLUDED_FS.contains(&fstype)
+    EXCLUDED_FS.iter().any(|prefix| fstype.starts_with(prefix))
+}
+
+fn is_physical_mount(dev: &str, mp: &str, fs: &str) -> bool {
+    // Root can itself be a loop/overlay filesystem (LXC and containers).
+    if mp == "/" {
+        return true;
+    }
+    if is_excluded_mountpoint(mp) {
+        return false;
+    }
+    if dev == "/dev/fuse" && fs == "fuse" && mp == "/sdcard" {
+        return true;
+    }
+    !dev.starts_with("/dev/loop") && !is_excluded_fs(fs)
 }
 
 // ── Mountpoint prefix exclusion ───────────────────────────────────────────────
@@ -166,18 +187,24 @@ fn statfs_usage(path: &str) -> Option<(u64, u64)> {
 /// mode: only listed prefixes) and `config.exclude_mountpoints` (excluded
 /// prefixes when no whitelist is set).
 pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
-    let mut out = SmallVec::new();
-
     let file = match File::open("/proc/mounts") {
         Ok(f) => f,
-        Err(_) => return out,
+        Err(_) => return SmallVec::new(),
     };
+    collect_mounts(BufReader::new(file), config, statfs_usage)
+}
 
+fn collect_mounts(
+    mounts: impl BufRead,
+    config: &Config,
+    mut usage: impl FnMut(&str) -> Option<(u64, u64)>,
+) -> SmallVec<DiskInfo, MAX_DISKS> {
+    let mut out: SmallVec<DiskInfo, MAX_DISKS> = SmallVec::new();
     let use_whitelist = !config.include_mountpoints.is_empty();
-
-    let mut seen_zfs_pools: Vec<String> = Vec::new();
-
-    for line in BufReader::new(file).lines() {
+    // Identity, not equal usage values, determines whether mounts share a disk.
+    // Keep keys aligned with the bounded output, including when it is full.
+    let mut devices: Vec<(bool, String)> = Vec::new();
+    for line in mounts.lines() {
         let line = match line {
             Ok(l) => l,
             Err(_) => continue,
@@ -197,35 +224,9 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
             None => continue,
         };
 
-        // Skip /dev/loop devices.
-        if dev.starts_with("/dev/loop") {
+        if !is_physical_mount(dev, mp, fs) {
             continue;
         }
-
-        if is_excluded_fs(fs) {
-            continue;
-        }
-
-        // Skip mountpoints with excluded prefixes (root "/" always included).
-        if is_excluded_mountpoint(mp) {
-            continue;
-        }
-
-        // ZFS dataset dedup: if fstype is zfs and device path contains "/",
-        // keep only the pool part (before first "/").
-        let zfs_pool: Option<String> = if fs == "zfs" {
-            let pool = if let Some(idx) = dev.find('/') {
-                dev[..idx].to_string()
-            } else {
-                dev.to_string()
-            };
-            if seen_zfs_pools.contains(&pool) {
-                continue;
-            }
-            Some(pool)
-        } else {
-            None
-        };
 
         if use_whitelist {
             if !matches_patterns(mp, &config.include_mountpoints) {
@@ -235,10 +236,23 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
             continue;
         }
 
-        let (total, used) = match statfs_usage(mp) {
+        let (total, used) = match usage(mp) {
             Some(v) => v,
             None => continue,
         };
+        let is_zfs = fs == "zfs";
+        let device = if is_zfs {
+            dev.split('/').next().unwrap_or(dev)
+        } else {
+            dev
+        };
+        let existing = devices
+            .iter()
+            .position(|(zfs, key)| *zfs == is_zfs && key == device);
+        // A quota-limited dataset or bind mount must not hide the full disk.
+        if existing.is_some_and(|index| out[index].total >= total) {
+            continue;
+        }
 
         // Copy mountpoint into inline storage.
         let mp_b = mp.as_bytes();
@@ -251,36 +265,29 @@ pub fn collect(config: &Config) -> SmallVec<DiskInfo, MAX_DISKS> {
         let mut fs_buf = [0u8; 32];
         fs_buf[..fs_n].copy_from_slice(&fs_b[..fs_n]);
 
-        let _ = out.push(DiskInfo {
+        let disk = DiskInfo {
             mp_buf,
             mp_len: mp_n as u8,
             fs_buf,
             fs_len: fs_n as u8,
             total,
             used,
-        });
-
-        // Track ZFS pool for dedup after successful push.
-        if let Some(pool) = zfs_pool {
-            seen_zfs_pools.push(pool);
+        };
+        if let Some(index) = existing {
+            out[index] = disk;
+        } else if out.push(disk).is_ok() {
+            devices.push((is_zfs, device.to_string()));
         }
     }
 
     out
 }
 
-fn same_statfs(a: &DiskInfo, b: &DiskInfo) -> bool {
-    a.total == b.total && a.used == b.used
-}
-
-/// Sum `total` and `used` across all unique [`DiskInfo`] entries.
+/// Sum the already device-deduplicated [`DiskInfo`] entries from [`collect`].
 pub fn aggregate(disks: &[DiskInfo]) -> (u64, u64) {
     let mut total = 0u64;
     let mut used = 0u64;
-    for (idx, d) in disks.iter().enumerate() {
-        if disks[..idx].iter().any(|seen| same_statfs(seen, d)) {
-            continue;
-        }
+    for d in disks {
         total += d.total;
         used += d.used;
     }
@@ -311,14 +318,59 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_deduplicates_same_statfs_mounts() {
+    fn aggregate_preserves_distinct_disks_with_equal_usage() {
         let disks = [
             disk("/", "ext4", 31, 12),
-            disk("/var/lib/docker/overlay2/x/merged", "overlay", 31, 12),
-            disk("/var/lib/docker/overlay2/y/merged", "overlay", 31, 12),
+            disk("/data", "ext4", 31, 12),
             disk("/boot/efi", "vfat", 1, 0),
         ];
 
-        assert_eq!(aggregate(&disks), (32, 12));
+        assert_eq!(aggregate(&disks), (63, 24));
+    }
+
+    #[test]
+    fn physical_mount_filter_keeps_root_and_local_fuse_exceptions() {
+        assert!(is_physical_mount("overlay", "/", "overlay"));
+        assert!(is_physical_mount("/dev/loop0", "/", "ext4"));
+        assert!(!is_physical_mount("/dev/loop0", "/snap/app", "ext4"));
+        assert!(is_physical_mount("/dev/fuse", "/sdcard", "fuse"));
+        assert!(is_physical_mount("/dev/sda1", "/media/ntfs", "fuseblk"));
+        for fs in ["nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "nullfs"] {
+            assert!(!is_physical_mount("remote", "/data", fs), "{fs}");
+        }
+        assert!(!is_physical_mount("/dev/fuse", "/other", "fuse"));
+    }
+
+    #[test]
+    fn mounts_deduplicate_devices_and_choose_largest_zfs_quota() {
+        let mounts = b"/dev/sda1 / ext4 rw 0 0\n/dev/sda1 /data ext4 rw 0 0\npool/small /small zfs rw 0 0\npool/full /full zfs rw 0 0\npool/other /other zfs rw 0 0\n/dev/sdb1 /independent ext4 rw 0 0\n";
+        let disks = collect_mounts(&mounts[..], &Config::default(), |mp| {
+            Some(match mp {
+                "/small" => (10, 3),
+                "/full" => (100, 30),
+                "/other" => (20, 5),
+                _ => (50, 15),
+            })
+        });
+        assert_eq!(disks.len(), 3);
+        assert_eq!(aggregate(&disks), (200, 60));
+        assert_eq!(disks[1].mountpoint(), "/full");
+    }
+
+    #[test]
+    fn mount_filters_run_before_device_deduplication() {
+        let mounts = b"/dev/sda1 /ignored ext4 rw 0 0\n/dev/sda1 /selected ext4 rw 0 0\n/dev/sdb1 /failed ext4 rw 0 0\n/dev/sdb1 /working ext4 rw 0 0\n";
+        let mut config = Config::default();
+        config.exclude_mountpoints = vec!["/ignored".into()];
+        let disks = collect_mounts(&mounts[..], &config, |mp| {
+            (mp != "/failed").then_some((100, 40))
+        });
+        assert_eq!(disks.len(), 2);
+        assert_eq!(disks[0].mountpoint(), "/selected");
+        assert_eq!(disks[1].mountpoint(), "/working");
+        config.include_mountpoints = vec!["/ignored".into()];
+        let disks = collect_mounts(&mounts[..], &config, |_| Some((100, 40)));
+        assert_eq!(disks.len(), 1, "whitelist retains precedence over excludes");
+        assert_eq!(disks[0].mountpoint(), "/ignored");
     }
 }

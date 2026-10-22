@@ -18,6 +18,8 @@ Thumbs.db
 komari-agent-go/
 
 # Local dev state — never commit
+.local/
+.worktrees/
 .grill/
 *.log
 tmp/

@@ -17,11 +17,14 @@ jobs:
   # Every platform publishes BOTH variants so no platform accidentally ships a
   # ping-less build under a bare <os>-<arch> name.
   # - Linux x86_64 musl (default + full) and arm64 use cross/musl for static binaries.
-  # - macOS x86_64 runs on the Intel runner (macos-13), arm64 on Apple Silicon.
+  # - macOS x86_64 runs on macos-15-intel, arm64 on Apple Silicon.
   # - Windows builds natively on windows-latest (MSVC).
   build:
     name: build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    env:
+      # See ci.yml build-macos: keep ring's objects and the linker on one target.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     strategy:
       fail-fast: false
       matrix:
@@ -104,7 +107,7 @@ jobs:
       # matrix legs don't clobber each other's build cache.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}-${{ matrix.features }}
+          key: ${{ matrix.target }}-${{ matrix.features }}-dt11
 
       - name: Install musl-tools (Linux musl)
         if: ${{ !matrix.use_cross && contains(matrix.target, 'musl') }}

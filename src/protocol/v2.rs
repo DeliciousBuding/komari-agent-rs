@@ -155,3 +155,110 @@ pub fn build_startup_config_params(request_id: &str, config_json: &[u8]) -> Vec<
     v.push(b'}');
     v
 }
+
+/// Validate the JSON-RPC envelope separately from HTTP status. A 200 with
+/// an RPC error (or an empty/non-RPC proxy response) is not a successful call.
+/// Never return server-controlled error text: it may contain sensitive data.
+pub fn validate_response(body: &[u8]) -> Result<(), &'static str> {
+    if response_has_error(body) {
+        return Err("server returned a JSON-RPC error");
+    }
+    if top_level_field(body, b"jsonrpc") != Some(b"\"2.0\"".as_slice())
+        || top_level_field(body, b"result").is_none_or(|v| v == b"null")
+    {
+        return Err("invalid JSON-RPC response envelope");
+    }
+    Ok(())
+}
+
+/// Only the envelope's error field matters, not strings or nested event data.
+pub fn response_has_error(body: &[u8]) -> bool {
+    top_level_field(body, b"error").is_some_and(|v| v != b"null")
+}
+
+/// Borrow a top-level field without allocating a JSON tree. String-aware
+/// depth tracking keeps nested event payloads out of envelope validation.
+fn top_level_field<'a>(body: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    let body = body.trim_ascii();
+    if body.first() != Some(&b'{') || body.last() != Some(&b'}') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut pos = 0;
+    while pos < body.len() {
+        match body[pos] {
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth = depth.checked_sub(1)?,
+            b'"' => {
+                let start = pos + 1;
+                pos = string_end(body, start)?;
+                if depth == 1 && &body[start..pos] == key {
+                    let mut value_start = pos + 1;
+                    while body.get(value_start).is_some_and(u8::is_ascii_whitespace) {
+                        value_start += 1;
+                    }
+                    if body.get(value_start) != Some(&b':') {
+                        pos += 1;
+                        continue;
+                    }
+                    value_start += 1;
+                    let mut end = value_start;
+                    let mut nested = 0usize;
+                    while end < body.len() {
+                        match body[end] {
+                            b'"' => end = string_end(body, end + 1)?,
+                            b'{' | b'[' => nested += 1,
+                            b'}' | b']' if nested > 0 => nested -= 1,
+                            b',' | b'}' if nested == 0 => {
+                                return Some(body[value_start..end].trim_ascii());
+                            }
+                            _ => {}
+                        }
+                        end += 1;
+                    }
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        pos += 1;
+    }
+    None
+}
+
+fn string_end(body: &[u8], mut pos: usize) -> Option<usize> {
+    while pos < body.len() {
+        match body[pos] {
+            b'\\' => pos += 1,
+            b'"' => return Some(pos),
+            _ => {}
+        }
+        pos += 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_rpc_errors_even_when_http_succeeded() {
+        let body = br#"{"jsonrpc":"2.0","id":"report","error":{"code":-32000,"message":"private details"}}"#;
+        assert!(response_has_error(body));
+        assert_eq!(
+            validate_response(body),
+            Err("server returned a JSON-RPC error")
+        );
+        assert!(validate_response(br#"{}"#).is_err());
+        assert!(validate_response(b"OK").is_err());
+    }
+
+    #[test]
+    fn accepts_result_without_confusing_event_data_for_envelope_error() {
+        let body = br#"{ "jsonrpc" : "2.0", "id":"report", "result":{"events":[{"params":{"error":"quoted } , \"error\": text"}}]}, "error":null }"#;
+        assert!(!response_has_error(body));
+        assert!(validate_response(body).is_ok());
+        assert!(validate_response(br#"{"jsonrpc":"2.0","result":null}"#).is_err());
+    }
+}

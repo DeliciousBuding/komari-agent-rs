@@ -7,6 +7,9 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
+// Control RPC responses are small; a peer must not allocate without bound.
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
 // ── HttpResponse ─────────────────────────────────────────────────────────
 
 pub struct HttpResponse {
@@ -136,25 +139,6 @@ pub fn http_post_timeout(
     )
 }
 
-pub fn http_get(
-    url: &str,
-    extra_headers: &[(String, String)],
-    tls_cfg: &Arc<rustls::ClientConfig>,
-    dial: &crate::proxy::Dialer,
-) -> Result<HttpResponse, HttpErr> {
-    http_request(
-        "GET",
-        url,
-        None,
-        None,
-        None,
-        extra_headers,
-        tls_cfg,
-        dial,
-        Duration::from_secs(30),
-    )
-}
-
 #[allow(clippy::too_many_arguments)] // HTTP request surface genuinely needs method/url/body/headers/tls/dial
 fn http_request(
     method: &str,
@@ -230,11 +214,21 @@ fn http_request(
     stream.flush()?;
 
     // 6. Read response
-    let mut resp_buf = Vec::new();
-    stream.read_to_end(&mut resp_buf)?;
+    let resp_buf = read_response(&mut stream)?;
 
     // 7. Parse status line + headers + body
     parse_http_response(&resp_buf)
+}
+
+fn read_response(reader: &mut impl Read) -> Result<Vec<u8>, HttpErr> {
+    let mut data = Vec::new();
+    reader
+        .take(MAX_RESPONSE_BYTES as u64 + 1)
+        .read_to_end(&mut data)?;
+    if data.len() > MAX_RESPONSE_BYTES {
+        return Err(HttpErr::Parse("HTTP response exceeds 1 MiB limit".into()));
+    }
+    Ok(data)
 }
 
 // ── URL parsing ──────────────────────────────────────────────────────────
@@ -254,26 +248,51 @@ fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
     };
 
     // Split host from path/query
-    let (host_part, path_part) = match rest.find('/') {
+    let (host_part, path_part) = match rest.find(['/', '?']) {
         Some(i) => rest.split_at(i),
         None => (rest, "/"),
     };
 
     // Extract optional port from host_part
-    let (host, port) = match host_part.find(':') {
-        Some(i) => {
-            let h = host_part[..i].to_string();
-            let p = host_part[i + 1..]
+    let (host, port) = if let Some(bracketed) = host_part.strip_prefix('[') {
+        let (host, tail) = bracketed
+            .split_once(']')
+            .ok_or_else(|| HttpErr::Parse("unclosed IPv6 literal".into()))?;
+        let port = if tail.is_empty() {
+            default_port
+        } else {
+            tail.strip_prefix(':')
+                .ok_or_else(|| HttpErr::Parse("invalid IPv6 authority".into()))?
                 .parse::<u16>()
-                .map_err(|_| HttpErr::Parse(format!("invalid port in URL: {url}")))?;
-            (h, p)
+                .map_err(|_| HttpErr::Parse("invalid URL port".into()))?
+        };
+        (host.to_string(), port)
+    } else {
+        match host_part.find(':') {
+            Some(i) => {
+                let h = host_part[..i].to_string();
+                let p = host_part[i + 1..]
+                    .parse::<u16>()
+                    .map_err(|_| HttpErr::Parse("invalid URL port".into()))?;
+                (h, p)
+            }
+            None => (host_part.to_string(), default_port),
         }
-        None => (host_part.to_string(), default_port),
     };
+    if host.is_empty() || host.contains(['\r', '\n', '@']) {
+        return Err(HttpErr::Parse("invalid URL authority".into()));
+    }
 
     // Split query from path
     let (path, query) = match path_part.find('?') {
-        Some(i) => (path_part[..i].to_string(), path_part[i + 1..].to_string()),
+        Some(i) => (
+            if i == 0 {
+                "/".to_string()
+            } else {
+                path_part[..i].to_string()
+            },
+            path_part[i + 1..].to_string(),
+        ),
         None => (path_part.to_string(), String::new()),
     };
 
@@ -286,14 +305,15 @@ fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
 // Expects: "HTTP/1.1 <code> <reason>\r\n<headers>\r\n\r\n<body>"
 
 fn parse_http_response(data: &[u8]) -> Result<HttpResponse, HttpErr> {
-    let text = std::str::from_utf8(data)
-        .map_err(|_| HttpErr::Parse("response is not valid UTF-8".into()))?;
-
-    let sep = text
-        .find("\r\n\r\n")
+    let sep = data
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| HttpErr::Parse("no header/body separator found".into()))?;
-
-    let header_text = &text[..sep];
+    if sep > 65536 {
+        return Err(HttpErr::Parse("HTTP headers exceed 64 KiB limit".into()));
+    }
+    let header_text = std::str::from_utf8(&data[..sep])
+        .map_err(|_| HttpErr::Parse("headers are not valid UTF-8".into()))?;
     let body = data[sep + 4..].to_vec();
 
     let mut lines = header_text.lines();
@@ -332,6 +352,41 @@ fn parse_http_response(data: &[u8]) -> Result<HttpResponse, HttpErr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_read_is_bounded() {
+        assert!(read_response(&mut &vec![0; MAX_RESPONSE_BYTES][..]).is_ok());
+        assert!(read_response(&mut &vec![0; MAX_RESPONSE_BYTES + 1][..]).is_err());
+    }
+
+    #[test]
+    fn url_ipv6_and_query_without_path() {
+        assert_eq!(
+            parse_url("https://[::1]:8443/rpc").unwrap(),
+            ("::1".into(), 8443, "/rpc".into(), "".into())
+        );
+        assert_eq!(
+            parse_url("https://example.com?token=synthetic").unwrap(),
+            (
+                "example.com".into(),
+                443,
+                "/".into(),
+                "token=synthetic".into()
+            )
+        );
+        assert!(parse_url("https://user:secret@example.com/").is_err()); // # leak-guard-allow:LG-F4C6A155 synthetic invalid-authority fixture
+        assert!(parse_url("https://[::1").is_err());
+    }
+
+    #[test]
+    fn response_body_is_binary_not_header_text() {
+        assert_eq!(
+            parse_http_response(b"HTTP/1.1 200 OK\r\n\r\n\xff\xfe")
+                .unwrap()
+                .body,
+            vec![255, 254]
+        );
+    }
 
     #[test]
     fn test_parse_url_standard() {

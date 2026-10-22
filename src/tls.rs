@@ -515,6 +515,122 @@ fn base64_decode_strip(input: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustls::client::danger::ServerCertVerifier;
+    use rustls::pki_types::{ServerName, UnixTime};
+    use std::time::Duration;
+
+    // Exercise the same safe WebPKI/ring verifier used by normal-mode configs,
+    // with deterministic synthetic roots rather than the host's mutable store.
+    const TLS_ROOT: &[u8] = include_bytes!("../tests/fixtures/tls/root.der");
+    const TLS_VALID: &[u8] = include_bytes!("../tests/fixtures/tls/valid.der");
+    const TLS_SELF_SIGNED: &[u8] = include_bytes!("../tests/fixtures/tls/self-signed.der");
+    const TLS_TIME: u64 = 1_767_312_000; // 2026-01-02 00:00:00 UTC
+
+    fn verify_fixture(cert: &[u8], name: &str, now: u64) -> Result<(), rustls::Error> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(CertificateDer::from(TLS_ROOT)).unwrap();
+        let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(roots),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .build()
+        .unwrap();
+        verifier
+            .verify_server_cert(
+                &CertificateDer::from(cert),
+                &[],
+                &ServerName::try_from(name).unwrap(),
+                &[],
+                UnixTime::since_unix_epoch(Duration::from_secs(now)),
+            )
+            .map(|_| ())
+    }
+
+    #[test]
+    fn test_tls_accepts_valid_chain() {
+        verify_fixture(TLS_VALID, "tls-fixture.invalid", TLS_TIME).unwrap();
+    }
+
+    #[test]
+    fn test_tls_rejects_wrong_hostname() {
+        let error = verify_fixture(TLS_VALID, "wrong.invalid", TLS_TIME).unwrap_err();
+        assert!(matches!(
+            error,
+            rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForNameContext { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn test_tls_rejects_expired_chain() {
+        let error = verify_fixture(TLS_VALID, "tls-fixture.invalid", 2_208_988_800).unwrap_err();
+        assert!(matches!(
+            error,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::ExpiredContext { .. })
+        ));
+    }
+
+    #[test]
+    fn test_tls_rejects_untrusted_self_signed() {
+        let error = verify_fixture(TLS_SELF_SIGNED, "tls-fixture.invalid", TLS_TIME).unwrap_err();
+        assert!(matches!(
+            error,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)
+        ));
+    }
+
+    #[test]
+    fn test_tls_rejects_rustsec_2026_0382_distrusted_spkis() {
+        // These leaves chain to TLS_ROOT, but carry the eight public SPKIs
+        // explicitly distrusted in webpki 0.103.16. UnknownIssuer is NOT a pass.
+        let fixtures: &[(&str, &[u8])] = &[
+            (
+                "EMDVTLSCAG3B",
+                include_bytes!("../tests/fixtures/tls/EMDVTLSCAG3B.der"),
+            ),
+            (
+                "EMDVTLSCAG3C",
+                include_bytes!("../tests/fixtures/tls/EMDVTLSCAG3C.der"),
+            ),
+            (
+                "EMEVTLSCAG3B",
+                include_bytes!("../tests/fixtures/tls/EMEVTLSCAG3B.der"),
+            ),
+            (
+                "EMEVTLSCAG3C",
+                include_bytes!("../tests/fixtures/tls/EMEVTLSCAG3C.der"),
+            ),
+            (
+                "EMOVCSCAG3B",
+                include_bytes!("../tests/fixtures/tls/EMOVCSCAG3B.der"),
+            ),
+            (
+                "EMOVCSCAG3C",
+                include_bytes!("../tests/fixtures/tls/EMOVCSCAG3C.der"),
+            ),
+            (
+                "EMOVTLSCAG3B",
+                include_bytes!("../tests/fixtures/tls/EMOVTLSCAG3B.der"),
+            ),
+            (
+                "EMOVTLSCAG3C",
+                include_bytes!("../tests/fixtures/tls/EMOVTLSCAG3C.der"),
+            ),
+        ];
+        for (name, cert) in fixtures {
+            let error = verify_fixture(cert, "tls-fixture.invalid", TLS_TIME)
+                .expect_err("distrusted key must not be accepted");
+            // rustls preserves webpki's CertDistrusted as an opaque OtherError;
+            // no direct webpki dependency is needed just to name its variant.
+            match error {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::Other(error)) => {
+                    assert_eq!(format!("{:?}", error.0), "CertDistrusted", "{name}");
+                }
+                error => panic!("{name}: expected CertDistrusted, got {error:?}"),
+            }
+        }
+    }
 
     // ── base64_decode_strip tests ──────────────────────────────────────────
 

@@ -1,9 +1,6 @@
-//! Komari wire protocol: JSON-RPC 2.0 types and v1 flat-report backward
-//! compatibility.
+//! Komari v2 wire protocol: JSON-RPC 2.0 over WebSocket or HTTP POST.
 //!
-//! v2 wraps monitoring data in a JSON-RPC 2.0 envelope;
-//! v1 sends raw flat JSON for older `/api/clients/report` endpoints.
+//! Both transports use `/api/clients/v2/rpc` (Komari >= 1.5).
 
 pub mod fsm;
-pub mod v1;
 pub mod v2;
