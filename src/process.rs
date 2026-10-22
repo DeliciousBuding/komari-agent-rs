@@ -556,9 +556,13 @@ mod tests {
     #[test]
     fn timeout_kills_and_reaps() {
         let start = Instant::now();
-        let result = run(&mut fixture("tree-sleep"), None, Duration::from_millis(500)).unwrap();
+        // The deadline includes two executable starts. A 500ms budget could
+        // expire before the descendant exists on a busy Windows CI runner,
+        // which tests startup speed rather than process-tree termination.
+        let timeout = Duration::from_secs(3);
+        let result = run(&mut fixture("tree-sleep"), None, timeout).unwrap();
         assert_eq!(result.reason, StopReason::TimedOut);
-        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(start.elapsed() < timeout + Duration::from_secs(2));
         assert_stopped(pid(&result.output.stdout, "ROOT_PID="));
         assert_stopped(pid(&result.output.stdout, "CHILD_PID="));
     }
