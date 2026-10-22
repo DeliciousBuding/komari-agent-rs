@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, CString};
 use std::io;
-use std::os::raw::{c_char, c_int, c_ulong};
+use std::os::raw::{c_char, c_int, c_ulong, c_void};
 use std::os::unix::io::RawFd;
 
 use super::{Terminal, TerminalErr};
@@ -68,13 +68,13 @@ unsafe extern "C" {
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
 
     #[link_name = "read"]
-    fn sys_read(fd: c_int, buf: *mut u8, count: usize) -> isize;
+    fn sys_read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     #[link_name = "write"]
-    fn sys_write(fd: c_int, buf: *const u8, count: usize) -> isize;
+    fn sys_write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     #[link_name = "close"]
     fn sys_close(fd: c_int) -> c_int;
     #[link_name = "open"]
-    fn sys_open(pathname: *const c_char, flags: c_int) -> c_int;
+    fn sys_open(pathname: *const c_char, flags: c_int, ...) -> c_int;
 }
 
 // ── UnixTerminal ────────────────────────────────────────────────────────────
@@ -202,7 +202,7 @@ impl Terminal for UnixTerminal {
                 "PTY already closed",
             )));
         }
-        let n = unsafe { sys_read(self.pty_fd, buf.as_mut_ptr(), buf.len()) };
+        let n = unsafe { sys_read(self.pty_fd, buf.as_mut_ptr().cast::<c_void>(), buf.len()) };
         if n < 0 {
             let err = io::Error::last_os_error();
             // EAGAIN / EWOULDBLOCK on a non-blocking PTY → no output this poll.
@@ -228,7 +228,7 @@ impl Terminal for UnixTerminal {
                 "PTY already closed",
             )));
         }
-        let n = unsafe { sys_write(self.pty_fd, data.as_ptr(), data.len()) };
+        let n = unsafe { sys_write(self.pty_fd, data.as_ptr().cast::<c_void>(), data.len()) };
         if n < 0 {
             Err(TerminalErr::Io(io::Error::last_os_error()))
         } else {

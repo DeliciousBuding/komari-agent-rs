@@ -3,6 +3,9 @@
 ## v0.5.1 (2026-10-22)
 
 ### Fixed
+- Correct Unix terminal FFI signatures for current Rust compilers (community
+  contribution by [IShinji](https://github.com/IShinji),
+  [#107](https://github.com/DeliciousBuding/komari-agent-rs/pull/107)).
 - Update locked `rustls-webpki` to 0.103.16, addressing
   [RUSTSEC-2026-0382 / CVE-2026-111943](https://rustsec.org/advisories/RUSTSEC-2026-0382.html).
   Certificate paths containing distrusted emSign intermediate public keys are
