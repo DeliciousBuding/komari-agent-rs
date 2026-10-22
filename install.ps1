@@ -26,7 +26,7 @@ function Get-AgentChecksum([string]$Text, [string]$Asset) {
 
 function Write-AgentConfig([string]$Path, [string]$NewToken, [string]$NewEndpoint) {
     if (Test-Path -LiteralPath $Path) {
-        $config = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+        $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
     } else {
         $config = [pscustomobject]@{endpoint='';token='';disable_web_ssh=$true;disable_exec=$true;disable_auto_update=$true}
     }

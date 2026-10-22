@@ -105,6 +105,9 @@ jobs:
       - name: Offline Windows installer regressions
         shell: pwsh
         run: ./tests/installers.ps1
+      - name: Windows PowerShell 5.1 Unicode config regressions
+        shell: powershell
+        run: ./tests/installers.ps1
       - name: Check binary size < 2MB
         shell: pwsh
         run: |

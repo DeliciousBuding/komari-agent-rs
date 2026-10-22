@@ -20,7 +20,10 @@ try {
     $bin = Join-Path $InstallDir 'komari-agent-rs.exe'
     $cfg = Join-Path $InstallDir 'config.json'
     [IO.File]::WriteAllText($bin,'old-binary')
-    [IO.File]::WriteAllText($cfg,'{"token":"synthetic-secret-canary","endpoint":"https://example.test","include_nics":["fixture"],"disable_exec":true}')
+    # Construct Unicode without relying on PowerShell 5.1's source-file encoding.
+    $unicodeAlias = ([char]0x7F51).ToString() + [char]0x5361 + '-' + [char]0xE9
+    $initialConfig = [pscustomobject]@{token='synthetic-secret-canary';endpoint='https://example.test';include_nics=@($unicodeAlias);disable_exec=$true}
+    [IO.File]::WriteAllText($cfg,($initialConfig | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
     $oldConfig = [IO.File]::ReadAllText($cfg)
     $script:Token = ''; $script:Endpoint = ''; $script:Version='v0.6.0'; $script:GitHubProxy=''
     $env:PROCESSOR_ARCHITECTURE='AMD64'
@@ -65,8 +68,8 @@ try {
     Assert ([IO.File]::ReadAllText($cfg) -eq $oldConfig) 'config rollback failed'
     $output = Install-KomariAgent 6>&1 | Out-String
     Assert (-not $output.Contains('synthetic-secret-canary')) 'credential leaked in output'
-    $saved=Get-Content -Raw -LiteralPath $cfg | ConvertFrom-Json
-    Assert ($saved.token -eq 'synthetic-secret-canary' -and $saved.include_nics[0] -eq 'fixture' -and $saved.disable_exec) 'existing configuration was not preserved'
+    $saved=Get-Content -Raw -Encoding UTF8 -LiteralPath $cfg | ConvertFrom-Json
+    Assert ($saved.token -eq 'synthetic-secret-canary' -and $saved.include_nics[0] -eq $unicodeAlias -and $saved.disable_exec) 'existing Unicode configuration was not preserved'
     Assert ([IO.File]::ReadAllBytes($cfg)[0] -ne 0xEF) 'config has UTF-8 BOM'
     Assert (-not $script:registered[-1].Contains('synthetic-secret-canary')) 'credential leaked in task action'
     Assert ($script:registered[-1].Contains('install with spaces')) 'config path missing'
