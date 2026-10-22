@@ -764,16 +764,27 @@ fn parse_http_response(response: &str) -> Result<(u16, Option<String>, bool), Ws
     Ok((status_code, accept, permessage))
 }
 
-/// One in-flight frame: at most 14 header bytes and 1 MiB of payload.
-/// No bytes from the following frame are read ahead. Timeouts leave both
-/// offsets intact; terminal errors poison this reader until reconnection.
+/// One in-flight frame plus an optional fragmented data message. The sum of
+/// retained data payloads is at most 1 MiB; control frames are at most 125 B.
+/// Timeouts preserve both frame offsets and message reassembly. Terminal
+/// errors poison this reader until reconnection.
 #[derive(Default)]
 struct FrameReader {
     header: [u8; 14],
     header_read: usize,
     payload: Vec<u8>,
     payload_read: usize,
+    message: Vec<u8>,
+    message_opcode: u8,
+    message_compressed: bool,
     failed: bool,
+}
+
+struct ReceivedFrame {
+    fin: bool,
+    opcode: u8,
+    compressed: bool,
+    payload: Vec<u8>,
 }
 
 impl FrameReader {
@@ -782,6 +793,70 @@ impl FrameReader {
         stream: &mut R,
         compression_enabled: bool,
     ) -> Result<Option<WsMessage>, WsErr> {
+        loop {
+            let Some(ReceivedFrame {
+                fin,
+                opcode,
+                compressed,
+                payload,
+            }) = self.read_frame(stream, compression_enabled)?
+            else {
+                if self.message_opcode != 0 {
+                    self.failed = true;
+                    return Err(WsErr::Io(
+                        "unexpected EOF before final WebSocket continuation".to_string(),
+                    ));
+                }
+                return Ok(None);
+            };
+            match opcode {
+                8 => {
+                    self.message = Vec::new();
+                    self.message_opcode = 0;
+                    self.message_compressed = false;
+                    return Ok(Some(WsMessage::Close));
+                }
+                9 => return Ok(Some(WsMessage::Ping(payload))),
+                10 => return Ok(Some(WsMessage::Pong(payload))),
+                _ => {}
+            }
+            if opcode != 0 {
+                self.message_opcode = opcode;
+                self.message_compressed = compressed;
+                self.message = payload;
+            } else {
+                // Avoid geometric capacity growth beyond the message limit.
+                self.message.reserve_exact(payload.len());
+                self.message.extend_from_slice(&payload);
+            }
+            if !fin {
+                continue;
+            }
+            self.failed = true;
+            let mut payload = std::mem::take(&mut self.message);
+            if self.message_compressed {
+                // RFC 7692 compresses the whole message, not individual frames.
+                payload = inflate_permessage_deflate(&payload)?;
+            }
+            let message = if self.message_opcode == 1 {
+                WsMessage::Text(payload)
+            } else {
+                WsMessage::Binary(payload)
+            };
+            self.message_opcode = 0;
+            self.message_compressed = false;
+            self.failed = false;
+            return Ok(Some(message));
+        }
+    }
+
+    /// Read one frame, retaining all offsets on timeout. Controls may be
+    /// returned while message_opcode/message still track a fragmented message.
+    fn read_frame<R: Read>(
+        &mut self,
+        stream: &mut R,
+        compression_enabled: bool,
+    ) -> Result<Option<ReceivedFrame>, WsErr> {
         if self.failed {
             return Err(WsErr::Protocol(
                 "cannot resume a failed WebSocket frame reader".to_string(),
@@ -805,6 +880,26 @@ impl FrameReader {
         let opcode = self.header[0] & 0x0F;
         let masked = self.header[1] & 0x80 != 0;
         let short_len = self.header[1] & 0x7F;
+        let control = matches!(opcode, 8..=10);
+        let invalid = if self.header[0] & 0x30 != 0 {
+            Some("unsupported WebSocket reserved bits")
+        } else if !matches!(opcode, 0..=2 | 8..=10) {
+            Some("unsupported WebSocket opcode")
+        } else if control && (!fin || short_len > 125 || rsv1) {
+            Some("invalid WebSocket control frame")
+        } else if rsv1 && (!compression_enabled || opcode == 0) {
+            Some("invalid WebSocket compression flag")
+        } else if opcode == 0 && self.message_opcode == 0 {
+            Some("unexpected WebSocket continuation frame")
+        } else if matches!(opcode, 1 | 2) && self.message_opcode != 0 {
+            Some("new WebSocket data frame before final continuation")
+        } else {
+            None
+        };
+        if let Some(message) = invalid {
+            self.failed = true;
+            return Err(WsErr::Protocol(message.to_string()));
+        }
         let length_end = match short_len {
             126 => 4,
             127 => 10,
@@ -825,12 +920,13 @@ impl FrameReader {
             127 => u64::from_be_bytes(self.header[2..10].try_into().unwrap()),
             n => n as u64,
         };
-        if payload_len > MAX_FRAME_SIZE {
+        if payload_len > MAX_FRAME_SIZE
+            || (!control && payload_len > MAX_FRAME_SIZE - self.message.len() as u64)
+        {
             self.failed = true;
-            return Err(WsErr::Protocol(format!(
-                "frame payload too large: {} bytes (max {})",
-                payload_len, MAX_FRAME_SIZE
-            )));
+            return Err(WsErr::Protocol(
+                "frame or reassembled message payload exceeds 1 MiB safety limit".to_string(),
+            ));
         }
 
         // Resize only on the first visit to this frame's payload. A retry
@@ -856,31 +952,15 @@ impl FrameReader {
                 self.header[length_end..header_len].try_into().unwrap(),
             );
         }
-        if rsv1 && compression_enabled && (opcode == 1 || opcode == 2) {
-            payload = inflate_permessage_deflate(&payload)?;
-        }
-        if !fin {
-            return Err(WsErr::Protocol(
-                "fragmented frames not supported".to_string(),
-            ));
-        }
-        let message = match opcode {
-            1 => WsMessage::Text(payload),
-            2 => WsMessage::Binary(payload),
-            8 => WsMessage::Close,
-            9 => WsMessage::Ping(payload),
-            10 => WsMessage::Pong(payload),
-            _ => {
-                return Err(WsErr::Protocol(format!(
-                    "unknown or unsupported opcode: {}",
-                    opcode
-                )));
-            }
-        };
         self.header_read = 0;
         self.payload_read = 0;
         self.failed = false;
-        Ok(Some(message))
+        Ok(Some(ReceivedFrame {
+            fin,
+            opcode,
+            compressed: rsv1,
+            payload,
+        }))
     }
 }
 
@@ -1204,6 +1284,193 @@ mod tests {
             Some(WsMessage::Text(vec![b'x'; 130]))
         );
         server.join().unwrap();
+    }
+
+    fn fragment_frame(opcode: u8, payload: &[u8], fin: bool, compressed: bool) -> Vec<u8> {
+        let mut wire = test_frame(opcode, payload, false);
+        if !fin {
+            wire[0] &= !0x80;
+        }
+        if compressed {
+            wire[0] |= 0x40;
+        }
+        wire
+    }
+
+    #[test]
+    fn frame_reader_reassembles_continuations_with_interleaved_controls() {
+        let mut wire = fragment_frame(1, b"hel", false, false);
+        wire.extend_from_slice(&fragment_frame(0, b"lo ", false, false));
+        wire.extend_from_slice(&test_frame(9, b"ping", false));
+        wire.extend_from_slice(&test_frame(10, b"pong", false));
+        wire.extend_from_slice(&fragment_frame(0, b"world", true, false));
+        wire.extend_from_slice(&test_frame(2, b"binary", false));
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Ping(b"ping".to_vec()))
+        );
+        assert_eq!(reader.message_opcode, 1);
+        assert_eq!(reader.message, b"hello ");
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Pong(b"pong".to_vec()))
+        );
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Text(b"hello world".to_vec()))
+        );
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Binary(b"binary".to_vec()))
+        );
+    }
+
+    #[test]
+    fn frame_reader_reassembles_compressed_message_across_timeouts_and_ping() {
+        // Gorilla v1.5.3 NextWriter/flushFrame(false) sends opcode=1 + RSV1
+        // once, then opcode=0 without RSV1. Inflate only after final FIN.
+        let compressed = hex_decode(
+            "04c0310a84301085e1bbfc7558c2967315b19038852251f226362177f71b9cba6b7b0ac6ff97491c3b4626d15cfd0a6ce0afd710b6ac09c5165d18eaa5b8c49c1f00",
+        );
+        let mut wire = fragment_frame(1, &compressed[..10], false, true);
+        wire.extend_from_slice(&test_frame(9, b"alive", false));
+        wire.extend_from_slice(&fragment_frame(0, &compressed[10..30], false, false));
+        wire.extend_from_slice(&fragment_frame(0, &compressed[30..], true, false));
+        let mut steps = Vec::new();
+        for byte in wire {
+            steps.push(Ok(vec![byte]));
+            steps.push(read_error(std::io::ErrorKind::TimedOut));
+        }
+        let mut stream = ScriptedRead::new(steps);
+        let mut reader = FrameReader::default();
+        for expected in [
+            WsMessage::Ping(b"alive".to_vec()),
+            WsMessage::Text(
+                br#"{"jsonrpc":"2.0","id":"0","result":{"events":[],"status":"success"}}"#.to_vec(),
+            ),
+        ] {
+            loop {
+                match reader.read_message(&mut stream, true) {
+                    Ok(Some(message)) => {
+                        assert_eq!(message, expected);
+                        break;
+                    }
+                    result => assert_read_timeout(result),
+                }
+            }
+        }
+        assert_eq!(reader.message_opcode, 0);
+        assert!(reader.message.is_empty());
+    }
+
+    #[test]
+    fn frame_reader_validates_continuation_sequences_control_fin_and_reserved_bits() {
+        let first = fragment_frame(1, b"first", false, false);
+        let cases = [
+            (Vec::new(), fragment_frame(0, b"orphan", true, false), true),
+            (first.clone(), test_frame(1, b"new text", false), true),
+            (first.clone(), test_frame(2, b"new binary", false), true),
+            (
+                first.clone(),
+                fragment_frame(0, b"bad RSV1", true, true),
+                true,
+            ),
+            (
+                Vec::new(),
+                fragment_frame(1, b"unnegotiated", true, true),
+                false,
+            ),
+            (Vec::new(), vec![0xA1, 0], true), // RSV2
+            (Vec::new(), vec![0x91, 0], true), // RSV3
+            (Vec::new(), vec![0x83, 0], true), // reserved opcode
+        ];
+        for (prefix, frame, compression_enabled) in cases {
+            let mut wire = prefix;
+            wire.extend_from_slice(&frame);
+            let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+            let mut reader = FrameReader::default();
+            assert!(matches!(
+                reader.read_message(&mut stream, compression_enabled),
+                Err(WsErr::Protocol(_))
+            ));
+            assert!(reader.failed);
+        }
+        for opcode in [8, 9, 10] {
+            for (fin, rsv1, len) in [(false, false, 0), (true, true, 0), (true, false, 126)] {
+                let wire = fragment_frame(opcode, &vec![0; len], fin, rsv1);
+                let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+                let mut reader = FrameReader::default();
+                assert!(matches!(
+                    reader.read_message(&mut stream, true),
+                    Err(WsErr::Protocol(_))
+                ));
+                assert!(reader.failed);
+                assert_eq!(
+                    stream.consumed, 2,
+                    "reject invalid control header before allocating payload"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_reader_bounds_whole_fragmented_message_before_next_payload_allocation() {
+        let first = fragment_frame(2, &vec![b'a'; MAX_FRAME_SIZE as usize / 2], false, false);
+        let mut continuation_header = vec![0x80, 127];
+        continuation_header.extend_from_slice(&(MAX_FRAME_SIZE / 2 + 1).to_be_bytes());
+        let consumed = first.len() + continuation_header.len();
+        let mut wire = first.clone();
+        wire.extend_from_slice(&continuation_header);
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+        assert!(matches!(
+            reader.read_message(&mut stream, false),
+            Err(WsErr::Protocol(_))
+        ));
+        assert_eq!(stream.consumed, consumed);
+        assert!(reader.payload.is_empty());
+        assert_eq!(reader.message.len(), MAX_FRAME_SIZE as usize / 2);
+
+        let mut wire = first;
+        wire.extend_from_slice(&fragment_frame(
+            0,
+            &vec![b'b'; MAX_FRAME_SIZE as usize / 2],
+            true,
+            false,
+        ));
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+        let Some(WsMessage::Binary(payload)) = reader.read_message(&mut stream, false).unwrap()
+        else {
+            panic!("binary message");
+        };
+        assert_eq!(payload.len(), MAX_FRAME_SIZE as usize);
+        assert_eq!(payload[0], b'a');
+        assert_eq!(payload[payload.len() - 1], b'b');
+    }
+
+    #[test]
+    fn frame_reader_fragmented_eof_is_error_and_close_can_interrupt_reassembly() {
+        let first = fragment_frame(1, b"unfinished", false, false);
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(first.clone())]);
+        assert!(matches!(
+            reader.read_message(&mut stream, false),
+            Err(WsErr::Io(_))
+        ));
+        assert!(reader.failed);
+        let mut wire = first;
+        wire.extend_from_slice(&test_frame(8, &[], false));
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Close)
+        );
+        assert!(reader.message.is_empty());
+        assert_eq!(reader.message_opcode, 0);
     }
 
     // ── parse_endpoint ──
