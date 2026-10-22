@@ -118,8 +118,12 @@ pub fn check_and_update_target(
     target: &str,
 ) -> Result<bool, UpdateErr> {
     let target = target.trim().trim_start_matches(['v', 'V']);
+    let current_version = current_version.trim().trim_start_matches(['v', 'V']);
     if target.is_empty() {
         return Err(UpdateErr::Other("empty requested version".into()));
+    }
+    if parse_semver(target).is_some() && target == current_version {
+        return Ok(false);
     }
     let mut secure_config = config.clone();
     secure_config.ignore_unsafe_cert = false;
@@ -814,6 +818,13 @@ mod tests {
         assert!(version_matches_target("0.7.1", [0, 7, 1], "0.*"));
         assert!(!version_matches_target("0.7.1", [0, 7, 1], "0.6.*"));
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn current_exact_target_needs_no_network() {
+        let mut config = Config::default();
+        config.disable_auto_update = false;
+        assert!(!check_and_update_target("v0.7.0", &config, "v0.7.0").unwrap());
     }
 
     #[test]

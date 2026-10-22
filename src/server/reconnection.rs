@@ -386,12 +386,10 @@ fn handle_startup_config_request(
     }
 }
 
-/// `agent.switchVersion` is permanently unsupported by fleet policy: remote
-/// version switching conflicts with `--disable-auto-update` plus the
-/// SHA-256-pinned manual rollout SOP. The event is fire-and-forget (the
-/// server has already answered `queued: true`), so we only log — loudly and
-/// specifically, not the generic unhandled-method line — and deliberately do
-/// not advertise the `switch_version` capability.
+/// Handle an authenticated `agent.switchVersion` only when the self-update
+/// feature, remote control, and automatic updates are all enabled. The event
+/// is fire-and-forget (the server has already answered `queued: true`), so
+/// failures are logged without pretending the current binary changed.
 fn handle_switch_version(config: &Config, _version: &str) {
     if config.disable_web_ssh || config.disable_auto_update {
         eprintln!(
