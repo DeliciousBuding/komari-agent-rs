@@ -25,7 +25,7 @@ try {
     $initialConfig = [pscustomobject]@{token='synthetic-secret-canary';endpoint='https://example.test';include_nics=@($unicodeAlias);disable_exec=$true}
     [IO.File]::WriteAllText($cfg,($initialConfig | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
     $oldConfig = [IO.File]::ReadAllText($cfg)
-    $script:Token = ''; $script:Endpoint = ''; $script:Version='v0.6.0'; $script:GitHubProxy=''
+    $script:Token = ''; $script:Endpoint = ''; $script:Version='v0.7.0'; $script:GitHubProxy=''
     $env:PROCESSOR_ARCHITECTURE='AMD64'
     $script:mode='valid'; $script:stopped=0; $script:started=0; $script:registered=@(); $script:failRegister=$false
     function Test-AgentAdministrator { return $true }

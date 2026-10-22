@@ -16,10 +16,10 @@ This matrix describes this agent's supported surface, not a performance ranking.
 | Interactive terminal | terminal feature, disable_web_ssh=false and non-http_only |
 | startupConfig | Effective settings and version/features, credentials redacted |
 | Self-update | self-update feature and explicit disable_auto_update=false |
-| Server-requested switchVersion | Deliberately refused; no capability advertised |
-| File management | Unsupported; no file capability advertised |
+| Server-requested switchVersion | self-update/full build plus disable_web_ssh=false and disable_auto_update=false; stable checksum-verified releases only |
+| File management | Komari 1.6 list/stat/mutate/search and streaming upload/download; disable_web_ssh=false; bounded workers/chunks |
 | Network-test/iperf/trace DTOs | Unsupported; upstream definitions alone do not establish a live contract |
-| Auto-discovery enrollment | Not a replacement for manual node registration |
+| Auto-discovery enrollment | Shared key obtains and atomically persists a node credential; existing manual tokens remain supported |
 | v1 report/basicInfo endpoints | Removed in 0.6; use a prior release with old servers |
 
 Runtime permission checks remain authoritative if a server sends an unadvertised event.
