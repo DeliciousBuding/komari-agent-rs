@@ -282,7 +282,7 @@ fn list(path: String) -> Result<Vec<u8>, FileErr> {
 fn list_roots() -> Result<Vec<u8>, FileErr> {
     #[cfg(windows)]
     {
-        return Ok(br#"[{"name":"/","path":"/","is_dir":true,"is_symlink":false,"size":0,"mode_octal":"0755","uid":-1,"gid":-1,"mode":"drwxrwxrwx","owner":"","group":"","modified_at":"1970-01-01T00:00:00Z"}]"#.to_vec());
+        Ok(br#"[{"name":"/","path":"/","is_dir":true,"is_symlink":false,"size":0,"mode_octal":"0755","uid":-1,"gid":-1,"mode":"drwxrwxrwx","owner":"","group":"","modified_at":"1970-01-01T00:00:00Z"}]"#.to_vec())
     }
     #[cfg(not(windows))]
     Ok(json_array([describe(Path::new("/"))?]))
