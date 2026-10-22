@@ -11,7 +11,7 @@
 
 // Shared field scanner for cold-path server events and release metadata.
 fn skip_ws(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() && b[i].is_ascii_whitespace() {
+    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\r' | b'\n') {
         i += 1;
     }
     i
@@ -199,7 +199,7 @@ pub(crate) fn decode_json_string(raw: &[u8]) -> Option<String> {
             'f' => out.push('\u{c}'),
             'u' => {
                 let hex: String = it.by_ref().take(4).collect();
-                if hex.len() != 4 {
+                if hex.len() != 4 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return None;
                 }
                 let mut cp = u32::from_str_radix(&hex, 16).ok()?;
@@ -209,7 +209,7 @@ pub(crate) fn decode_json_string(raw: &[u8]) -> Option<String> {
                         return None;
                     }
                     let lo_hex: String = it.by_ref().take(4).collect();
-                    if lo_hex.len() != 4 {
+                    if lo_hex.len() != 4 || !lo_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                         return None;
                     }
                     let lo = u32::from_str_radix(&lo_hex, 16).ok()?;
@@ -857,6 +857,7 @@ mod scanner_regressions {
             r#""\q""#,
             r#""\u1""#,
             r#""\uZZZZ""#,
+            r#""\u+001""#,
             r#""\uD800""#,
             r#""\uDC00""#,
             "\"a\nb\"",
@@ -871,5 +872,18 @@ mod scanner_regressions {
             decode_json_string(br#""\uD83D\uDE00\n\"\\\/""#).as_deref(),
             Some("😀\n\"\\/")
         );
+    }
+
+    #[test]
+    fn object_validation_uses_json_whitespace_and_rejects_duplicate_keys() {
+        for raw in [
+            "\u{b}{\"ok\":true}",
+            "{\"ok\":true}\u{c}",
+            r#"{"ok":true,"\u006fk":false}"#,
+            r#"{"ok":{"same":0,"same":1}}"#,
+        ] {
+            assert!(!is_valid_object(raw.as_bytes()));
+        }
+        assert!(is_valid_object(b" \t\r\n{\"ok\": true}\r\n"));
     }
 }
