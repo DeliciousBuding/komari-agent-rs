@@ -27,8 +27,7 @@ impl NetInfo {
 // ── Previous snapshot ────────────────────────────────────────────────────────
 
 pub struct PrevNetSnapshot {
-    names: [[u8; 16]; MAX_NETWORKS],
-    name_lens: [u8; MAX_NETWORKS],
+    luids: [u64; MAX_NETWORKS],
     rx: [u64; MAX_NETWORKS],
     tx: [u64; MAX_NETWORKS],
     ts: Instant,
@@ -38,8 +37,7 @@ pub struct PrevNetSnapshot {
 impl PrevNetSnapshot {
     pub fn new() -> Self {
         Self {
-            names: [[0u8; 16]; MAX_NETWORKS],
-            name_lens: [0u8; MAX_NETWORKS],
+            luids: [0u64; MAX_NETWORKS],
             rx: [0u64; MAX_NETWORKS],
             tx: [0u64; MAX_NETWORKS],
             ts: Instant::now(),
@@ -47,10 +45,9 @@ impl PrevNetSnapshot {
         }
     }
 
-    fn get(&self, name: &str) -> Option<(u64, u64, Instant)> {
-        let b = name.as_bytes();
+    fn get(&self, luid: u64) -> Option<(u64, u64, Instant)> {
         for i in 0..self.len as usize {
-            if self.name_lens[i] as usize == b.len() && self.names[i][..b.len()] == *b {
+            if self.luids[i] == luid {
                 return Some((self.rx[i], self.tx[i], self.ts));
             }
         }
@@ -100,7 +97,8 @@ const IF_MAX_STRING_SIZE: usize = 256;
 #[repr(C)]
 struct MIB_IF_ROW2 {
     // 0x000..0x01C: InterfaceLuid(8) + InterfaceIndex(4) + InterfaceGuid(16, 4-byte aligned) = 28
-    _pad0: [u8; 0x1C],
+    interface_luid: u64,
+    _pad0: [u8; 0x1C - 8],
     // 0x01C..0x21E: Alias [u16;257] = 514 bytes
     _alias: [u16; IF_MAX_STRING_SIZE + 1], // offset 0x01C, size 514
     description: [u16; IF_MAX_STRING_SIZE + 1], // offset 0x21E, size 514
@@ -111,7 +109,8 @@ struct MIB_IF_ROW2 {
     // 0x46C..0x480: TunnelType..DirectionType (5x u32) = 20 bytes
     _pad2: [u8; 0x480 - 0x46C],
     // 0x480..0x484: InterfaceAndOperStatusFlags (4 bytes incl. internal pad)
-    _pad3: [u8; 0x484 - 0x480],
+    interface_flags: u8,
+    _pad3: [u8; 3],
     oper_status: u32,         // offset 0x484
     admin_status: u32,        // offset 0x488
     media_connect_state: u32, // offset 0x48C
@@ -140,6 +139,9 @@ unsafe extern "system" {
 }
 
 const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
+// MIB_IF_ROW2::InterfaceAndOperStatusFlags.FilterInterface (netioapi.h).
+// These NDIS filter rows duplicate an adapter rather than a traffic source.
+const FILTER_INTERFACE: u8 = 1 << 1;
 const IF_OPER_STATUS_UP: u32 = 1;
 const MEDIA_CONNECT_STATE_CONNECTED: u32 = 1;
 const NO_ERROR: u32 = 0;
@@ -151,7 +153,10 @@ fn wide_to_utf8(wide: &[u16]) -> String {
 
 fn fit_name(name: &str) -> ([u8; 16], u8) {
     let b = name.as_bytes();
-    let n = b.len().min(15);
+    let mut n = b.len().min(15);
+    while !name.is_char_boundary(n) {
+        n -= 1;
+    }
     let mut buf = [0u8; 16];
     buf[..n].copy_from_slice(&b[..n]);
     (buf, n as u8)
@@ -159,7 +164,6 @@ fn fit_name(name: &str) -> ([u8; 16], u8) {
 
 pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo, MAX_NETWORKS> {
     let mut out = SmallVec::new();
-    let now = Instant::now();
 
     let mut table_ptr: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
     let ret = unsafe { GetIfTable2(&mut table_ptr) };
@@ -170,18 +174,32 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     let table = unsafe { &*table_ptr };
     let num = table.num_entries as usize;
 
-    let mut nn = [[0u8; 16]; MAX_NETWORKS];
-    let mut nl = [0u8; MAX_NETWORKS];
+    let header_size = std::mem::size_of::<MIB_IF_TABLE2>();
+    let rows_base = unsafe { (table_ptr as *const u8).add(header_size) } as *const MIB_IF_ROW2;
+    let rows = unsafe { std::slice::from_raw_parts(rows_base, num) };
+    out = collect_rows(rows, config, prev, Instant::now());
+    unsafe {
+        FreeMibTable(table_ptr as *mut std::ffi::c_void);
+    }
+    out
+}
+
+fn collect_rows(
+    rows: &[MIB_IF_ROW2],
+    config: &Config,
+    prev: &mut PrevNetSnapshot,
+    now: Instant,
+) -> SmallVec<NetInfo, MAX_NETWORKS> {
+    let mut out = SmallVec::new();
+    let mut luids = [0u64; MAX_NETWORKS];
     let mut nr = [0u64; MAX_NETWORKS];
     let mut nt = [0u64; MAX_NETWORKS];
     let mut nc: u8 = 0;
 
-    let header_size = std::mem::size_of::<MIB_IF_TABLE2>();
-    let rows_base = unsafe { (table_ptr as *const u8).add(header_size) } as *const MIB_IF_ROW2;
-
-    for i in 0..num {
-        let row = unsafe { &*rows_base.add(i) };
-
+    for row in rows {
+        if row.interface_flags & FILTER_INTERFACE != 0 {
+            continue;
+        }
         if row.oper_status != IF_OPER_STATUS_UP {
             continue;
         }
@@ -217,7 +235,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
         let rx = row.in_octets;
         let tx = row.out_octets;
 
-        let (down, up) = match prev.get(&desc) {
+        let (down, up) = match prev.get(row.interface_luid) {
             Some((prx, ptx, pts)) => {
                 let secs = now.duration_since(pts).as_secs_f64();
                 if secs < 0.001 {
@@ -244,20 +262,14 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
         });
 
         if (nc as usize) < MAX_NETWORKS {
-            nn[nc as usize] = name_buf;
-            nl[nc as usize] = name_len;
+            luids[nc as usize] = row.interface_luid;
             nr[nc as usize] = rx;
             nt[nc as usize] = tx;
             nc += 1;
         }
     }
 
-    unsafe {
-        FreeMibTable(table_ptr as *mut std::ffi::c_void);
-    }
-
-    prev.names = nn;
-    prev.name_lens = nl;
+    prev.luids = luids;
     prev.rx = nr;
     prev.tx = nt;
     prev.ts = now;
@@ -270,6 +282,84 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
 mod tests {
     use super::*;
     use crate::config::Config;
+
+    fn row(luid: u64, name: &str, flags: u8, rx: u64, tx: u64) -> MIB_IF_ROW2 {
+        // All fields are integer values or arrays, so zero is valid.
+        let mut row: MIB_IF_ROW2 = unsafe { std::mem::zeroed() };
+        row.interface_luid = luid;
+        row.interface_flags = flags;
+        row.oper_status = IF_OPER_STATUS_UP;
+        row.media_connect_state = MEDIA_CONNECT_STATE_CONNECTED;
+        row.if_type = 6; // ethernet
+        for (dst, src) in row.description.iter_mut().zip(name.encode_utf16()) {
+            *dst = src;
+        }
+        row.in_octets = rx;
+        row.out_octets = tx;
+        row
+    }
+
+    #[test]
+    fn mib_row_layout_matches_sdk() {
+        assert_eq!(std::mem::size_of::<MIB_IF_ROW2>(), 0x548);
+        assert_eq!(std::mem::size_of::<MIB_IF_TABLE2>(), 8);
+        assert_eq!(std::mem::offset_of!(MIB_IF_ROW2, description), 0x21E);
+        assert_eq!(std::mem::offset_of!(MIB_IF_ROW2, interface_flags), 0x480);
+        assert_eq!(std::mem::offset_of!(MIB_IF_ROW2, oper_status), 0x484);
+        assert_eq!(std::mem::offset_of!(MIB_IF_ROW2, in_octets), 0x4B8);
+        assert_eq!(std::mem::offset_of!(MIB_IF_ROW2, out_octets), 0x500);
+    }
+
+    #[test]
+    fn filter_rows_cannot_exhaust_capacity_before_real_adapter() {
+        let mut rows: Vec<_> = (0..MAX_NETWORKS + 5)
+            .map(|i| row(i as u64, "NDIS filter", FILTER_INTERFACE, 0, 0))
+            .collect();
+        rows.push(row(100, "Ethernet adapter", 0, 1234, 5678));
+        let nets = collect_rows(
+            &rows,
+            &Config::default(),
+            &mut PrevNetSnapshot::new(),
+            Instant::now(),
+        );
+        assert_eq!(nets.len(), 1);
+        assert_eq!(nets[0].total_down, 1234);
+        assert_eq!(nets[0].total_up, 5678);
+    }
+
+    #[test]
+    fn long_names_and_row_reordering_preserve_distinct_rate_baselines() {
+        let config = Config::default();
+        let mut prev = PrevNetSnapshot::new();
+        let now = Instant::now();
+        let first = [
+            row(1, "Ethernet adapter A", 0, 100, 200),
+            row(2, "Ethernet adapter B", 0, 1000, 2000),
+        ];
+        let nets = collect_rows(&first, &config, &mut prev, now);
+        assert_eq!(nets[0].down, 0);
+        let second = [
+            row(2, "Ethernet adapter B", 0, 1300, 2400),
+            row(1, "Ethernet adapter A", 0, 150, 275),
+        ];
+        let nets = collect_rows(
+            &second,
+            &config,
+            &mut prev,
+            now + std::time::Duration::from_secs(1),
+        );
+        assert_eq!((nets[0].down, nets[0].up), (300, 400));
+        assert_eq!((nets[1].down, nets[1].up), (50, 75));
+    }
+
+    #[test]
+    fn display_name_truncation_preserves_utf8() {
+        let (buf, len) = fit_name("网卡适配器 Ethernet");
+        assert_eq!(
+            std::str::from_utf8(&buf[..len as usize]).unwrap(),
+            "网卡适配器"
+        );
+    }
 
     /// Regression for the MIB_IF_ROW2 byte-offset fix.
     ///
