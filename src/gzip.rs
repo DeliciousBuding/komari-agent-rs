@@ -1,6 +1,7 @@
 // Fixed-Huffman DEFLATE encoder with gzip (RFC 1952) wrapper.
 // Encode only — no decode needed (server responses are uncompressed JSON).
-// DD9 in spec.md: fixed Huffman encode-only. Unconditional: needed for HTTP POST fallback.
+// Fixed-Huffman encoding only. This path is always built because HTTP reporting
+// may use gzip compression without the WebSocket feature.
 //
 // The full encoder surface (crc32, deflate, gzip_compress, helpers) is kept as a
 // complete library; only the public entry point is exercised today. Allow

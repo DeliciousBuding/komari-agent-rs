@@ -1,5 +1,5 @@
 // http.rs — Minimal HTTP/1.1 POST client.
-// DD4 in spec.md: manual HTTP client, ~70 lines. No reqwest/hyper.
+// Manual client for the small HTTP surface; no reqwest/hyper dependency.
 // Pure std + rustls. Manual HTTP/1.1 formatting.
 
 use std::fmt;

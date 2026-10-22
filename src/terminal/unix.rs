@@ -2,7 +2,7 @@
 //
 // References:
 //   - komari-agent-go/terminal/terminal_unix.go (creack/pty model)
-//   - docs/plan/spec.md DD11
+//   - docs/architecture.md (permissions and resource boundaries)
 //
 // Builds only on `#[cfg(target_family = "unix")]` when `feature = "terminal"`.
 

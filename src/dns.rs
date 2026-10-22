@@ -3,7 +3,8 @@
 // Mirrors Go dnsresolver package:
 //   upstream komari-agent-go/dnsresolver/resolver.go
 //
-// 100% feature parity: TTL cache (50 entries, 5 min), 10 built-in DNS servers,
+// Includes the Go resolver behaviors used by this agent: TTL cache (50 entries,
+// 5 min), 10 built-in DNS servers,
 // system DNS fallback, raw UDP DNS query (A + AAAA), IP version preference
 // sorting, Happy Eyeballs lite, and a dial-context factory for TCP connections.
 //

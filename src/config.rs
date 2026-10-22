@@ -1,5 +1,5 @@
 // komari-agent-rs: hand-rolled CLI + env + JSON config parser.
-// DD1 in spec.md: no clap, no serde. ~600 lines total.
+// The implementation intentionally avoids clap and serde to keep the core small.
 //
 // Config order matches Go flag.go struct exactly, plus user-requested fields:
 //   debug_log, exclude_mountpoints
@@ -7,7 +7,7 @@
 // References:
 //   upstream komari-agent-go/cmd/flags/flag.go  (struct + tags)
 //   upstream komari-agent-go/cmd/root.go        (cobra init + env loader)
-//   komari-agent-rs/docs/plan/spec.md   (DD1 constraint)
+//   komari-agent-rs/docs/architecture.md (module and resource boundaries)
 
 // Main loads CLI, environment and JSON configuration in that order; JSON wins.
 // The config tokenizer owns typed configuration values. Cold-path RPC/release
@@ -878,7 +878,7 @@ pub fn load_env(config: &mut Config) {
 }
 
 // ============================================================================
-// Minimal hand-rolled JSON parser (no serde — DD2 constraint)
+// Minimal hand-rolled JSON parser; serde is deliberately not a dependency.
 // ============================================================================
 
 #[derive(Debug, Clone)]

@@ -1,6 +1,6 @@
 // ws.rs — WebSocket connect + handshake + manual frame codec (RFC 6455).
 //
-// Design constraints (per spec.md DD3):
+// Design constraints:
 //   - Manual frame codec — no tungstenite.
 //   - SHA-1 + Base64 via crate::crypto (ws_accept_key, ws_generate_key, ws_verify_accept).
 //   - TLS via rustls::StreamOwned (ClientConfig provided by caller from tls.rs).
@@ -9,7 +9,7 @@
 //
 // References:
 //   - RFC 6455 (WebSocket Protocol)
-//   - komari-agent-rs/docs/plan/spec.md (DD3)
+//   - komari-agent-rs/docs/architecture.md
 //
 // The WS codec exposes a complete frame/error/close surface (RFC 6455 §7); a few
 // error variants and the `close` handshake helper are not yet exercised by the

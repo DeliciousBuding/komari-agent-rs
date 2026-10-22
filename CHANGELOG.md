@@ -147,9 +147,10 @@ server upgrade.
   set/unset state remains auditable). The Go agent uploads the full config
   including credentials; a fleet audit surface must not expand credential
   exposure to the server process and admin panel responses.
-- **`agent.switchVersion` is permanently unsupported**: remote version
-  switching conflicts with `disable_auto_update` + SHA-256-pinned manual
-  rollout. The `switch_version` capability is not advertised.
+- **`agent.switchVersion` was unsupported in v0.5.0**: remote version switching
+  conflicted with the then-current `disable_auto_update` and SHA-256-pinned
+  manual rollout policy. The `switch_version` capability was not advertised.
+  v0.7.0 supersedes that limitation with the gated implementation above.
 
 ### Notes
 - Protocol spec source of truth is the server repo's
