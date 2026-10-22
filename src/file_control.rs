@@ -71,7 +71,7 @@ fn canceled_uploads() -> &'static Mutex<HashSet<String>> {
 
 pub fn spawn(config: &Config, dial: &Dialer, tls: &Arc<rustls::ClientConfig>, event: &[u8]) {
     if ACTIVE_WORKERS
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
             (active < MAX_WORKERS).then_some(active + 1)
         })
         .is_err()
@@ -407,7 +407,7 @@ fn owner_name(_metadata: &fs::Metadata) -> String {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return account_name("/etc/passwd", _metadata.uid());
+        account_name("/etc/passwd", _metadata.uid())
     }
     #[cfg(not(unix))]
     String::new()
@@ -417,7 +417,7 @@ fn group_name(_metadata: &fs::Metadata) -> String {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return account_name("/etc/group", _metadata.gid());
+        account_name("/etc/group", _metadata.gid())
     }
     #[cfg(not(unix))]
     String::new()
@@ -567,7 +567,7 @@ fn chmod(path: &Path, mode: &str) -> Result<Vec<u8>, FileErr> {
             return Err(FileErr::Invalid("invalid mode"));
         }
         fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-        return Ok(format!("{{\"mode\":\"{mode:04o}\"}}").into_bytes());
+        Ok(format!("{{\"mode\":\"{mode:04o}\"}}").into_bytes())
     }
     #[cfg(not(unix))]
     {
@@ -611,7 +611,7 @@ fn chown(path: &Path, args: &[u8]) -> Result<Vec<u8>, FileErr> {
         if result != 0 {
             return Err(io::Error::last_os_error().into());
         }
-        return Ok(format!("{{\"uid\":{uid},\"gid\":{gid}}}").into_bytes());
+        Ok(format!("{{\"uid\":{uid},\"gid\":{gid}}}").into_bytes())
     }
     #[cfg(not(unix))]
     {
@@ -908,7 +908,7 @@ fn upload_stream(
     }
     received.received.sync_all()?;
     drop(received);
-    let mut file = OpenOptions::new().create(true).write(true).open(&stage)?;
+    let mut file = OpenOptions::new().write(true).open(&stage)?;
     let mut received = File::open(&chunk_stage)?;
     file.seek(SeekFrom::Start(offset))?;
     let written = io::copy(&mut received, &mut file)?;
