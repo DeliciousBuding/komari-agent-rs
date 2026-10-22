@@ -4,10 +4,8 @@
 
 Only the latest release line receives security fixes.
 
-| Version | Supported |
-|---------|:---------:|
-| 0.2.x   | ✅        |
-| 0.1.x   | ❌        |
+Security fixes are released on the latest published line. Upgrade to the latest
+verified release; older lines do not receive a separate backport guarantee.
 
 ## Reporting a vulnerability
 

@@ -1,247 +1,70 @@
-<div align="center">
-
 # komari-agent-rs
+最后更新：2026-10-22 13:25
 
-**极致轻量的 Komari 监控 Agent**
+[English](README.md) · [发布版本](https://github.com/DeliciousBuding/komari-agent-rs/releases) · [更新记录](CHANGELOG.md)
 
-Rust · 同步单线程 · ~1.5 MB 二进制 · &lt;3 MB RSS · **内存占用仅为 Go Agent 的 1/10**
+面向 [Komari](https://github.com/komari-monitor/komari) 的 Rust 监控 agent。主采集循环同步运行，使用操作系统根证书；默认构建含指标与 ping，GPU、交互终端、自更新按 feature 编译。
 
-[![CI](https://github.com/DeliciousBuding/komari-agent-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliciousBuding/komari-agent-rs/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/DeliciousBuding/komari-agent-rs?color=green&label=release)](https://github.com/DeliciousBuding/komari-agent-rs/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Platforms](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows%20%7C%20freebsd-blueviolet)](#安装)
-[![Stars](https://img.shields.io/github/stars/DeliciousBuding/komari-agent-rs?style=social)](https://github.com/DeliciousBuding/komari-agent-rs/stargazers)
+0.6 版本使用 v2 JSON-RPC，通过 WebSocket 或 HTTP POST 传输。[支持矩阵](docs/COMPARISON.md) 列出功能、平台验证范围和与 Go agent 的差异，不承诺所有上游功能等价或所有机器固定 RSS。
 
-`komari` · `rust` · `rustls` · `监控` · `轻量` · `单线程`
+## 运行与升级
 
-📦 **[下载](https://github.com/DeliciousBuding/komari-agent-rs/releases)** · 📖 **[文档](#文档)** · 💬 **[讨论区](https://github.com/DeliciousBuding/komari-agent-rs/discussions)** · 📋 **[更新日志](CHANGELOG.md)**
+从[发布页](https://github.com/DeliciousBuding/komari-agent-rs/releases)下载匹配 OS/架构的资产及 `checksums.txt`，校验后运行。Linux 有 `-default` 和 `-full` 两种资产，均含 ping；Windows 当前发布 x86_64。
 
-**[English](README.md)** · **[简体中文](README.zh-CN.md)**
+在 Komari 创建节点，将 endpoint/token 写入权限受限的 UTF-8 无 BOM 文件：
 
-</div>
-
----
-
-> [`komari-monitor/komari-agent`](https://github.com/komari-monitor/komari-agent)(Go)的 Rust 重写,服务于 [`komari-monitor/komari`](https://github.com/komari-monitor/komari) 服务器监控面板。与官方 Go Agent 线缆兼容 —— 在 Komari 服务端注册一个节点,把 Agent 指向它即可。
-
-## 目录
-
-- [快速开始](#快速开始)
-- [功能](#功能)
-- [与 Go / Zig Agent 对比](#与-go--zig-agent-对比)
-- [安装](#安装)— Linux / macOS / Windows / FreeBSD
-- [从源码构建](#从源码构建)
-- [配置](#配置)— CLI / 环境变量 / JSON
-- [架构](#架构)
-- [文档](#文档)
-- [贡献](#贡献)
-- [许可证](#许可证)
-
----
-
-## 快速开始
-
-```bash
-# 下载并运行(Linux)
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64 -o komari-agent
-chmod +x komari-agent
-./komari-agent --token 你的TOKEN --endpoint https://你的komari服务端
+```json
+{
+  "endpoint": "https://komari.example.com",
+  "token": "replace-with-node-token",
+  "interval": 3,
+  "disable_exec": true,
+  "disable_web_ssh": true,
+  "disable_auto_update": true
+}
 ```
 
-单个二进制,无运行时依赖,不依赖 OpenSSL。
-
-## 功能
-
-- **CPU** —— 每核利用率、型号、核心数
-- **内存** —— 总量 / 已用 / 可用 / swap,三模式上报(raw / 含缓存 / 仅已用)
-- **磁盘** —— 每分区总量 / 已用 / 空闲,过滤物理设备
-- **网络** —— 每网卡 RX/TX 速率增量、TCP/UDP 连接数
-- **GPU** —— 型号 / 利用率 / 显存 / 温度(NVIDIA、AMD ROCm、Intel DRM、Apple Metal、DXGI)
-- **负载** —— 1/5/15 分钟平均负载
-- **连接** —— TCP4/TCP6/UDP socket 计数
-- **进程** —— 总进程数
-- **运行时间** —— 系统运行秒数
-- **IP** —— 公网 IP 自动探测
-- **系统信息** —— OS 名称、内核版本、虚拟化检测
-- **v1/v2 协议** —— JSON-RPC 2.0 over WebSocket,带 HTTP POST 回退(JSON-RPC 1.0 兼容)
-- **v2 agent 控制事件** —— 响应 `agent.startupConfig` 回传脱敏启动快照（凭据不出节点）；`agent.switchVersion` 策略性不支持（更新走手动哈希钉版）
-- **远程执行** —— 通过服务端在 Agent 上执行命令
-- **ICMP/TCP/HTTP ping** —— 三级 ping 自动降级
-- **交互式终端** —— PTY(Linux/macOS/FreeBSD)+ ConPTY(Windows)
-- **自我更新** —— 拉取并应用最新 GitHub Release
-- **跨平台** —— Linux、macOS、Windows、FreeBSD,功能完全对齐
-
-## 与 Go / Zig Agent 对比
-
-| | Go Agent | Zig Agent | **komari-agent-rs** |
-|---|---|---|---|
-| 二进制大小 | ~14 MB | ~1.3 MB | **~1.5 MB**(196 KB 自研代码 + ~1 MB TLS 栈) |
-| 稳态 RSS | ~18-32 MB | ~8.5 MB | **~3 MB** |
-| 并发模型 | goroutines | async | **同步单线程** |
-| TLS | crypto/tls | OS 原生 | **rustls + ring** |
-| JSON | encoding/json | std.json | **手写零分配** |
-| Gzip | compress/gzip | std.compress | **定长 Huffman 编码器** |
-| 异步运行时 | 内置 | 内置 | **无 —— 不用 tokio,不用 async-std** |
-| 构建依赖 | Go 工具链 | Zig 编译器 | **仅 Rust(stable)** |
-
-**二进制体积去向**(cargo-bloat,Linux musl release,stripped):
-
-| 组件 | 大小 | 占比 |
-|---|---:|---:|
-| rustls(TLS 实现) | ~1.1 MB | 40% |
-| ring(加密原语) | ~528 KB | 19% |
-| webpki(根证书包) | ~262 KB | 10% |
-| std(Rust 标准库) | ~471 KB | 17% |
-| **我们自己的 Agent 代码** | **~196 KB** | **7%** |
-| 其他(杂项 crate) | ~余量 | 7% |
-
-二进制是 **TLS-bound**:rustls + ring + webpki(~70%)是不依赖 OpenSSL 对接 HTTPS/WSS 的不可压缩成本。我们实际写的监控 Agent 只有 **196 KB** —— 这才是"极致轻量"的成就。在小 VPS 上真正有意义的是 **稳态 RSS ~3 MB vs Go Agent 的 18-32 MB**:同样的工作,常驻内存少了一个数量级。
-
-## 安装
-
-Linux/macOS/FreeBSD 推荐使用 `install.sh` 脚本 —— 自动下载二进制、校验 SHA-256、写入配置并注册 systemd/launchd/rc.d 服务：
-
-```bash
-# root 模式：系统级服务，二进制装到 /usr/local/bin，配置在 /etc/komari-agent
-curl -fsSL https://raw.githubusercontent.com/DeliciousBuding/komari-agent-rs/main/install.sh | bash -s -- \
-  --token 你的TOKEN --endpoint https://你的komari服务端
-
-# 用户模式：systemd user 服务（无需 root，XDG 路径，自动 enable-linger）
-./install.sh --user --token 你的TOKEN --endpoint https://你的komari服务端
+```sh
+./komari-agent-rs --config ./config.json
+./komari-agent-rs --version
 ```
 
-也可手动下载二进制（不注册服务）：
+凭据保存在配置中，不放进命令行、截图或 issue。服务安装可下载并审阅同一版本的 `install.sh` / `install.ps1`；Unix 支持 systemd `--user`。安装器校验下载、保留已有配置；Windows 可显式覆盖 token/endpoint，但任务参数只传配置路径。
 
-### Linux
+升级保留旧二进制与原配置，替换已校验资产后重启 supervisor，并核对版本和服务端新指标。0.6 不迁移节点身份或 token，也不默认开启远程控制。
 
-```bash
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64 -o komari-agent
-chmod +x komari-agent
-sudo mv komari-agent /usr/local/bin/
-komari-agent --token 你的TOKEN --endpoint https://你的komari服务端
+## 兼容边界
+
+0.6 仅连接 Komari 1.5+ 的 `/api/clients/v2/rpc`，移除了已失效的 v1 路径。显式配置 `protocol_version=1` 会报迁移错误，应为 v2 服务端改成 2；旧服务端需保留旧 agent 或单独升级。
+
+WebSocket 失败后改用 v2 HTTP report/pull；HTTP 持续重连，HTTP-only 不尝试 WebSocket。默认报告间隔为 3 秒，已有显式配置不变。控制轮询和 30 秒心跳不随较长报告间隔一起休眠。
+
+官方中心 1.5.1 会在 11 秒未收到报告后关闭 WS，Ping 不续期；要持续使用 WS，报告间隔应更短，或直接使用 HTTP。1.6.0 支持 Ping 维持长报告间隔。1.5.1 长间隔连接可回落到 HTTP，不擅自缩短用户配置的报告间隔。
+
+网卡筛选对齐 Go：内置排除前缀优先，其次 include，最后 exclude；使用整串名称 glob（`*`、`?`、字符类）。Windows 使用 `Get-NetAdapter` 的 `Name`/alias，不再使用 description 子串，旧筛选配置需要迁移。include/exclude 同时命中时 include 胜；`tun/vnet/utun` 等非 Go 内置排除项及 inactive NIC 累计计数不再额外隐式去除，需要时显式 exclude。
+
+`disable_exec` 与 `disable_web_ssh` 是独立开关，默认均 true。终端还要求 terminal feature 且非 HTTP-only。配置快照的 token/discovery key 脱敏；远程切版和文件管理未支持，不声明对应能力。
+
+## 配置与构建
+
+配置加载顺序：CLI → 环境变量 → JSON；JSON 优先级最高。完整选项用 `--help`，默认值与主要设置见 [English README](README.md#configuration)。
+
+TLS 使用 rustls/ring 与 rustls-webpki，根来自系统证书库，不依赖 webpki-roots。保持 `ignore_unsafe_cert=false`；系统 CA 变更后必须重启进程。可选自更新的下载始终验证 TLS，不继承监控连接的危险绕过设置。
+
+使用 current stable Rust、ring 所需 C 编译器与平台 SDK/linker。未声明单独验证的固定 MSRV。
+
+```sh
+cargo build --locked --release
+cargo build --locked --release --features full
+cargo check --locked --no-default-features
 ```
 
-### macOS
-
-```bash
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-macos-x86_64 -o komari-agent
-chmod +x komari-agent
-sudo mv komari-agent /usr/local/bin/
-komari-agent --token 你的TOKEN --endpoint https://你的komari服务端
-```
-
-### Windows
-
-```powershell
-Invoke-WebRequest -Uri "https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-windows-x86_64.exe" -OutFile "komari-agent.exe"
-.\komari-agent.exe --token 你的TOKEN --endpoint https://你的komari服务端
-```
-
-### FreeBSD
-
-```bash
-fetch https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-freebsd-x86_64 -o komari-agent
-chmod +x komari-agent
-mv komari-agent /usr/local/bin/
-komari-agent --token 你的TOKEN --endpoint https://你的komari服务端
-```
-
-> **DPI / 中间盒网络**:若你的网络环境阻断 WebSocket 握手(WS 返回 200 而非 101),加 `--http-only` 走纯 HTTP POST 上报,绕开干扰。详见 [CHANGELOG](CHANGELOG.md) v0.1.4。
-
-> **Agent 与服务端同机**:`--endpoint http://127.0.0.1:25774` 可本地直连(v0.1.6 起支持 `http://`,无需 TLS 公网回环)。
-
-## 从源码构建
-
-需要 Rust stable(1.75+)。
-
-```bash
-git clone https://github.com/DeliciousBuding/komari-agent-rs.git
-cd komari-agent-rs
-
-# 核心构建 —— 监控 + v1/v2 协议 + HTTP 回退
-cargo build --release
-
-# 完整构建 —— 全部 feature
-cargo build --release --features full
-
-# 按需 feature
-cargo build --release --features gpu-detection     # +GPU 监控
-cargo build --release --features terminal           # +交互式终端
-cargo build --release --features ping               # +ICMP/TCP/HTTP ping
-cargo build --release --features self-update        # +自我更新
-```
-
-## 配置
-
-每个选项都可以通过 CLI flag、`AGENT_*` 环境变量、或 JSON 配置文件(`--config /path/to/config.json`)传入。优先级:CLI flag > 环境变量 > 配置文件。
-
-核心选项:
-
-| Flag | 环境变量 | 默认 | 说明 |
-|---|---|---|---|
-| `--endpoint` / `-e` | `AGENT_ENDPOINT` | — | Komari 服务端 URL,如 `https://komari.example.com`(必填) |
-| `--token` / `-t` | `AGENT_TOKEN` | — | Agent 认证 token(必填) |
-| `--config` | `AGENT_CONFIG_FILE` | — | JSON 配置文件路径 |
-| `--interval` / `-i` | `AGENT_INTERVAL` | `3` | 指标上报间隔(秒) |
-| `--protocol-version` | `AGENT_PROTOCOL_VERSION` | `2` | `2`=JSON-RPC v2,`1`=v1(被拒自动降级) |
-| `--http-only` | `AGENT_HTTP_ONLY` | `false` | DPI 逃生:仅 HTTP POST,不用 WS |
-| `--gpu` | `AGENT_ENABLE_GPU` | `false` | 启用 GPU 指标 |
-| `--disable-web-ssh` | `AGENT_DISABLE_WEB_SSH` | `true` | 禁用远程控制（WebSSH **与** one-shot exec）。默认 **true**（比 Go 更保守）。WebSSH 还需 `--features terminal` 构建，且不能 `--http-only` |
-| `--disable-auto-update` | `AGENT_DISABLE_AUTO_UPDATE` | `true` | 禁用 GitHub Release 自更新 |
-| `--ignore-unsafe-cert` / `-u` | `AGENT_IGNORE_UNSAFE_CERT` | `false` | 跳过 TLS 证书校验(不安全) |
-| `--custom-dns` | `AGENT_CUSTOM_DNS` | — | 自定义 DNS(逗号分隔) |
-| `--prefer-ip-version` | `AGENT_PREFER_IP_VERSION` | auto | `4` 或 `6` |
-
-出站代理通过标准 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` 环境变量(HTTP CONNECT 和 SOCKS5/SOCKS5h),`NO_PROXY` 支持域名/通配符/CIDR/IP 绕过。完整选项见 `komari-agent-rs --help`。
-
-## 架构
-
-Agent 通过 WebSocket(JSON-RPC 2.0)连接 Komari 服务端,WebSocket 不可用时回退到 HTTP POST(JSON-RPC 1.0 兼容)。1 秒 tick 循环把系统指标收集到栈上 scratch arena,**热路径零堆分配**。
-
-```
-┌──────────────┐   WebSocket/HTTP   ┌──────────────┐
-│ komari-agent │ ◄──────────────────► │ Komari 服务端 │
-│  (sync,      │   JSON-RPC 2.0      │              │
-│   单线程)    │   (TLS 1.3 via      │              │
-│              │    rustls + ring)   │              │
-└──────┬───────┘                     └──────────────┘
-       │
-       │ 1s tick(零分配)
-       │
-  ┌────┴────────────────────────────┐
-  │  CPU / 内存 / 磁盘 / 网络 / GPU  │
-  │  负载 / 连接 / 进程 / 运行时间   │
-  │  IP / OS / 虚拟化               │
-  └─────────────────────────────────┘
-```
-
-## 设计原则
-
-- **热路径零依赖** —— 不用 serde、clap、flate2、tokio
-- **手写 JSON 编码器**(~300 行)—— 线缆输出一致,零分配
-- **手写 gzip 编码器**(~200 行)—— 定长 Huffman DEFLATE,合法 gzip,无需解码
-- **手写 SHA-1 + Base64**(~160 行)—— WebSocket 握手不依赖加密 crate
-- **OS 原生 TLS 根证书** —— Linux `/etc/ssl/certs`、Windows CryptoAPI、macOS Security.framework
-- **cfg-gated 平台分发** —— 编译期类型选择,无 vtable 开销
-- **显式 config 传递** —— 无全局变量,完全可测
+主循环无 async runtime；HTTP pull 和终端使用受限辅助线程。编码的部分缓冲在栈上，整个报告路径仍会分配内存。体积由发布 CI 检查，RSS/峰值以具体平台、feature 和负载测量为准。
 
 ## 文档
 
-- 📐 **[docs/plan/spec.md](docs/plan/spec.md)** —— 完整设计规格(DD1–DD6 设计决策)
-- 🏛️ **[docs/plan/architecture-reference.md](docs/plan/architecture-reference.md)** —— 13 份并行设计文档,架构蓝图
-- ⚖️ **[docs/COMPARISON.md](docs/COMPARISON.md)** —— Go / Zig / Rust Agent 对比 + 基准
-- 🧪 **[docs/TESTING.md](docs/TESTING.md)** —— 测试策略 + 三平台验证
-- 📋 **[CHANGELOG.md](CHANGELOG.md)** —— 版本历史(v0.1.0 → v0.1.6)
-
-## 贡献
-
-欢迎贡献 —— 见 **[CONTRIBUTING.md](CONTRIBUTING.md)**(开发环境、轻量哲学、提交规范、测试要求)。
-
-- 🐛 **[Issues](https://github.com/DeliciousBuding/komari-agent-rs/issues)** —— Bug 报告 & 功能请求
-- 💬 **[讨论区](https://github.com/DeliciousBuding/komari-agent-rs/discussions)** —— 问答与想法
-- 🔒 **[SECURITY.md](SECURITY.md)** —— 漏洞披露
-
-## 许可证
-
-MIT —— 详见 [LICENSE](LICENSE)。
+- [架构与安全边界](docs/architecture.md)
+- [支持矩阵](docs/COMPARISON.md)
+- [测试方法](docs/TESTING.md)
+- [上游与开放项](ROADMAP.md)
+- [贡献指南](CONTRIBUTING.md)、[安全报告](SECURITY.md)、[MIT](LICENSE)

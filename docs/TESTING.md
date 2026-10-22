@@ -1,155 +1,46 @@
-# Testing & Performance Matrix
+# Testing
+Last updated: 2026-10-22
 
-Komari-agent-rs 验证矩阵与性能基准。spec-driven develop Phase 5/6 产出。
+CI is the primary validation path. Local development uses `cargo check --locked` and focused regressions; full release validation runs on the workflow matrix.
 
-最后更新：2026-07-15
-
----
-
-## 1. 三平台端到端测试
-
-| 平台 | target | 二进制 | 稳态 RSS | 连接方式 | report 接受 | 状态 |
-|------|--------|:------:|:--------:|----------|:-----------:|:----:|
-| WSL Linux | x86_64-unknown-linux-gnu (glibc) | 1.5 MB | 3.3 MB | HTTPS_PROXY（mihomo TUN） | ✅ | ✅ |
-| Windows 本机 | x86_64-pc-windows-msvc | 1.2 MB | 3.1 MB（私有内存） | 直连（TUN 透明） | ✅ | ✅ |
-| Linux 生产主机 | x86_64 (云主机) | 1.5 MB | 4.65 MB | 直连（公网） | ✅ | ✅ |
-
-- **report**：三平台均被 Komari server 接受（0 Invalid JSON / Invalid report format）
-- **WS 心跳**：每 30s ping，稳定
-- **监控数据**：CPU/RAM/Swap/Load/Disk/Network/Connections/Process/Uptime 每秒上报
-
-### 真实 Linux 主机测试方法（不替换现有 Go agent，临时借用）
-
-```bash
-# scp Rust 二进制（Linux ELF）到目标主机
-scp target/release/komari-agent-rs your-linux-host:/tmp/komari-agent-rs
-ssh your-linux-host 'bash -s' <<'REMOTE'
-CFG=/etc/komari-agent/config.json
-EP=$(sudo python3 -c "import json;print(json.load(open('$CFG'))['endpoint'])")
-TOKEN=$(sudo python3 -c "import json;print(json.load(open('$CFG'))['token'])")  # token 不离开主机
-sudo systemctl stop komari-agent          # 临时停 Go agent
-sudo timeout 14 /tmp/komari-agent-rs --endpoint "$EP" --token "$TOKEN" \
-  --disable-web-ssh --disable-auto-update --protocol-version 1
-sudo systemctl start komari-agent         # 恢复 Go agent
-REMOTE
+```sh
+cargo fmt --check
+cargo check --locked --all-features
+cargo test --locked --all-features
+cargo clippy --locked --all-features -- -D warnings
 ```
 
----
+CI checks individual feature builds, Linux and Windows tests, coverage, platform builds, binary size and RustSec advisories. Windows additionally runs `tests/installers.ps1` offline; it mocks download/task operations rather than changing a real installation.
 
-## 2. 性能基准
+## Regression coverage
 
-### 二进制大小
+| Area | Cases |
+|---|---|
+| Protocol | v2 report envelope, nested event parameters, RPC errors, WS/HTTP fallback, HTTP-only, long intervals and permission gates |
+| JSON/config | UTF-8, escapes/surrogates, malformed fields, duplicate keys, bounded input/nesting and redacted diagnostics |
+| Processes | Timeout, inherited pipes, large stdin/both output streams, output cap, exit code, Unicode, spawn errors and descendant cleanup |
+| NIC selection | Go prefix/include/exclude priority, whole-name globs, Unicode/classes; Windows aliases, inactive counters, NDIS/LUID de-duplication and SDK offsets |
+| Linux CPU | ARM IDs/heterogeneous names, topology, guest accounting and successful-read caching |
+| Linux disk/GPU | Synthetic mount/stat data and sysfs trees, no production mounts or GPU requirement |
+| Updates | API formatting, exact assets/checksums, HTTPS redirects, authentication stripping, framing/caps and rollback |
+| TLS | Normal chain, wrong name, expiry, unknown issuer and all eight distrusted public keys |
 
-| 构建 | 大小 | 说明 |
-|------|:----:|------|
-| Linux glibc (stripped) | 1.5 MB | TLS 栈 ~70%（rustls + ring + webpki），自身代码 ~200 KB |
-| Linux musl (CI) | ~1.5 MB | 静态链接 |
-| Windows MSVC (stripped) | 1.2 MB | MSVC 链接更紧凑 |
+The subprocess test executable contains an ignored child-process fixture invoked by the parent tests. Its ignored marker is intentional, not a skipped behavior assertion.
 
-> 原 spec 目标 <1 MB。被 TLS 顶层否决（无 OpenSSL 的 HTTPS/WSS 不可压缩 ~1 MB）。自身代码 200 KB 已达极致。
+## TLS fixtures
 
-### release profile（已极致优化）
+[Fixture sources and generation](../tests/fixtures/tls/README.md) describe public SPKI provenance and synthetic certificates. Tests use a fixed validation time, contain no private keys and assert the exact distrust error. An independent old-library control demonstrates the regression; generic self-signed rejection does not establish explicit public-key distrust.
 
-```toml
-[profile.release]
-opt-level = "z"        # 最小体积
-lto = "fat"            # 全链接时优化
-codegen-units = 1      # 单代码生成单元（最大优化空间）
-panic = "abort"        # 去掉 unwind 表
-strip = "symbols"      # 剥离符号
-debug = false
-incremental = false
-[profile.release.package."*"]
-opt-level = "z"        # 依赖也最小体积
-```
+These tests verify certificate validation. Runtime deployment must also restart the process and validate a normal TLS connection because roots are loaded at startup.
 
-### RSS 对比
+## Integration acceptance
 
-| 实现 | 稳态 RSS | 倍数 |
-|------|:--------:|:----:|
-| **komari-agent-rs**（Linux 生产） | **4.65 MB** | 1× |
-| komari-agent-rs（WSL/Windows） | 3.1-3.3 MB | — |
-| komari-zig-agent | 8.5 MB | 1.8× |
-| komari-agent（Go） | 18-32 MB | 4-7× |
+Use isolated fresh Komari servers with synthetic admin/node credentials and local temporary data. Test each claimed server version and transport independently:
 
-全舰队 8 台从 Go 换 Rust 可省 ~150 MB。
+1. Register a node and verify basicInfo plus fresh ingested metrics, not merely HTTP 200.
+2. Check ping results, nested parameters, event acknowledgement and permitted/denied control behavior.
+3. Test WebSocket compression both ways and recovery after a server restart. For 1.5.1 use the normal 3-second cadence for sustained WS, and verify long intervals fall back to HTTP; its 11-second deadline is not Ping-aware. For 1.6.0 use a 120-second report interval and observe actual Ping/Pong maintaining WS beyond its 75-second idle deadline without a new report.
+4. Verify startup-config responses redact synthetic credentials and version-switch requests cannot change the binary.
+5. Stop only the processes/resources created by that run and keep a report naming exact server/agent digests.
 
----
-
-## 3. 功能对齐矩阵（Go → Rust）
-
-| 功能 | Go | Rust | 说明 |
-|------|:--:|:--:|------|
-| WebSocket v1/v2 | ✅ | ✅ | 4 级 FSM: WsV2→WsV1→HttpV2→HttpV1 |
-| HTTP POST fallback | ✅ | ✅ | 3-strike 降级 |
-| exec 远程命令 | ✅ | ✅ | sh -s (Unix) / powershell (Windows) + task/result |
-| ping (ICMP/TCP/HTTP) | ✅ | ✅ | 3-tier 降级，feature-gated `ping` |
-| terminal/WebSSH | ✅ | ✅ | WS↔PTY 双向循环 + ConPTY resize；**feature-gated `terminal` 且已接线**（v0.2.0+ main）；默认构建仍不编入 |
-| gzip / WS 压缩 | ✅ | ✅ | HTTP POST gzip + WS permessage-deflate (RFC 7692) |
-| JSON config | ✅ | ✅ | `--config` 文件分层 |
-| self-update | ✅ | ✅ | GitHub Releases + SHA256，feature-gated `self-update` |
-| month-rotate 流量 | ✅ | ✅ | netstatic 持久化 |
-| NO_PROXY | ✅ | ✅ | 域名/通配符/CIDR/IP |
-| 代理 auth | ✅ | ✅ | Basic Auth |
-| SOCKS5 | ❌ | ✅ | **超越 Go**（SOCKS5/SOCKS5h） |
-| custom-dns | ✅ | ✅ | dns.rs 接线 |
-| GPU 监控 | ✅ | ✅ | 裸 FFI，feature-gated `gpu-detection` |
-| 跨平台 | Linux/Win/macOS/BSD | Linux/Win/macOS/BSD | 4 平台对等 |
-
-### WebSSH 生产验收（2026-07-15，prod）
-
-前提：`--features full` 二进制、`http_only=false`、`disable_web_ssh=false`、**compression 开启**（`disable_compression=false`）；nginx `/api/clients/` 转发 Upgrade。
-
-| 步骤 | 结果 |
-|------|------|
-| 公网 `GET /api/clients/v2/rpc` WS 握手 | **101** + `permessage-deflate; server_no_context_takeover; client_no_context_takeover` |
-| 控制面常驻（≥90s） | **无** `permessage-deflate inflate error`（2026-07-15 根因修复后） |
-| admin `GET /api/admin/client/<prod>/terminal` | 101 + agent dial |
-| 交互 `hostname; id` | `prod` / `uid=0(root)` |
-| `disable_exec=true` | capabilities 含 `terminal` **不含** `exec` |
-
----
-
-## 4. 网络适配矩阵
-
-`Dialer` 统一所有出站连接，适配任何网络环境：
-
-| 场景 | 支持 | 机制 |
-|------|:----:|------|
-| 直连 | ✅ | 默认（custom-dns + prefer-ip） |
-| HTTP/HTTPS 代理 | ✅ | HTTPS_PROXY/HTTP_PROXY/ALL_PROXY |
-| SOCKS5 代理 | ✅ | socks5://（本地 DNS） |
-| SOCKS5h 代理 | ✅ | socks5h://（远程 DNS，防污染） |
-| 代理认证 | ✅ | user:pass@ + Proxy-Authorization |
-| NO_PROXY 旁路 | ✅ | 域名/通配符/CIDR/IP 匹配 |
-| Cloudflare Access | ✅ | CF-Access headers |
-| mihomo TUN | ✅ | HTTP_PROXY CONNECT 隧道 |
-
----
-
-## 5. 已知局限
-
-- **basicInfo fork 兼容（已解决）**：v1.1.9 fork 拒绝 `kernel_version`/`cpu_physical_cores` 字段（HTTP 500）。agent 用 Go 兼容回退（先完整 payload，500 则删字段重试）→ 实测验证 200 成功。
-- **v2 API 不支持**：fork 的 `/api/clients/v2/rpc` 返回 SPA HTML。FSM 正确回退 v1。
-- **WS permessage-deflate 已实现**：RFC 7692 WS 压缩完整对齐 Go（inflate 解码器 + raw deflate encoder + RSV1 帧位 + 扩展协商）。v2 server 协商后压缩数据帧；控制帧不压缩。当前 fork 用 v1 WS（不协商 deflate），compression_enabled=false，行为透明。同时修复 gzip encoder 位序 bug（Huffman 码 MSB-first）。
-
----
-
-## 6. 测试命令速查
-
-```bash
-# 单元测试
-cargo test --release                    # 213 tests
-cargo test --release --features full    # 全 feature
-
-# WSL（Linux 测试，需 proxy 穿 TUN）
-wsl -e bash -c 'source ~/.cargo/env && cd /path/to/komari-agent-rs && cargo build --release'
-HTTPS_PROXY=http://127.0.0.1:7897 ./target/release/komari-agent-rs --endpoint ... --token ... --protocol-version 1
-
-# Windows 本机（直连 TUN）
-cargo build --release
-./target/release/komari-agent-rs.exe --endpoint ... --token ... --protocol-version 1
-
-# CI
-gh run list --limit 3
-```
+Do not run production replacement recipes as tests or post raw config/tokens in CI logs. Compile success and unit tests alone are not a claim of complete Go-agent feature parity, native hardware coverage or deployment success.

@@ -4,13 +4,13 @@ Thanks for your interest! This is a small, focused project — contributions tha
 
 ## Development setup
 
-Requires **Rust stable (1.75+)**.
+Use current stable Rust and a C toolchain/platform SDK for ring. A separate fixed
+MSRV is not maintained.
 
 ```bash
 git clone https://github.com/DeliciousBuding/komari-agent-rs.git
 cd komari-agent-rs
-cargo build --release
-cargo test
+cargo check --locked
 ```
 
 ## The featherweight philosophy (read before changing code)
@@ -18,20 +18,22 @@ cargo test
 The agent is **deliberately dependency-free in the hot path**:
 
 - **No `serde`, `clap`, `flate2`, `tokio`** — the only external crates are `rustls` + `ring` (the irreducible TLS floor).
-- **Hand-rolled JSON encoder, gzip (fixed-Huffman), SHA-1, Base64** — wire-identical output, zero heap allocation in the tick loop.
-- **Sync single-threaded** — no async runtime, ever.
+- The JSON encoder uses reusable buffers; transport, compression and some collectors allocate.
+- The main collection/control loop is synchronous. HTTP pull and optional terminals use auxiliary threads; there is no async runtime.
 
-If your change adds a dependency, justify in the PR **why it cannot be done with std**. New deps that bloat the binary past 2 MB or break sync-single-threaded will likely be rejected. The binary is ~1.5 MB today; ~1 MB of that is rustls+ring+webpki — our own agent code is ~196 KB.
+If your change adds a dependency, justify in the PR why it cannot be done with
+std. Keep the synchronous collection model and the release matrix's 2 MiB size
+budget. Any size or RSS claim must name the measured build and workload.
 
 ## Before submitting a PR
 
 All of these must pass (CI enforces them too):
 
 ```bash
-cargo fmt                  # formatting
-cargo test                 # default features
-cargo test --all-features  # every feature gate
-cargo clippy --release -- -D warnings   # no warnings
+cargo fmt --check
+cargo check --locked --all-features
+cargo test --locked --all-features
+cargo clippy --locked --all-features -- -D warnings
 ```
 
 Keep the release binary **< 2 MB** (release.yml enforces a size check).
@@ -56,4 +58,13 @@ Open an [issue](https://github.com/DeliciousBuding/komari-agent-rs/issues). For 
 
 ## Releases
 
-Tagged `vX.Y.Z` on `main`. Each tag triggers the release workflow (6-platform build + checksums + GitHub Release). See [CHANGELOG.md](CHANGELOG.md).
+Review a focused PR against the upstream server contract and add regressions for
+the changed behavior. CI must pass for the final revision before merging.
+Version changes go in Cargo.toml/Cargo.lock and CHANGELOG; breaking compatibility
+changes require migration notes. Preserve contributor credit when integrating
+or extending community patches.
+
+Tag `vX.Y.Z` on tested `main` to run the current release matrix. Verify all assets,
+checksums and platform results before calling the release complete. Runtime
+deployment and rollback are separate operations; a tag or successful build does
+not establish that an installed process is using it. See [Testing](docs/TESTING.md).
