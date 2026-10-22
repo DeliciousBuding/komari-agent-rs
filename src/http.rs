@@ -5,7 +5,10 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+// Control RPC responses are small; a peer must not allocate without bound.
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 // ── HttpResponse ─────────────────────────────────────────────────────────
 
@@ -58,6 +61,15 @@ enum MaybeTls {
     // Boxed: rustls::StreamOwned is large; boxing keeps the enum small on the stack.
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>),
     Plain(std::net::TcpStream),
+}
+
+impl MaybeTls {
+    fn set_read_timeout(&self, timeout: Duration) -> io::Result<()> {
+        match self {
+            Self::Tls(stream) => stream.sock.set_read_timeout(Some(timeout)),
+            Self::Plain(stream) => stream.set_read_timeout(Some(timeout)),
+        }
+    }
 }
 
 impl Read for MaybeTls {
@@ -136,25 +148,6 @@ pub fn http_post_timeout(
     )
 }
 
-pub fn http_get(
-    url: &str,
-    extra_headers: &[(String, String)],
-    tls_cfg: &Arc<rustls::ClientConfig>,
-    dial: &crate::proxy::Dialer,
-) -> Result<HttpResponse, HttpErr> {
-    http_request(
-        "GET",
-        url,
-        None,
-        None,
-        None,
-        extra_headers,
-        tls_cfg,
-        dial,
-        Duration::from_secs(30),
-    )
-}
-
 #[allow(clippy::too_many_arguments)] // HTTP request surface genuinely needs method/url/body/headers/tls/dial
 fn http_request(
     method: &str,
@@ -208,7 +201,11 @@ fn http_request(
     } else {
         write!(stream, "{method} {path}?{query} HTTP/1.1\r\n")?;
     }
-    write!(stream, "Host: {host}\r\n")?;
+    write!(
+        stream,
+        "Host: {}\r\n",
+        host_header(&host, port, url.starts_with("https://"))
+    )?;
     if let Some(content_type) = content_type {
         write!(stream, "Content-Type: {content_type}\r\n")?;
     }
@@ -230,11 +227,54 @@ fn http_request(
     stream.flush()?;
 
     // 6. Read response
-    let mut resp_buf = Vec::new();
-    stream.read_to_end(&mut resp_buf)?;
+    let deadline = Instant::now() + timeout;
+    let resp_buf = read_response_with(&mut stream, |stream| {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(HttpErr::Timeout)?;
+        stream.set_read_timeout(remaining)?;
+        Ok(())
+    })?;
 
     // 7. Parse status line + headers + body
     parse_http_response(&resp_buf)
+}
+
+pub(crate) fn host_header(host: &str, port: u16, tls: bool) -> String {
+    let authority = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    if port == if tls { 443 } else { 80 } {
+        authority
+    } else {
+        format!("{authority}:{port}")
+    }
+}
+
+#[cfg(test)]
+fn read_response(reader: &mut impl Read) -> Result<Vec<u8>, HttpErr> {
+    read_response_with(reader, |_| Ok(()))
+}
+
+fn read_response_with<R: Read>(
+    reader: &mut R,
+    mut before_read: impl FnMut(&mut R) -> Result<(), HttpErr>,
+) -> Result<Vec<u8>, HttpErr> {
+    let mut data = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        before_read(reader)?;
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(data);
+        }
+        if data.len() + read > MAX_RESPONSE_BYTES {
+            return Err(HttpErr::Parse("HTTP response exceeds 1 MiB limit".into()));
+        }
+        data.extend_from_slice(&buffer[..read]);
+    }
 }
 
 // ── URL parsing ──────────────────────────────────────────────────────────
@@ -242,7 +282,10 @@ fn http_request(
 // Parses "https://host[:port][/path][?query]" (port 443) or
 //         "http://host[:port][/path][?query]"  (port 80) into its components.
 
-fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
+pub(crate) fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
+    if url.bytes().any(|b| b <= 0x20 || b == 0x7f) || url.contains('#') {
+        return Err(HttpErr::Parse("control character in URL".into()));
+    }
     let (rest, default_port) = if let Some(s) = url.strip_prefix("https://") {
         (s, 443u16)
     } else if let Some(s) = url.strip_prefix("http://") {
@@ -254,26 +297,51 @@ fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
     };
 
     // Split host from path/query
-    let (host_part, path_part) = match rest.find('/') {
+    let (host_part, path_part) = match rest.find(['/', '?']) {
         Some(i) => rest.split_at(i),
         None => (rest, "/"),
     };
 
     // Extract optional port from host_part
-    let (host, port) = match host_part.find(':') {
-        Some(i) => {
-            let h = host_part[..i].to_string();
-            let p = host_part[i + 1..]
+    let (host, port) = if let Some(bracketed) = host_part.strip_prefix('[') {
+        let (host, tail) = bracketed
+            .split_once(']')
+            .ok_or_else(|| HttpErr::Parse("unclosed IPv6 literal".into()))?;
+        let port = if tail.is_empty() {
+            default_port
+        } else {
+            tail.strip_prefix(':')
+                .ok_or_else(|| HttpErr::Parse("invalid IPv6 authority".into()))?
                 .parse::<u16>()
-                .map_err(|_| HttpErr::Parse(format!("invalid port in URL: {url}")))?;
-            (h, p)
+                .map_err(|_| HttpErr::Parse("invalid URL port".into()))?
+        };
+        (host.to_string(), port)
+    } else {
+        match host_part.find(':') {
+            Some(i) => {
+                let h = host_part[..i].to_string();
+                let p = host_part[i + 1..]
+                    .parse::<u16>()
+                    .map_err(|_| HttpErr::Parse("invalid URL port".into()))?;
+                (h, p)
+            }
+            None => (host_part.to_string(), default_port),
         }
-        None => (host_part.to_string(), default_port),
     };
+    if host.is_empty() || host.contains(['\r', '\n', '@']) {
+        return Err(HttpErr::Parse("invalid URL authority".into()));
+    }
 
     // Split query from path
     let (path, query) = match path_part.find('?') {
-        Some(i) => (path_part[..i].to_string(), path_part[i + 1..].to_string()),
+        Some(i) => (
+            if i == 0 {
+                "/".to_string()
+            } else {
+                path_part[..i].to_string()
+            },
+            path_part[i + 1..].to_string(),
+        ),
         None => (path_part.to_string(), String::new()),
     };
 
@@ -286,15 +354,16 @@ fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
 // Expects: "HTTP/1.1 <code> <reason>\r\n<headers>\r\n\r\n<body>"
 
 fn parse_http_response(data: &[u8]) -> Result<HttpResponse, HttpErr> {
-    let text = std::str::from_utf8(data)
-        .map_err(|_| HttpErr::Parse("response is not valid UTF-8".into()))?;
-
-    let sep = text
-        .find("\r\n\r\n")
+    let sep = data
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| HttpErr::Parse("no header/body separator found".into()))?;
-
-    let header_text = &text[..sep];
-    let body = data[sep + 4..].to_vec();
+    if sep > 65536 {
+        return Err(HttpErr::Parse("HTTP headers exceed 64 KiB limit".into()));
+    }
+    let header_text = std::str::from_utf8(&data[..sep])
+        .map_err(|_| HttpErr::Parse("headers are not valid UTF-8".into()))?;
+    let raw_body = &data[sep + 4..];
 
     let mut lines = header_text.lines();
 
@@ -311,14 +380,47 @@ fn parse_http_response(data: &[u8]) -> Result<HttpResponse, HttpErr> {
 
     // Headers: "Name: value"
     let mut headers = Vec::new();
+    let mut content_length = None;
+    let mut chunked = false;
     for line in lines {
         if let Some(colon) = line.find(':') {
+            let name = line[..colon].trim();
+            let value = line[colon + 1..].trim();
+            if name.eq_ignore_ascii_case("content-length") {
+                if content_length.is_some() {
+                    return Err(HttpErr::Parse("duplicate content length".into()));
+                }
+                content_length = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| HttpErr::Parse("invalid content length".into()))?,
+                );
+            }
+            if name.eq_ignore_ascii_case("transfer-encoding") {
+                if chunked || !value.eq_ignore_ascii_case("chunked") {
+                    return Err(HttpErr::Parse(
+                        "unsupported or duplicate transfer encoding".into(),
+                    ));
+                }
+                chunked = true;
+            }
             headers.push((
                 line[..colon].trim().to_string(),
                 line[colon + 1..].trim().to_string(),
             ));
         }
     }
+    if chunked && content_length.is_some() {
+        return Err(HttpErr::Parse("ambiguous HTTP framing".into()));
+    }
+    let body = if chunked {
+        decode_chunked(raw_body)?
+    } else {
+        if content_length.is_some_and(|length| length != raw_body.len()) {
+            return Err(HttpErr::Parse("HTTP content length mismatch".into()));
+        }
+        raw_body.to_vec()
+    };
 
     Ok(HttpResponse {
         status_code,
@@ -327,11 +429,127 @@ fn parse_http_response(data: &[u8]) -> Result<HttpResponse, HttpErr> {
     })
 }
 
+fn decode_chunked(mut raw: &[u8]) -> Result<Vec<u8>, HttpErr> {
+    let invalid = || HttpErr::Parse("invalid or truncated chunked body".into());
+    let mut body = Vec::new();
+    loop {
+        let end = raw
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or_else(invalid)?;
+        if end > 1024 {
+            return Err(invalid());
+        }
+        let line = std::str::from_utf8(&raw[..end]).map_err(|_| invalid())?;
+        let value = line.split(';').next().ok_or_else(invalid)?;
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid());
+        }
+        let size = usize::from_str_radix(value, 16).map_err(|_| invalid())?;
+        raw = &raw[end + 2..];
+        if size == 0 {
+            // Trailers are ignored but must be a terminated header block.
+            if raw == b"\r\n" || raw.ends_with(b"\r\n\r\n") {
+                return Ok(body);
+            }
+            return Err(invalid());
+        }
+        if size > MAX_RESPONSE_BYTES - body.len()
+            || size > raw.len().saturating_sub(2)
+            || raw.get(size..size + 2) != Some(b"\r\n")
+        {
+            return Err(invalid());
+        }
+        body.extend_from_slice(&raw[..size]);
+        raw = &raw[size + 2..];
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authority_preserves_ipv6_and_nondefault_ports() {
+        assert_eq!(host_header("::1", 8443, true), "[::1]:8443");
+        assert_eq!(host_header("example.test", 8443, true), "example.test:8443");
+        assert_eq!(host_header("example.test", 443, true), "example.test");
+    }
+
+    #[test]
+    fn chunked_and_content_length_are_not_confused() {
+        let response = parse_http_response(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(response.body, b"{}");
+        for data in [
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n{}"[..],
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{}"[..],
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{"[..],
+        ] {
+            assert!(parse_http_response(data).is_err());
+        }
+    }
+
+    #[test]
+    fn total_read_deadline_is_checked_between_progress_reads() {
+        struct Dribble;
+        impl Read for Dribble {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                buf[0] = b'x';
+                Ok(1)
+            }
+        }
+        let mut reads = 0;
+        let result = read_response_with(&mut Dribble, |_| {
+            reads += 1;
+            if reads > 3 {
+                Err(HttpErr::Timeout)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(result, Err(HttpErr::Timeout)));
+        assert_eq!(reads, 4);
+    }
+
+    #[test]
+    fn response_read_is_bounded() {
+        assert!(read_response(&mut &vec![0; MAX_RESPONSE_BYTES][..]).is_ok());
+        assert!(read_response(&mut &vec![0; MAX_RESPONSE_BYTES + 1][..]).is_err());
+    }
+
+    #[test]
+    fn url_ipv6_and_query_without_path() {
+        assert_eq!(
+            parse_url("https://[::1]:8443/rpc").unwrap(),
+            ("::1".into(), 8443, "/rpc".into(), "".into())
+        );
+        assert_eq!(
+            parse_url("https://example.com?token=synthetic").unwrap(),
+            (
+                "example.com".into(),
+                443,
+                "/".into(),
+                "token=synthetic".into()
+            )
+        );
+        assert!(parse_url("https://user:secret@example.com/").is_err()); // # leak-guard-allow:LG-F4C6A155 synthetic invalid-authority fixture
+        assert!(parse_url("https://[::1").is_err());
+    }
+
+    #[test]
+    fn response_body_is_binary_not_header_text() {
+        assert_eq!(
+            parse_http_response(b"HTTP/1.1 200 OK\r\n\r\n\xff\xfe")
+                .unwrap()
+                .body,
+            vec![255, 254]
+        );
+    }
 
     #[test]
     fn test_parse_url_standard() {

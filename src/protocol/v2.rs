@@ -114,9 +114,9 @@ pub struct EventResult {
 #[inline]
 pub fn new_notification(method: &str, params: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(64 + method.len() + params.len());
-    v.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"");
-    v.extend_from_slice(method.as_bytes());
-    v.extend_from_slice(b"\",\"params\":");
+    v.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":");
+    crate::json::write_json_string(&mut v, method);
+    v.extend_from_slice(b",\"params\":");
     v.extend_from_slice(params);
     v.push(b'}');
     v
@@ -128,13 +128,13 @@ pub fn new_notification(method: &str, params: &[u8]) -> Vec<u8> {
 #[inline]
 pub fn new_request(id: &str, method: &str, params: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(80 + method.len() + params.len() + id.len());
-    v.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"");
-    v.extend_from_slice(method.as_bytes());
-    v.extend_from_slice(b"\",\"params\":");
+    v.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":");
+    crate::json::write_json_string(&mut v, method);
+    v.extend_from_slice(b",\"params\":");
     v.extend_from_slice(params);
-    v.extend_from_slice(b",\"id\":\"");
-    v.extend_from_slice(id.as_bytes());
-    v.extend_from_slice(b"\"}");
+    v.extend_from_slice(b",\"id\":");
+    crate::json::write_json_string(&mut v, id);
+    v.push(b'}');
     v
 }
 
@@ -154,4 +154,84 @@ pub fn build_startup_config_params(request_id: &str, config_json: &[u8]) -> Vec<
     v.extend_from_slice(config_json);
     v.push(b'}');
     v
+}
+
+/// Validate the JSON-RPC envelope separately from HTTP status. A 200 with
+/// an RPC error (or an empty/non-RPC proxy response) is not a successful call.
+/// Never return server-controlled error text: it may contain sensitive data.
+pub fn validate_response(body: &[u8]) -> Result<(), &'static str> {
+    if response_has_error(body) {
+        return Err("server returned a JSON-RPC error");
+    }
+    if crate::json::object_field(body, "jsonrpc") != Some(b"\"2.0\"".as_slice())
+        || crate::json::object_field(body, "result").is_none_or(|v| v == b"null")
+    {
+        return Err("invalid JSON-RPC response envelope");
+    }
+    Ok(())
+}
+
+/// Only the envelope's error field matters, not strings or nested event data.
+pub fn response_has_error(body: &[u8]) -> bool {
+    crate::json::object_field(body, "error").is_some_and(|v| v != b"null")
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn request_ids_and_methods_round_trip_without_json_injection() {
+        use crate::json::{decode_json_string, object_field};
+        let id = "quote\"slash\\\n世界";
+        let method = "method\"\\\n";
+        let request = new_request(id, method, b"{}");
+        assert_eq!(
+            decode_json_string(object_field(&request, "id").unwrap()).as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            decode_json_string(object_field(&request, "method").unwrap()).as_deref(),
+            Some(method)
+        );
+        let notification = new_notification(method, b"{}");
+        assert_eq!(
+            decode_json_string(object_field(&notification, "method").unwrap()).as_deref(),
+            Some(method)
+        );
+    }
+
+    #[test]
+    fn malformed_or_duplicate_envelopes_are_not_successes() {
+        for body in [
+            br#"{"jsonrpc":"2.0","result":{} garbage }"#.as_slice(),
+            br#"{"jsonrpc":"2.0","result":{},"result":null}"#,
+            br#"{"jsonrpc":"2.0","jsonrpc":"wrong","result":{}}"#,
+            br#"{"jsonrpc":"2.0","result":{},"error":null,"error":{"code":-1}}"#,
+            br#"{"jsonrpc":"2.0","result":{},"error":null,"\u0065rror":{"code":-1}}"#,
+            br#"{"jsonrpc":"2.0","result":{},"\u0065rror":{"code":-1}}"#,
+        ] {
+            assert!(validate_response(body).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_rpc_errors_even_when_http_succeeded() {
+        let body = br#"{"jsonrpc":"2.0","id":"report","error":{"code":-32000,"message":"private details"}}"#;
+        assert!(response_has_error(body));
+        assert_eq!(
+            validate_response(body),
+            Err("server returned a JSON-RPC error")
+        );
+        assert!(validate_response(br#"{}"#).is_err());
+        assert!(validate_response(b"OK").is_err());
+    }
+
+    #[test]
+    fn accepts_result_without_confusing_event_data_for_envelope_error() {
+        let body = br#"{ "jsonrpc" : "2.0", "id":"report", "result":{"events":[{"params":{"error":"quoted } , \"error\": text"}}]}, "error":null }"#;
+        assert!(!response_has_error(body));
+        assert!(validate_response(body).is_ok());
+        assert!(validate_response(br#"{"jsonrpc":"2.0","result":null}"#).is_err());
+    }
 }

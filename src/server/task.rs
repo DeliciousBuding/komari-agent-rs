@@ -50,122 +50,35 @@ impl TaskKind {
 // Ping handler (feature-gated)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Minimal byte-scanner: extract a JSON string value for `key` from raw JSON bytes.
-/// Handles both `"key":"value"` (v1) and `"key":"value"` (v2 camelCase).
-/// Returns `None` if the key is not found or the JSON is malformed.
-pub(crate) fn extract_json_string(params: &[u8], key: &str) -> Option<String> {
-    let text = std::str::from_utf8(params).ok()?;
+// ── Minimal JSON field scanner ───────────────────────────────────────────
+//
+// Server events arrive as `{"id","method","params":{...}}` (Komari 1.5.x), so
+// payload fields (`task_id`, `command`, `ping_type`, ...) live in the nested
+// `params` object, while v1 / older servers put them at the top level. The
+// lookup therefore checks the top-level object first and then descends into
+// `params`. Only keys of the object being scanned are matched — a key buried
+// inside some other nested value (or inside a string) never matches.
 
-    // Manual scan: find `"key":`
-    let mut i = 0;
-    while i < text.len() {
-        // Skip whitespace
-        while i < text.len() && text.as_bytes()[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= text.len() {
-            break;
-        }
+use crate::json::{decode_json_string, object_field};
 
-        // Expect a quote
-        if text.as_bytes()[i] != b'"' {
-            i += 1;
-            continue;
-        }
-        i += 1; // skip opening quote
-
-        // Match key bytes
-        let key_start = i;
-        while i < text.len() && text.as_bytes()[i] != b'"' {
-            i += 1;
-        }
-        let found_key = &text[key_start..i];
-        i += 1; // skip closing quote
-
-        // Skip `:`
-        while i < text.len() && text.as_bytes()[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= text.len() || text.as_bytes()[i] != b':' {
-            continue;
-        }
-        i += 1; // skip colon
-        while i < text.len() && text.as_bytes()[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        if found_key == key {
-            // Extract the value — expect a JSON string
-            if i < text.len() && text.as_bytes()[i] == b'"' {
-                i += 1;
-                let val_start = i;
-                while i < text.len() && text.as_bytes()[i] != b'"' {
-                    i += 1;
-                }
-                return Some(text[val_start..i].to_string());
-            }
-            return None;
-        }
-
-        // Skip the value (handle string, number, object, array)
-        if i < text.len() {
-            match text.as_bytes()[i] {
-                b'"' => {
-                    i += 1;
-                    while i < text.len() && text.as_bytes()[i] != b'"' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-                b'{' | b'[' => {
-                    let open = text.as_bytes()[i];
-                    let close = if open == b'{' { b'}' } else { b']' };
-                    let mut depth = 1u32;
-                    i += 1;
-                    while i < text.len() && depth > 0 {
-                        match text.as_bytes()[i] {
-                            c if c == open => depth += 1,
-                            c if c == close => depth -= 1,
-                            _ => {}
-                        }
-                        i += 1;
-                    }
-                }
-                _ => {
-                    // number, true, false, null — skip until comma or closing brace
-                    while i < text.len() && text.as_bytes()[i] != b',' && text.as_bytes()[i] != b'}'
-                    {
-                        i += 1;
-                    }
-                }
-            }
-        }
-    }
-    None
+/// Look `key` up at the top level, then inside the nested `params` object.
+fn lookup_field<'a>(data: &'a [u8], key: &str) -> Option<&'a [u8]> {
+    object_field(data, key).or_else(|| object_field(object_field(data, "params")?, key))
 }
 
-/// Extract a JSON number value for `key` (used for numeric `task_id` fields).
-/// Returns the parsed i64, or None if absent / not a number.
+/// Extract a JSON string value for `key` (top level, else nested `params`).
+/// Escape sequences are decoded. Returns `None` if the key is missing, the
+/// value is not a string, or the JSON is malformed.
+pub(crate) fn extract_json_string(params: &[u8], key: &str) -> Option<String> {
+    decode_json_string(lookup_field(params, key)?)
+}
+
+/// Extract an integer value for `key` (top level, else nested `params`).
+/// Accepts both `123` and a quoted `"123"` (servers differ on task id type).
 pub(crate) fn extract_json_number(params: &[u8], key: &str) -> Option<i64> {
-    let text = std::str::from_utf8(params).ok()?;
-    let needle = format!("\"{key}\"");
-    let mut idx = text.find(&needle)?;
-    idx += needle.len();
-    let bytes = text.as_bytes();
-    // Skip whitespace + colon + whitespace.
-    while idx < bytes.len()
-        && (bytes[idx] == b' ' || bytes[idx] == b':' || bytes[idx] == b'\t' || bytes[idx] == b'\n')
-    {
-        idx += 1;
-    }
-    let start = idx;
-    while idx < bytes.len() && (bytes[idx].is_ascii_digit() || bytes[idx] == b'-') {
-        idx += 1;
-    }
-    if start == idx {
-        return None;
-    }
-    text[start..idx].parse::<i64>().ok()
+    let raw = lookup_field(params, key)?;
+    let text = std::str::from_utf8(raw).ok()?;
+    text.trim_matches('"').parse::<i64>().ok()
 }
 
 /// Extract the `"method":"..."` value from a JSON-RPC message.
@@ -426,75 +339,13 @@ pub fn execute_exec(command: &str, disable_exec: bool) -> ExecResult {
 
     #[cfg(unix)]
     {
-        use std::io::{Read, Write};
-        use std::process::{Command, Stdio};
-        use std::time::{Duration, Instant};
-        // Parity with Go's exec context: bound execution so a hanging command
-        // (e.g. `sleep infinity`, a stuck REPL) cannot stall the single-threaded
-        // tick loop forever. 30 s matches Go's default.
-        const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
-
-        let mut child = match Command::new("sh")
-            .arg("-s")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => return ExecResult::new(format!("failed to spawn shell: {e}"), -1),
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(command.as_bytes());
-            // stdin dropped here → child sees EOF and can finish.
-        }
-        let mut stdout = child.stdout.take().expect("stdout piped");
-        let mut stderr = child.stderr.take().expect("stderr piped");
-
-        // Drain stdout/stderr on worker threads so a large output cannot fill
-        // the pipe buffer and deadlock the child while we poll its status.
-        let out_handle = std::thread::spawn(move || {
-            let mut b = Vec::new();
-            let _ = stdout.read_to_end(&mut b);
-            b
-        });
-        let err_handle = std::thread::spawn(move || {
-            let mut b = Vec::new();
-            let _ = stderr.read_to_end(&mut b);
-            b
-        });
-
-        // Poll for completion with a deadline; kill + reap on timeout.
-        let deadline = Instant::now() + EXEC_TIMEOUT;
-        let result: Result<Option<i32>, &'static str> = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Ok(status.code()),
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Ok(None) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break Err("timeout");
-                }
-                Err(_) => break Err("wait failed"),
-            }
-        };
-
-        let stdout_buf = out_handle.join().unwrap_or_default();
-        let stderr_buf = err_handle.join().unwrap_or_default();
-
-        match result {
-            Ok(code) => normalize_output(&stdout_buf, &stderr_buf, code),
-            Err("timeout") => {
-                let mut r = normalize_output(&stdout_buf, &stderr_buf, None);
-                r.output
-                    .push_str("\n[komari] command timed out after 30s and was killed");
-                r.exit_code = -124; // 124 = GNU `timeout` convention
-                r
-            }
-            _ => ExecResult::new("failed to wait for command".to_string(), -1),
-        }
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-s");
+        exec_result(crate::subprocess::run(
+            &mut cmd,
+            Some(command.as_bytes()),
+            std::time::Duration::from_secs(30),
+        ))
     }
 
     #[cfg(windows)]
@@ -509,6 +360,36 @@ pub fn execute_exec(command: &str, disable_exec: bool) -> ExecResult {
             -1,
         )
     }
+}
+
+#[cfg(any(unix, windows))]
+fn exec_result(result: std::io::Result<crate::subprocess::RunOutput>) -> ExecResult {
+    use crate::subprocess::StopReason;
+    let result = match result {
+        Ok(result) => result,
+        Err(e) => return ExecResult::new(format!("failed to execute command: {e}"), -1),
+    };
+    let mut exec = normalize_output(
+        &result.output.stdout,
+        &result.output.stderr,
+        result.output.status.code(),
+    );
+    match result.reason {
+        StopReason::Exited => {}
+        StopReason::TimedOut => {
+            exec.output
+                .push_str("\n[komari] command timed out after 30s and was killed");
+            exec.exit_code = -124;
+        }
+        StopReason::OutputLimit => {
+            exec.output.push_str(&format!(
+                "\n[komari] command output exceeded {} bytes; output truncated and command stopped",
+                crate::subprocess::OUTPUT_LIMIT
+            ));
+            exec.exit_code = -125;
+        }
+    }
+    exec
 }
 
 /// Merge stdout + stderr, normalise line endings, attach the exit code.
@@ -530,7 +411,7 @@ fn normalize_output(stdout: &[u8], stderr: &[u8], code: Option<i32>) -> ExecResu
 #[cfg(windows)]
 fn exec_windows_powershell(command: &str) -> ExecResult {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Command;
 
     // Write the command to a temp .ps1 file. Prefix with a UTF-8 BOM and an
     // encoding shim so non-ASCII output round-trips correctly.
@@ -543,84 +424,34 @@ fn exec_windows_powershell(command: &str) -> ExecResult {
          $OutputEncoding = [System.Text.Encoding]::UTF8\n\
          {command}"
     );
-    let mut file = match std::fs::File::create(&tmp) {
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+    {
         Ok(f) => f,
         Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
             return ExecResult::new(format!("failed to open temp script: {e}"), -1);
         }
     };
     // UTF-8 BOM + script body.
-    let _ = file.write_all(&[0xEF, 0xBB, 0xBF]);
-    let _ = file.write_all(script.as_bytes());
+    let written = file
+        .write_all(&[0xEF, 0xBB, 0xBF])
+        .and_then(|()| file.write_all(script.as_bytes()));
     drop(file);
-
-    // Spawn with piped stdout/stderr, then apply the same 30 s timeout + worker
-    // reader pattern as the Unix path (parity with Go's exec context).
-    use std::io::Read;
-    use std::time::{Duration, Instant};
-    const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
-
-    let mut child = match Command::new("powershell.exe")
-        .arg("-NoProfile")
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return ExecResult::new(format!("failed to write temp script: {e}"), -1);
+    }
+    let mut cmd = Command::new("powershell.exe");
+    cmd.arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-File")
-        .arg(&tmp)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            return ExecResult::new(format!("failed to run powershell: {e}"), -1);
-        }
-    };
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let out_handle = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = stdout.read_to_end(&mut b);
-        b
-    });
-    let err_handle = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = stderr.read_to_end(&mut b);
-        b
-    });
-
-    let deadline = Instant::now() + EXEC_TIMEOUT;
-    let result: Result<Option<i32>, &'static str> = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status.code()),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err("timeout");
-            }
-            Err(_) => break Err("wait failed"),
-        }
-    };
+        .arg(&tmp);
+    let result = crate::subprocess::run(&mut cmd, None, std::time::Duration::from_secs(30));
     let _ = std::fs::remove_file(&tmp);
-
-    let stdout_buf = out_handle.join().unwrap_or_default();
-    let stderr_buf = err_handle.join().unwrap_or_default();
-    match result {
-        Ok(code) => normalize_output(&stdout_buf, &stderr_buf, code),
-        Err("timeout") => {
-            let mut r = normalize_output(&stdout_buf, &stderr_buf, None);
-            r.output
-                .push_str("\n[komari] command timed out after 30s and was killed");
-            r.exit_code = -124;
-            r
-        }
-        _ => ExecResult::new("failed to wait for command".to_string(), -1),
-    }
+    exec_result(result)
 }
 
 /// Build a temp file path in the OS temp dir without pulling in the `tempfile`
@@ -687,6 +518,33 @@ pub fn build_task_result_v2(task_id: &str, result: &str, exit_code: i32) -> Vec<
 #[cfg(test)]
 mod exec_tests {
     use super::*;
+
+    #[test]
+    fn exec_stop_reasons_are_observable() {
+        use crate::subprocess::{RunOutput, StopReason};
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+
+        for (reason, expected_code, message) in [
+            (StopReason::TimedOut, -124, "timed out"),
+            (StopReason::OutputLimit, -125, "output truncated"),
+        ] {
+            let result = exec_result(Ok(RunOutput {
+                output: std::process::Output {
+                    status: std::process::ExitStatus::from_raw(0),
+                    stdout: b"partial\r\n".to_vec(),
+                    stderr: b"diagnostic".to_vec(),
+                },
+                reason,
+            }));
+            assert_eq!(result.exit_code, expected_code);
+            assert!(result.output.contains(message));
+            assert!(result.output.starts_with("partial\n"));
+            assert!(result.output.contains("diagnostic"));
+        }
+    }
 
     #[test]
     #[cfg(unix)]
@@ -875,5 +733,66 @@ mod ping_retry_tests {
         });
         assert_eq!(rtt, 800);
         assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn extract_string_nested_params() {
+        let ev =
+            br#"{"id":"e1","method":"agent.exec","params":{"task_id":"t9","command":"echo hi"}}"#;
+        assert_eq!(extract_json_string(ev, "task_id").as_deref(), Some("t9"));
+        assert_eq!(
+            extract_json_string(ev, "command").as_deref(),
+            Some("echo hi")
+        );
+        assert_eq!(
+            extract_json_string(ev, "method").as_deref(),
+            Some("agent.exec")
+        );
+    }
+
+    #[test]
+    fn extract_string_top_level_wins_and_flat_v1() {
+        let flat = br#"{"message":"exec","task_id":"a","command":"ls"}"#;
+        assert_eq!(extract_json_string(flat, "task_id").as_deref(), Some("a"));
+        let both = br#"{"task_id":"top","params":{"task_id":"inner"}}"#;
+        assert_eq!(extract_json_string(both, "task_id").as_deref(), Some("top"));
+    }
+
+    #[test]
+    fn extract_string_decodes_escapes() {
+        let ev = br#"{"params":{"command":"echo \"a\"\nls \\ \u00e9 \ud83d\ude00"}}"#;
+        assert_eq!(
+            extract_json_string(ev, "command").as_deref(),
+            Some("echo \"a\"\nls \\ \u{e9} \u{1f600}")
+        );
+    }
+
+    #[test]
+    fn extract_string_ignores_keys_inside_strings_and_other_objects() {
+        let ev = br#"{"note":"\"task_id\":\"fake\"","other":{"task_id":"deep"},"params":{}}"#;
+        assert_eq!(extract_json_string(ev, "task_id"), None);
+    }
+
+    #[test]
+    fn extract_number_nested_and_quoted() {
+        let ev = br#"{"method":"agent.ping","params":{"ping_task_id":42,"x":"7"}}"#;
+        assert_eq!(extract_json_number(ev, "ping_task_id"), Some(42));
+        assert_eq!(extract_json_number(ev, "x"), Some(7));
+        assert_eq!(extract_json_number(ev, "missing"), None);
+    }
+
+    #[test]
+    fn extract_malformed_does_not_panic() {
+        for bad in [
+            &b"{"[..],
+            b"{\"a\"",
+            b"{\"a\":",
+            b"{\"a\":\"\\",
+            b"",
+            b"[1,2]",
+        ] {
+            let _ = extract_json_string(bad, "a");
+            let _ = extract_json_number(bad, "a");
+        }
     }
 }

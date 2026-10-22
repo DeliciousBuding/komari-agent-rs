@@ -21,7 +21,7 @@ pub enum InflateErr {
     BadDistance,
     /// Huffman code did not match any symbol (oversubscribed / corrupt table).
     BadCode,
-    /// Decompressed output exceeded the 64 MiB safety limit (DEFLATE bomb protection).
+    /// Decompressed output exceeded the 1 MiB control-message limit.
     MaxSizeExceeded,
 }
 
@@ -32,14 +32,14 @@ impl std::fmt::Display for InflateErr {
             Self::InvalidData => f.write_str("inflate: invalid data"),
             Self::BadDistance => f.write_str("inflate: distance too far back"),
             Self::BadCode => f.write_str("inflate: invalid huffman code"),
-            Self::MaxSizeExceeded => f.write_str("inflate: output exceeded 64 MiB safety limit"),
+            Self::MaxSizeExceeded => f.write_str("inflate: output exceeded 1 MiB safety limit"),
         }
     }
 }
 impl std::error::Error for InflateErr {}
 
-/// Maximum decompressed output size (64 MiB) — DEFLATE bomb protection.
-const MAX_INFLATE_SIZE: usize = 64 * 1024 * 1024;
+/// Maximum decompressed control-message size; bound DEFLATE expansion too.
+const MAX_INFLATE_SIZE: usize = 1024 * 1024;
 
 // ── BitReader (LSB-first) ───────────────────────────────────────────────────
 // DEFLATE packs bits least-significant-first within each byte; Huffman codes

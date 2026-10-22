@@ -124,47 +124,15 @@ fn parse_stats(rest: &str) -> Option<[u64; 16]> {
     Some(n)
 }
 
-// ── Interface filtering ───────────────────────────────────────────────────────
-
-/// Returns `true` for lo and common virtual/container interface prefixes.
-fn is_virtual(name: &str) -> bool {
-    const VP: &[&str] = &[
-        "docker", "veth", "br-", "tun", "tap", "virbr", "vnet", "cni", "podman", "flannel", "vmbr",
-        "fwbr", "fwpr",
-    ];
-    name == "lo" || VP.iter().any(|p| name.starts_with(p))
-}
-
-/// Simple glob: `*` matches any substring.  `eth*` matches `eth0`.
-/// `*lan` matches `wlan`.  `*` matches everything.  No `*` = exact match.
-fn glob_match(pat: &str, name: &str) -> bool {
-    match pat.split_once('*') {
-        Some((pre, suf)) => name.starts_with(pre) && name.ends_with(suf),
-        None => pat == name,
-    }
-}
-
-/// Apply `Config::include_nics` / `Config::exclude_nics` filtering.
-///
-/// If the include list is non-empty, only interfaces matching at least one
-/// include pattern are kept (whitelist mode).  Otherwise, interfaces matching
-/// any exclude pattern are dropped.
-fn include_nic(name: &str, cfg: &Config) -> bool {
-    if !cfg.include_nics.is_empty() {
-        return cfg.include_nics.iter().any(|p| glob_match(p, name));
-    }
-    !cfg.exclude_nics.iter().any(|p| glob_match(p, name))
-}
+use super::include_nic;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Collect network statistics for all eligible interfaces.
 ///
 /// Reads `/proc/net/dev`, skips the two header lines, and for each remaining
-/// line parses the interface name and 16 stat columns.  Loopback and virtual
-/// interfaces (docker*, veth*, br-*, tun*, tap*, virbr*, vnet*, cni*, podman*,
-/// flannel*, vmbr*, fwbr*, fwpr*) are excluded by default.  `Config::include_nics`
-/// / `Config::exclude_nics` refine selection with glob patterns.
+/// line parses the interface name and 16 stat columns. Shared upstream NIC
+/// selection applies hard exclusions, then include-first filepath patterns.
 ///
 /// Speeds are computed as the delta from the previous call divided by elapsed
 /// time.  On the first call all speeds are 0.
@@ -191,11 +159,9 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     let mut nt = [0u64; MAX_NETWORKS];
     let mut nc: u8 = 0;
 
-    // Counts physical (non-virtual, non-loopback) interfaces that were still
-    // filtered out by include/exclude — the classic misconfiguration that
-    // silently zeros every net metric (e.g. `include_nics: "ens3"` on a host
-    // whose real NIC is `enp0s6`).
-    let mut filtered_physical = 0usize;
+    // Include the rejected count in the empty-selection diagnostic, including
+    // upstream hard exclusions as well as user patterns.
+    let mut filtered_interfaces = 0usize;
 
     for line in BufReader::new(file).lines().skip(2) {
         let line = match line {
@@ -206,11 +172,8 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
             Some(v) => v,
             None => continue,
         };
-        if is_virtual(name) {
-            continue;
-        }
         if !include_nic(name, config) {
-            filtered_physical += 1;
+            filtered_interfaces += 1;
             continue;
         }
         let nums = match parse_stats(rest) {
@@ -272,9 +235,9 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     if out.is_empty() && !NET_EMPTY_WARNED.swap(true, Ordering::Relaxed) {
         eprintln!(
             "[komari] WARN: no eligible network interface after filtering \
-             (include_nics={:?}, exclude_nics={:?}, physical filtered={}) — net metrics \
+             (include_nics={:?}, exclude_nics={:?}, interfaces filtered={}) — net metrics \
              will be zeros; verify against `ip -s link`",
-            config.include_nics, config.exclude_nics, filtered_physical
+            config.include_nics, config.exclude_nics, filtered_interfaces
         );
     }
 

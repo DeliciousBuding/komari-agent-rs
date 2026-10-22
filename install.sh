@@ -120,7 +120,7 @@ ok "Binary downloaded"
 # sha256 verify
 info "Verifying checksum ..."
 if curl -fSL --progress-bar -o "${TMP_DIR}/${checksums}" "${chk_url}" 2>/dev/null; then
-  expected=$(grep "${file}" "${TMP_DIR}/${checksums}" | awk '{print $1}' | head -1)
+  expected=$(awk -v f="${file}" '{n=$2; sub(/^\*/,"",n)} n==f {print $1}' "${TMP_DIR}/${checksums}")
   if [ -n "${expected}" ]; then
     if command -v sha256sum >/dev/null 2>&1; then
       actual=$(sha256sum "${TMP_DIR}/${file}" | awk '{print $1}')
@@ -130,14 +130,21 @@ if curl -fSL --progress-bar -o "${TMP_DIR}/${checksums}" "${chk_url}" 2>/dev/nul
     [ "${expected}" = "${actual}" ] || err "SHA256 mismatch!\n  Expected: ${expected}\n  Actual:   ${actual}"
     ok "SHA256 verified"
   else
-    warn "Hash entry not found — skipping verification"
+    err "Missing checksum entry — refusing to install"
   fi
 else
-  warn "Checksums not available — skipping verification"
+  err "Could not download checksums — refusing to install"
 fi
 
 # install binary
-install -m 755 "${TMP_DIR}/${file}" "${BIN_PATH}"
+mkdir -p "$(dirname "${BIN_PATH}")"
+if [ -f "${BIN_PATH}" ]; then
+  cp -p "${BIN_PATH}" "${BIN_PATH}.pre-$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+# Stage on the destination filesystem; rename does not truncate a running image.
+install -m 755 "${TMP_DIR}/${file}" "${BIN_PATH}.new"
+"${BIN_PATH}.new" --version >/dev/null || err "Downloaded binary cannot run on this host"
+mv -f "${BIN_PATH}.new" "${BIN_PATH}"
 ok "Installed to ${BIN_PATH}"
 
 # config template
@@ -186,7 +193,7 @@ WantedBy=default.target
 EOF
   systemctl --user daemon-reload
   systemctl --user enable "${SERVICE_NAME}.service"
-  systemctl --user start "${SERVICE_NAME}.service" 2>/dev/null || warn "Start failed — check: journalctl --user -u ${SERVICE_NAME}"
+  systemctl --user restart "${SERVICE_NAME}.service" 2>/dev/null || err "Restart failed; restore the .pre-* binary and retry"
   ok "systemd user service registered and started"
 
 elif command -v systemctl >/dev/null 2>&1 && systemctl list-units >/dev/null 2>&1; then
@@ -210,7 +217,7 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable "${SERVICE_NAME}.service"
-  systemctl start "${SERVICE_NAME}.service" 2>/dev/null || warn "Start failed — check: journalctl -u ${SERVICE_NAME}"
+  systemctl restart "${SERVICE_NAME}.service" 2>/dev/null || err "Restart failed; restore the .pre-* binary and retry"
   ok "systemd service registered and started"
 
 # launchd (macOS)

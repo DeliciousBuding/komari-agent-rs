@@ -310,7 +310,7 @@ pub fn parse_proxy_url(proxy: &str) -> Result<ProxySpec, std::io::Error> {
     if hostport.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("missing proxy host in: {proxy}"),
+            "missing proxy host",
         ));
     }
 
@@ -325,7 +325,7 @@ pub fn parse_proxy_url(proxy: &str) -> Result<ProxySpec, std::io::Error> {
     if host.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("missing proxy host in: {proxy}"),
+            "missing proxy host",
         ));
     }
 
@@ -357,10 +357,7 @@ fn split_host_port(hostport: &str, default_port: u16) -> Result<(String, u16), s
         let rest = &hostport[end + 1..];
         if let Some(port_str) = rest.strip_prefix(':') {
             let p = port_str.parse::<u16>().map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("invalid proxy port in: {hostport}"),
-                )
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid proxy port")
             })?;
             return Ok((host.to_string(), p));
         }
@@ -373,7 +370,7 @@ fn split_host_port(hostport: &str, default_port: u16) -> Result<(String, u16), s
                 Ok(p) => Ok((hostport[..idx].to_string(), p)),
                 Err(_) => Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    format!("invalid proxy port in: {hostport}"),
+                    "invalid proxy port",
                 )),
             }
         }
@@ -404,7 +401,7 @@ pub fn establish_tunnel(
     timeout: Duration,
 ) -> Result<TcpStream, NetErr> {
     let spec = parse_proxy_url(proxy_url)
-        .map_err(|e| NetErr::Proxy(format!("invalid proxy URL '{proxy_url}': {e}")))?;
+        .map_err(|e| NetErr::Proxy(format!("invalid proxy configuration: {e}")))?;
 
     // Resolve and connect to the proxy itself.
     let mut sock = connect_tcp(&spec.host, spec.port, timeout)?;
@@ -509,19 +506,20 @@ fn http_connect_handshake(
 
     let text = std::str::from_utf8(&buf)
         .map_err(|_| NetErr::Proxy("proxy CONNECT response is not valid UTF-8".into()))?;
-    let status_line = text.lines().next().unwrap_or("");
+    validate_connect_status(text.lines().next().unwrap_or(""))
+}
+
+fn validate_connect_status(status_line: &str) -> Result<(), NetErr> {
+    // A proxy may echo request/authentication data in its reason phrase.
+    // Report only the numeric status, never server-controlled status text.
     let code = status_line.split_whitespace().nth(1);
     match code.and_then(|c| c.parse::<u16>().ok()) {
         Some(200) => Ok(()),
-        Some(407) => Err(NetErr::Proxy(format!(
-            "proxy requires authentication (407): {status_line}"
-        ))),
+        Some(407) => Err(NetErr::Proxy("proxy requires authentication (407)".into())),
         Some(other) => Err(NetErr::Proxy(format!(
-            "proxy CONNECT failed: {status_line} (status {other})"
+            "proxy CONNECT failed (status {other})"
         ))),
-        None => Err(NetErr::Proxy(format!(
-            "malformed proxy CONNECT status line: {status_line}"
-        ))),
+        None => Err(NetErr::Proxy("malformed proxy CONNECT status line".into())),
     }
 }
 
@@ -810,6 +808,38 @@ fn base64_encode_var(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_proxy_errors_never_reflect_credentials() {
+        for url in [
+            "http://user:synthetic-secret-canary@", // # leak-guard-allow:LG-F4C6A155 synthetic invalid-authority fixture
+            "http://user:synthetic-secret-canary@:80", // # leak-guard-allow:LG-F4C6A155 synthetic invalid-authority fixture
+            "http://user:synthetic-secret-canary@host:invalid", // # leak-guard-allow:LG-F4C6A155 synthetic invalid-authority fixture
+            "socks4://user:synthetic-secret-canary@host:1080", // # leak-guard-allow:LG-F4C6A155 synthetic invalid-authority fixture
+        ] {
+            let error =
+                establish_tunnel(url, "example.test", 443, Duration::from_millis(1)).unwrap_err();
+            let display = error.to_string();
+            let debug = format!("{error:?}");
+            assert!(!display.contains("synthetic-secret-canary"), "{display}");
+            assert!(!debug.contains("synthetic-secret-canary"), "{debug}");
+            assert!(
+                !parse_proxy_url(url)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("synthetic-secret-canary")
+            );
+        }
+        for status in [
+            "HTTP/1.1 407 synthetic-secret-canary",
+            "HTTP/1.1 403 synthetic-secret-canary",
+            "HTTP/1.1 synthetic-secret-canary",
+        ] {
+            let error = validate_connect_status(status).unwrap_err();
+            assert!(!error.to_string().contains("synthetic-secret-canary"));
+            assert!(!format!("{error:?}").contains("synthetic-secret-canary"));
+        }
+    }
 
     // ── proxy URL parsing ────────────────────────────────────────────────
 

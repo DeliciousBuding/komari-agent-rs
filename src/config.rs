@@ -9,16 +9,15 @@
 //   upstream komari-agent-go/cmd/root.go        (cobra init + env loader)
 //   komari-agent-rs/docs/plan/spec.md   (DD1 constraint)
 
-// The parser module carries a complete config surface: the live CLI/env parser
-// used by main(), plus a parallel JSON-config loader + hand-rolled JSON
-// tokenizer kept for parity and future wiring. The JSON-config path and several
-// ConfigErr variants are not exercised by the binary yet. Allow dead_code for
-// that surface rather than trimming the parity contract.
+// Main loads CLI, environment and JSON configuration in that order; JSON wins.
+// The config tokenizer owns typed configuration values. Cold-path RPC/release
+// field extraction uses the shared json module.
 #![allow(dead_code)]
 
 use std::env;
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::str::FromStr;
 
 // ============================================================================
@@ -81,7 +80,7 @@ pub struct Config {
     pub token: String,    // AGENT_TOKEN,    --token / -t
 
     // -- Timing --
-    pub interval: f64, // AGENT_INTERVAL,             --interval / -i,          default 1.0
+    pub interval: f64, // AGENT_INTERVAL,             --interval / -i,          default 3.0
     pub info_report_interval: u64, // AGENT_INFO_REPORT_INTERVAL, --info-report-interval,   default 5 (min)
     pub reconnect_interval: u64, // AGENT_RECONNECT_INTERVAL,   --reconnect-interval / -c, default 5 (sec)
     pub max_retries: u64,        // AGENT_MAX_RETRIES,          --max-retries / -r,       default 10
@@ -89,8 +88,7 @@ pub struct Config {
     // -- Feature toggles --
     pub disable_web_ssh: bool, // AGENT_DISABLE_WEB_SSH,    --disable-web-ssh,         default true
     /// Independent gate for one-shot remote exec (`agent.exec`).
-    /// Defaults to **true** (safer than Go). When unset in JSON, follows
-    /// `disable_web_ssh` for backward compatibility.
+    /// Defaults to true independently of disable_web_ssh in every config source.
     pub disable_exec: bool, // AGENT_DISABLE_EXEC,       --disable-exec,            default true
     pub disable_auto_update: bool, // AGENT_DISABLE_AUTO_UPDATE, --disable-auto-update,     default true
     pub disable_compression: bool, // AGENT_DISABLE_COMPRESSION, --disable-compression,     default false
@@ -134,7 +132,7 @@ impl Default for Config {
         Self {
             endpoint: String::new(),
             token: String::new(),
-            interval: 1.0,
+            interval: 3.0,
             info_report_interval: 5,
             reconnect_interval: 5,
             max_retries: 10,
@@ -277,11 +275,11 @@ pub fn help_text() -> &'static str {
      \n\
      Connection & protocol:\n  \
      --config <file>                 JSON config file (highest priority; overrides flags + env)\n  \
-     --interval <sec>                Report interval in seconds (default 1.0)\n  \
-     --info-report-interval <sec>    basicInfo upload interval (default 5)\n  \
+     --interval <sec>                Report interval in seconds (default 3.0)\n  \
+     --info-report-interval <min>    basicInfo upload interval (default 5 minutes)\n  \
      --reconnect-interval <sec>      Reconnect backoff (default 5)\n  \
-     --max-retries <n>               Max retries before downshift (default 5)\n  \
-     --protocol-version <1|2>        Force protocol version (default 2)\n  \
+     --max-retries <n>               Warning threshold; retrying continues (default 10)\n  \
+     --protocol-version <2>          Wire protocol (only 2 is supported)\n  \
      --http-only                     DPI/middlebox escape hatch: report over HTTP POST only, never WS\n  \
      --ignore-unsafe-cert            Skip TLS certificate verification (insecure)\n\
      \n\
@@ -739,10 +737,9 @@ pub fn load_env(config: &mut Config) {
     }
 
     // u8
-    if let Ok(v) = env::var("AGENT_PROTOCOL_VERSION")
-        && let Ok(n) = u8::from_str(&v)
-    {
-        config.protocol_version = n;
+    if let Ok(v) = env::var("AGENT_PROTOCOL_VERSION") {
+        // Invalid explicit versions must reach validation, not silently use 2.
+        config.protocol_version = u8::from_str(&v).unwrap_or(0);
     }
     if let Ok(v) = env::var("AGENT_MONTH_ROTATE")
         && let Ok(n) = u8::from_str(&v)
@@ -893,7 +890,7 @@ enum JsonValue {
     Null,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Token {
     BraceOpen,
     BraceClose,
@@ -905,6 +902,24 @@ enum Token {
     Num(f64),
     Boolean(bool),
     Null,
+}
+
+// Parser diagnostics must never reflect string/numeric values from a private config.
+impl fmt::Debug for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::BraceOpen => "'{'",
+            Self::BraceClose => "'}'",
+            Self::BracketOpen => "'['",
+            Self::BracketClose => "']'",
+            Self::Colon => "':'",
+            Self::Comma => "','",
+            Self::Str(_) => "string",
+            Self::Num(_) => "number",
+            Self::Boolean(_) => "boolean",
+            Self::Null => "null",
+        })
+    }
 }
 
 /// Tokenize a JSON byte slice into a Vec<Token>.
@@ -1005,69 +1020,10 @@ fn tokenize(input: &[u8]) -> Result<Vec<Token>, ConfigErr> {
 /// Tokenize a JSON string literal starting at `pos` (pointing to the opening '"').
 /// Returns the decoded string and the position after the closing '"'.
 fn tokenize_string(input: &[u8], pos: usize) -> Result<(String, usize), ConfigErr> {
-    let mut result = String::new();
-    let mut i = pos + 1; // skip opening '"'
-    let len = input.len();
-
-    while i < len {
-        let ch = input[i] as char;
-        match ch {
-            '"' => {
-                return Ok((result, i + 1)); // skip closing '"'
-            }
-            '\\' => {
-                i += 1;
-                if i >= len {
-                    return Err(ConfigErr::JsonError(
-                        "unexpected end of input in string escape".to_string(),
-                    ));
-                }
-                match input[i] as char {
-                    '"' => result.push('"'),
-                    '\\' => result.push('\\'),
-                    '/' => result.push('/'),
-                    'b' => result.push('\x08'),
-                    'f' => result.push('\x0C'),
-                    'n' => result.push('\n'),
-                    'r' => result.push('\r'),
-                    't' => result.push('\t'),
-                    'u' => {
-                        // \uXXXX — 4 hex digits
-                        if i + 4 >= len {
-                            return Err(ConfigErr::JsonError(
-                                "unexpected end of input in \\u escape".to_string(),
-                            ));
-                        }
-                        let hex = std::str::from_utf8(&input[i + 1..i + 5]).map_err(|_| {
-                            ConfigErr::JsonError("invalid UTF-8 in \\u escape".to_string())
-                        })?;
-                        let codepoint = u32::from_str_radix(hex, 16).map_err(|_| {
-                            ConfigErr::JsonError(format!("invalid \\u escape: \\u{}", hex))
-                        })?;
-                        let c = char::from_u32(codepoint).ok_or_else(|| {
-                            ConfigErr::JsonError(format!("invalid unicode codepoint: \\u{}", hex))
-                        })?;
-                        result.push(c);
-                        i += 4;
-                    }
-                    other => {
-                        return Err(ConfigErr::JsonError(format!(
-                            "invalid escape sequence \\{}",
-                            other
-                        )));
-                    }
-                }
-            }
-            _ => {
-                result.push(ch);
-            }
-        }
-        i += 1;
-    }
-
-    Err(ConfigErr::JsonError(
-        "unterminated string literal".to_string(),
-    ))
+    let end = crate::json::skip_value(input, pos);
+    let value = crate::json::decode_json_string(&input[pos..end])
+        .ok_or_else(|| ConfigErr::JsonError("invalid JSON string".to_string()))?;
+    Ok((value, end))
 }
 
 /// Tokenize a JSON number starting at `pos`.
@@ -1191,17 +1147,9 @@ impl Parser {
                 Ok(JsonValue::Null)
             }
             Some(Token::BraceOpen) => {
-                let map = self.parse_object()?;
-                // Flatten a flat object into its string-keyed values (we don't
-                // support nested objects as config values, but parse them into
-                // the map properly so we can extract fields).
-                // Actually, for config purposes, return a special marker.
-                // We'll handle this in the caller — nested objects become Null
-                // for config extraction.
-                // For simplicity, collect keys into a Vec and return as JsonValue::Str
-                // with JSON representation (not ideal but configs are flat).
-                let keys: Vec<String> = map.keys().cloned().collect();
-                Ok(JsonValue::Str(format!("<object with keys: {:?}>", keys)))
+                // Configuration fields are flat; nested objects are not string values.
+                self.parse_object()?;
+                Ok(JsonValue::Null)
             }
             Some(Token::BracketOpen) => {
                 let arr = self.parse_array()?;
@@ -1299,13 +1247,34 @@ impl Parser {
 // load_json_config — read and apply a JSON config file
 // ============================================================================
 
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+
 pub fn load_json_config(config: &mut Config, path: &str) -> Result<(), ConfigErr> {
-    let bytes = fs::read(path).map_err(|e| ConfigErr::FileReadError {
+    let read_error = |e: std::io::Error| ConfigErr::FileReadError {
         path: path.to_string(),
         error: e.to_string(),
-    })?;
+    };
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(read_error)?
+        .take((MAX_CONFIG_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(read_error)?;
+    apply_json_bytes(config, &bytes)
+}
 
-    let tokens = tokenize(&bytes)?;
+fn apply_json_bytes(config: &mut Config, bytes: &[u8]) -> Result<(), ConfigErr> {
+    if bytes.len() > MAX_CONFIG_BYTES {
+        return Err(ConfigErr::JsonError("config exceeds 1 MiB".to_string()));
+    }
+    // Validate before recursive typed parsing: bounded nesting, no duplicate
+    // settings or trailing data, and no plaintext values in malformed errors.
+    if !crate::json::is_valid_object(bytes) {
+        return Err(ConfigErr::JsonError(
+            "invalid JSON configuration object".to_string(),
+        ));
+    }
+    let tokens = tokenize(bytes)?;
     let mut parser = Parser::new(tokens);
     let map = parser.parse_object()?;
 
@@ -1397,8 +1366,13 @@ fn apply_json_map(config: &mut Config, map: &std::collections::HashMap<String, J
     if let Some(v) = get_f64("max_retries") {
         config.max_retries = v as u64;
     }
-    if let Some(v) = get_f64("protocol_version") {
-        config.protocol_version = v as u8;
+    if map.contains_key("protocol_version") {
+        // Do not truncate 2.5 to 2 or ignore a wrong-typed explicit version.
+        config.protocol_version = match get_f64("protocol_version") {
+            Some(2.0) => 2,
+            Some(1.0) => 1,
+            _ => 0,
+        };
     }
     if let Some(v) = get_f64("month_rotate") {
         config.month_rotate = v as u8;
@@ -1489,6 +1463,23 @@ fn apply_json_map(config: &mut Config, map: &std::collections::HashMap<String, J
 // Also checks prefer_ip_version is empty, "4", or "6" (matching Go).
 
 pub fn validate(config: &Config) -> Result<(), ConfigErr> {
+    if config.protocol_version != 2 {
+        return Err(ConfigErr::Validation(format!(
+            "protocol_version {} is no longer supported; set protocol_version to 2 (Komari >= 1.5)",
+            config.protocol_version
+        )));
+    }
+    if config.interval <= 0.0
+        || std::time::Duration::try_from_secs_f64(config.interval)
+            .ok()
+            .filter(|d| !d.is_zero())
+            .and_then(|d| std::time::Instant::now().checked_add(d))
+            .is_none()
+    {
+        return Err(ConfigErr::Validation(
+            "interval must be a finite positive duration supported by the platform".to_string(),
+        ));
+    }
     if config.endpoint.is_empty() {
         return Err(ConfigErr::Validation(
             "endpoint is required (set via --endpoint, AGENT_ENDPOINT, or JSON config)".to_string(),
@@ -1518,6 +1509,44 @@ pub fn validate(config: &Config) -> Result<(), ConfigErr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_json_rejects_ambiguous_or_unbounded_input_without_disclosure() {
+        let mut config = Config::default();
+        for data in [
+            r#"{"token" "synthetic-private-canary"}"#.to_string(),
+            r#"{"token":"synthetic-private-canary"} trailing"#.to_string(),
+            r#"{"token":"synthetic-private-canary","to\u006ben":"other"}"#.to_string(),
+            format!(
+                "{{\"token\":{}\"synthetic-private-canary\"{}}}",
+                "[".repeat(40),
+                "]".repeat(40)
+            ),
+            " ".repeat(MAX_CONFIG_BYTES + 1),
+        ] {
+            let error = apply_json_bytes(&mut config, data.as_bytes()).unwrap_err();
+            assert!(!error.to_string().contains("synthetic-private-canary"));
+            assert!(!format!("{error:?}").contains("synthetic-private-canary"));
+            assert!(config.token.is_empty());
+        }
+        let tokens = tokenize(br#"{"token" "synthetic-private-canary"}"#).unwrap();
+        let error = Parser::new(tokens).parse_object().unwrap_err();
+        assert!(!error.to_string().contains("synthetic-private-canary"));
+    }
+
+    #[test]
+    fn config_json_preserves_utf8_surrogates_and_flat_field_types() {
+        let mut config = Config::default();
+        apply_json_bytes(
+            &mut config,
+            r#"{"token":"合成\uD83D\uDE80","include_nics":["以太网?"]}"#.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(config.token, "合成🚀");
+        assert_eq!(config.include_nics, ["以太网?"]);
+        apply_json_bytes(&mut config, br#"{"token":{"not":"a token string"}}"#).unwrap();
+        assert_eq!(config.token, "合成🚀");
+    }
 
     fn args_vec(args: &[&str]) -> Vec<String> {
         std::iter::once("komari-agent-rs")
@@ -1610,7 +1639,7 @@ mod tests {
     #[test]
     fn test_defaults() {
         let c = Config::default();
-        assert_eq!(c.interval, 1.0);
+        assert_eq!(c.interval, 3.0);
         assert_eq!(c.info_report_interval, 5);
         assert_eq!(c.reconnect_interval, 5);
         assert_eq!(c.max_retries, 10);
@@ -1739,6 +1768,44 @@ mod tests {
         let mut c = Config::default();
         c.endpoint = "https://x.com".to_string();
         c.token = "secret".to_string();
+        assert!(validate(&c).is_ok());
+    }
+
+    #[test]
+    fn test_validate_requires_v2_for_cli_and_json_config() {
+        for raw in ["0", "1", "3", "255"] {
+            let mut c = Config::default();
+            c.endpoint = "https://example.com".into();
+            c.token = "test-token".into();
+            parse_args(&mut c, &args_vec(&["--protocol-version", raw])).unwrap();
+            let err = validate(&c).unwrap_err().to_string();
+            assert!(err.contains("protocol_version"));
+            assert!(err.contains("set protocol_version to 2"));
+        }
+        for raw in ["0", "1", "3", "2.5", "258", "\"2\"", "null"] {
+            let bytes = format!("{{\"protocol_version\":{raw}}}");
+            let mut parser = Parser::new(tokenize(bytes.as_bytes()).unwrap());
+            let mut c = Config::default();
+            apply_json_map(&mut c, &parser.parse_object().unwrap());
+            assert_ne!(c.protocol_version, 2, "must not silently accept {raw}");
+        }
+        let mut parser = Parser::new(tokenize(br#"{"protocol_version":2}"#).unwrap());
+        let mut c = Config::default();
+        apply_json_map(&mut c, &parser.parse_object().unwrap());
+        assert_eq!(c.protocol_version, 2);
+    }
+
+    #[test]
+    fn test_validate_report_interval_cannot_panic_or_busy_loop() {
+        let mut c = Config::default();
+        c.endpoint = "https://example.com".into();
+        c.token = "test-token".into();
+        for interval in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MAX, 1e-30] {
+            c.interval = interval;
+            assert!(validate(&c).unwrap_err().to_string().contains("interval"));
+        }
+        // Large, valid intervals remain supported; control polling is separate.
+        c.interval = 300.0;
         assert!(validate(&c).is_ok());
     }
 

@@ -1,289 +1,117 @@
-<div align="center">
-
 # komari-agent-rs
+Last updated: 2026-10-22
 
-**Featherweight Komari monitoring agent**
+[简体中文](README.zh-CN.md) · [Releases](https://github.com/DeliciousBuding/komari-agent-rs/releases) · [Changelog](CHANGELOG.md)
 
-Rust · sync single-threaded · ~1.5 MB binary · &lt;3 MB RSS · **10× less memory than the Go agent**
+A Rust monitoring agent for [Komari](https://github.com/komari-monitor/komari), using a synchronous collection loop and OS-native certificate roots. The default build includes metrics and ping probes; GPU collection, interactive terminals and self-update are optional features.
 
-[![CI](https://github.com/DeliciousBuding/komari-agent-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliciousBuding/komari-agent-rs/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/DeliciousBuding/komari-agent-rs?color=green&label=release)](https://github.com/DeliciousBuding/komari-agent-rs/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Platforms](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows%20%7C%20freebsd-blueviolet)](#installation)
-[![Stars](https://img.shields.io/github/stars/DeliciousBuding/komari-agent-rs?style=social)](https://github.com/DeliciousBuding/komari-agent-rs/stargazers)
+Version 0.6 targets Komari's v2 JSON-RPC protocol, carried over WebSocket or HTTP POST. See the [support matrix](docs/COMPARISON.md) for supported features, platform coverage and deliberate differences from the official Go agent. This project does not claim complete feature equivalence or a fixed RSS on every host.
 
-`komari` · `rust` · `rustls` · `monitoring` · `lightweight` · `single-threaded`
+## Run
 
-📦 **[Releases](https://github.com/DeliciousBuding/komari-agent-rs/releases)** · 📖 **[Docs](#documentation)** · 💬 **[Discussions](https://github.com/DeliciousBuding/komari-agent-rs/discussions)** · 📋 **[Changelog](CHANGELOG.md)**
+Download the asset for your OS and architecture from the [release page](https://github.com/DeliciousBuding/komari-agent-rs/releases), along with `checksums.txt`. Verify the checksum before executing it.
 
-**[English](README.md)** · **[简体中文](README.zh-CN.md)**
+Create a private UTF-8 JSON file without a BOM:
 
-</div>
-
----
-
-> Rust rewrite of [`komari-monitor/komari-agent`](https://github.com/komari-monitor/komari-agent) (Go) for the [`komari-monitor/komari`](https://github.com/komari-monitor/komari) server-monitoring tool. Wire-compatible with the official Go agent — register a node on a Komari server, point this agent at it, done.
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Features](#features)
-- [Comparison](#comparison) — vs Go / Zig agent, binary & RSS
-- [Installation](#installation) — Linux / macOS / Windows / FreeBSD
-- [Build from Source](#build-from-source)
-- [Configuration](#configuration) — CLI / env / JSON config
-- [Architecture](#architecture)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [License](#license)
-
----
-
-## Quick Start
-
-```bash
-# Download and run (Linux, full variant)
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64-full -o komari-agent
-chmod +x komari-agent
-./komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
+```json
+{
+  "endpoint": "https://komari.example.com",
+  "token": "replace-with-node-token",
+  "interval": 3,
+  "disable_exec": true,
+  "disable_web_ssh": true,
+  "disable_auto_update": true
+}
 ```
 
-One binary. No runtime deps. No OpenSSL.
+Restrict file access to the service account, then run:
 
-> Release assets follow `komari-agent-rs-<os>-<arch>[-variant]`. Linux ships
-> `-default` (core monitoring, **always includes ping**) and `-full`
-> (default + gpu/terminal/self-update); other platforms ship full only.
-> `--version` prints the compiled feature set, e.g. `(features: ping)`.
-
-## Features
-
-- **CPU** — per-core utilization, model name, core count
-- **Memory** — total / used / available / swap, 3-mode reporting (raw / with-cache / used-only)
-- **Disk** — per-partition total / used / free, physical-device filter
-- **Network** — per-interface RX/TX bytes/sec delta, TCP/UDP connection counts
-- **GPU** — name / utilization / VRAM / temperature (NVIDIA, AMD ROCm, Intel DRM, Apple Metal, DXGI)
-- **Load** — 1/5/15-minute load averages
-- **Connections** — TCP4/TCP6/UDP socket counts
-- **Processes** — total process count
-- **Uptime** — system uptime in seconds
-- **IP** — public IP auto-detection
-- **OS info** — OS name, kernel version, virtualization detection
-- **v1/v2 protocol** — JSON-RPC 2.0 over WebSocket with HTTP POST fallback (JSON-RPC 1.0 compatibility)
-- **v2 agent-control events** — answers `agent.startupConfig` with a redacted startup snapshot (secrets never leave the node); `agent.switchVersion` is deliberately unsupported (updates stay manual and hash-pinned)
-- **Remote exec** — execute commands on agent via server
-- **ICMP/TCP/HTTP ping** — three-tier ping with automatic fallback
-- **Interactive terminal** — PTY (Linux/macOS/FreeBSD) and ConPTY (Windows)
-- **Self-update** — fetch and apply latest GitHub Release
-- **Cross-platform** — Linux, macOS, Windows, FreeBSD — full feature parity
-
-## Comparison
-
-| | Go Agent | Zig Agent | **komari-agent-rs** |
-|---|---|---|---|
-| Binary size | ~14 MB | ~1.3 MB | **~1.5 MB** (196 KB our code + ~1 MB TLS stack) |
-| Steady-state RSS | ~18-32 MB | ~8.5 MB | **~3 MB** |
-| Concurrency | goroutines | async | **sync single-threaded** |
-| TLS | crypto/tls | OS-native | **rustls + ring** |
-| JSON | encoding/json | std.json | **custom zero-alloc** |
-| Gzip | compress/gzip | std.compress | **fixed-Huffman encoder** |
-| Async runtime | built-in | built-in | **none — no tokio, no async-std** |
-| Build dep | Go toolchain | Zig compiler | **Rust (stable) only** |
-
-**Where the binary goes** (cargo-bloat, Linux musl release, stripped):
-
-| Component | Size | Share |
-|---|---:|---:|
-| rustls (TLS impl) | ~1.1 MB | 40% |
-| ring (crypto primitives) | ~528 KB | 19% |
-| webpki (root cert bundle) | ~262 KB | 10% |
-| std (Rust stdlib) | ~471 KB | 17% |
-| **Our agent code** | **~196 KB** | **7%** |
-| Other (misc crates) | ~rest | 7% |
-
-The binary is **TLS-bound**: rustls + ring + webpki (~70%) is the irreducible cost of speaking HTTPS/WSS without OpenSSL. The actual monitoring agent we wrote is **196 KB** — that is the "featherweight" achievement. The operational win that matters on a tiny VPS is **RSS ~3 MB vs the Go agent's 18-32 MB**: an order of magnitude less resident memory for the same job.
-
-## Installation
-
-The `install.sh` script is the recommended path on Linux/macOS/FreeBSD — it
-downloads the binary, verifies the SHA-256 checksum, writes a config, and
-registers a systemd/launchd/rc.d service:
-
-```bash
-# Root: system-wide service under /usr/local/bin + /etc/komari-agent
-curl -fsSL https://raw.githubusercontent.com/DeliciousBuding/komari-agent-rs/main/install.sh | bash -s -- \
-  --token YOUR_TOKEN --endpoint https://your-komari-server
-
-# Per-user: systemd user service (no root, XDG paths, enable-linger)
-./install.sh --user --token YOUR_TOKEN --endpoint https://your-komari-server
+```sh
+./komari-agent-rs --config ./config.json
+./komari-agent-rs --version
 ```
 
-Manual download also works (no service registration):
+Keep the token in the config file rather than shell history or process arguments. Register the node in Komari first. Replacing this executable does not require changing its node token or registration.
 
-### Linux
+For service installation, download and inspect `install.sh` (Linux/macOS/FreeBSD) or `install.ps1` (Windows) from the same release revision. Unix supports system or `--user` systemd installation. The installers verify release checksums and preserve existing config; the Windows installer accepts optional explicit token/endpoint overrides and stores credentials only in the config. Windows releases currently target x86_64.
 
-```bash
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-linux-x86_64-full -o komari-agent
-chmod +x komari-agent
-sudo mv komari-agent /usr/local/bin/
-komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
+## Build
+
+Use current stable Rust, a C toolchain for `ring`, and the platform SDK/linker. A separate fixed MSRV is not maintained.
+
+```sh
+cargo build --locked --release
+cargo build --locked --release --features full
+cargo build --locked --release --no-default-features
+cargo check --locked --features terminal
 ```
 
-### macOS
+| Feature | Includes |
+|---|---|
+| default | Metrics and ping |
+| gpu-detection | GPU tooling/sysfs collection; runtime `enable_gpu` must also be enabled |
+| terminal | Optional interactive PTY support |
+| self-update | Verified GitHub release installation, off by default at runtime |
+| full | All features above |
 
-```bash
-curl -L https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-macos-x86_64 -o komari-agent
-chmod +x komari-agent
-sudo mv komari-agent /usr/local/bin/
-komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
-```
-
-### Windows
-
-```powershell
-Invoke-WebRequest -Uri "https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-windows-x86_64.exe" -OutFile "komari-agent.exe"
-.\komari-agent.exe --token YOUR_TOKEN --endpoint https://your-komari-server
-```
-
-### FreeBSD
-
-```bash
-fetch https://github.com/DeliciousBuding/komari-agent-rs/releases/latest/download/komari-agent-rs-freebsd-x86_64 -o komari-agent
-chmod +x komari-agent
-mv komari-agent /usr/local/bin/
-komari-agent --token YOUR_TOKEN --endpoint https://your-komari-server
-```
-
-## Build from Source
-
-Requires Rust stable (1.75+).
-
-```bash
-git clone https://github.com/DeliciousBuding/komari-agent-rs.git
-cd komari-agent-rs
-
-# Core build — monitoring + v1/v2 protocol + HTTP fallback + ping probes
-cargo build --release
-
-# Full build — everything enabled (gpu/terminal/self-update on top of default)
-cargo build --release --features full
-
-# Optional extras (default already includes ping; these add more on top)
-cargo build --release --features gpu-detection     # +GPU monitoring
-cargo build --release --features terminal           # +Interactive terminal
-cargo build --release --features self-update        # +Self-update
-```
-
-> **Binary size note:** Total stripped Linux musl binary is ~1.5 MB. ~1 MB of that is the mandatory TLS stack (rustls + ring + webpki-roots); our own monitoring code is ~196 KB. Use `cargo bloat --release --crates` to reproduce the breakdown.
+Linux release assets have `-default` and `-full` variants; both include ping. Release CI checks the binary-size budget for supported matrix entries. RSS and peak memory depend on TLS roots, platform, optional collectors and workload.
 
 ## Configuration
 
-Every option can be passed as a CLI flag, an `AGENT_*` environment variable, or a field in a JSON config file (`--config /path/to/config.json`). Precedence: CLI flags > env vars > config file.
+Load order follows the Go agent: CLI flags, then environment, then the JSON config file. JSON is highest priority. `--help` lists all flags.
 
-### Core
+| Setting | Default | Meaning |
+|---|---|---|
+| endpoint / token | required | Server origin and node credential |
+| interval | 3 seconds | Metrics reporting cadence; explicit existing values remain effective |
+| info_report_interval | 5 minutes | Static basic-info refresh |
+| reconnect_interval | 5 seconds | Initial exponential reconnect backoff |
+| max_retries | 10 | Warning threshold; reconnecting continues after it is exhausted |
+| protocol_version | 2 | Only 2 is accepted in 0.6; v1 settings produce a migration error |
+| http_only | false | Use v2 HTTP report/pull only, with no WebSocket or terminal |
+| disable_exec | true | Independent one-shot command gate |
+| disable_web_ssh | true | Independent interactive terminal gate |
+| disable_auto_update | true | Leave upgrades to the service supervisor/operator |
+| ignore_unsafe_cert | false | Explicitly bypasses monitoring TLS authentication; keep false |
+| include_nics / exclude_nics | empty | NIC selection; use actual platform interface names |
+| include_mountpoints / exclude_mountpoints | empty | Filesystem selection |
 
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `--endpoint` / `-e` | `AGENT_ENDPOINT` | — | Komari server base URL, e.g. `https://komari.example.com` (required) |
-| `--token` / `-t` | `AGENT_TOKEN` | — | Agent authentication token (required) |
-| `--config` | `AGENT_CONFIG_FILE` | — | Path to a JSON config file holding any of the options below |
+Each setting also has an `AGENT_*` environment name, shown in help. Never post a raw effective configuration or proxy-authentication value in an issue.
 
-### Timing & protocol
+NIC selection follows the Go agent: built-in excluded prefixes take precedence,
+then include patterns, then exclude patterns. Patterns match the whole interface
+name using platform-aware glob syntax (`*`, `?`, character classes). On Windows
+the name is the adapter alias (`Get-NetAdapter` → `Name`), not its description.
 
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `--interval` / `-i` | `AGENT_INTERVAL` | `1` | Metrics reporting interval (seconds) |
-| `--info-report-interval` | `AGENT_INFO_REPORT_INTERVAL` | `5` | Static basic-info refresh (minutes) |
-| `--reconnect-interval` / `-c` | `AGENT_RECONNECT_INTERVAL` | `5` | Reconnect base delay (seconds) |
-| `--max-retries` / `-r` | `AGENT_MAX_RETRIES` | `10` | Max reconnect attempts before giving up |
-| `--protocol-version` | `AGENT_PROTOCOL_VERSION` | `2` | `2` = JSON-RPC v2, `1` = v1 (auto-downgrades on rejection) |
+TLS uses `rustls` with `ring` and `rustls-webpki`; roots are loaded from the operating system, not from `webpki-roots`. Restart after changing the trust store. Optional executable downloads always verify TLS, even if monitoring certificate checks were explicitly disabled.
 
-### Network
+## Upgrade from 0.5
 
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `--prefer-ip-version` | `AGENT_PREFER_IP_VERSION` | auto | `4` or `6` |
-| `--custom-dns` | `AGENT_CUSTOM_DNS` | — | Comma-separated custom DNS servers (e.g. `1.1.1.1,8.8.8.8`) |
-| `--include-nics` / `--exclude-nics` | `AGENT_INCLUDE_NICS` / `AGENT_EXCLUDE_NICS` | all | Comma-separated NIC description filters |
-| `--include-mountpoints` / `--exclude-mountpoints` | `AGENT_INCLUDE_MOUNTPOINTS` / `AGENT_EXCLUDE_MOUNTPOINTS` | all | Semicolon-separated mount-point filters |
-| `--ignore-unsafe-cert` / `-u` | `AGENT_IGNORE_UNSAFE_CERT` | `false` | Skip TLS certificate verification (insecure) |
+Keep your existing config and verified old binary. Replace the executable with the matching verified asset, restart its supervisor, and check `--version` and fresh server-side metrics.
 
-### Feature toggles
+The compatibility change is v2-only transport: Komari 1.5+ exposes `/api/clients/v2/rpc`; removed v1 routes are no longer attempted. An explicit `protocol_version=1` must be removed or changed to 2 for a v2 server. Pre-v2 servers require the previous agent release or a separate server migration.
 
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `--gpu` | `AGENT_ENABLE_GPU` | `false` | Enable GPU metrics (or build with `--features gpu-detection`) |
-| `--disable-web-ssh` | `AGENT_DISABLE_WEB_SSH` | `true` | Disable remote control (WebSSH **and** one-shot exec). Default **on** (safer than Go). WebSSH also requires a build with `--features terminal` and a non-`--http-only` control plane. |
-| `--disable-auto-update` | `AGENT_DISABLE_AUTO_UPDATE` | `true` | Disable GitHub-Release self-update |
-| `--disable-compression` | `AGENT_DISABLE_COMPRESSION` | `false` | Disable WebSocket permessage-deflate |
-| `--memory-include-cache` | `AGENT_MEMORY_INCLUDE_CACHE` | `false` | Count filesystem cache as "used" memory |
-| `--memory-report-raw-used` | `AGENT_MEMORY_REPORT_RAW_USED` | `false` | Report raw `/proc/meminfo` MemUsed |
-| `--debug-log` | `AGENT_DEBUG_LOG` | `false` | Verbose debug logging |
+Komari 1.5.1 closes an idle WebSocket after 11 seconds; Ping does not extend its
+deadline. Keep a shorter reporting interval for sustained WS, or use HTTP. Komari
+1.6.0 supports Ping-based keepalive with long report intervals. A 1.5.1 long-interval
+connection can fall back to HTTP without changing the configured report cadence.
 
-Outbound proxying is honoured via the standard `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment variables (HTTP CONNECT and SOCKS5 / SOCKS5h), with `NO_PROXY` bypass (domain / wildcard / CIDR / IP).
+Windows NIC filters previously matched description substrings; migrate them to
+whole-alias glob patterns. Include wins over exclude when both match. Interfaces
+such as `tun`/`vnet`/`utun` and inactive NIC cumulative counters are no longer
+implicitly removed beyond Go's built-in prefix rules; exclude them explicitly
+if they do not belong in your totals.
 
-## Architecture
+No update enables remote execution, WebSSH or automatic upgrades in an existing installation. Startup config responses redact token and discovery credentials. Server-requested version switching and file management are unsupported and are not advertised.
 
-The agent connects to a Komari server via WebSocket (JSON-RPC 2.0), falling back to HTTP POST (JSON-RPC 1.0 compatibility) when WebSocket is unavailable. A 1-second tick loop collects system metrics into a stack-based scratch arena with **zero heap allocation in the hot path**.
+## Development and documentation
 
-```
-┌──────────────┐   WebSocket/HTTP   ┌──────────────┐
-│ komari-agent │ ◄──────────────────► │ Komari Server │
-│   (sync,     │   JSON-RPC 2.0      │              │
-│  single-thrd)│   (TLS 1.3 via      │              │
-│              │    rustls + ring)    │              │
-└──────┬───────┘                     └──────────────┘
-       │
-       │ 1s tick (zero-alloc)
-       │
-  ┌────┴────────────────────────────┐
-  │  CPU / MEM / DISK / NET / GPU   │
-  │  Load / Connections / Processes │
-  │  Uptime / IP / OS / Virt        │
-  └─────────────────────────────────┘
-```
-
-Full blueprint: **[docs/plan/architecture-reference.md](docs/plan/architecture-reference.md)** (2,707 lines, 13 parallel design documents).
-
-## Feature Matrix
-
-| Feature | Our-code delta | Default | Description |
-|---|---|---|---|
-| Core (monitoring + v1/v2 + HTTP) | ~196 KB (incl. TLS floor ~1 MB) | Yes | Essential metrics collection and reporting |
-| `gpu-detection` | +~80 KB | No | GPU name, utilization, VRAM, temperature |
-| `terminal` | +~60 KB | No | PTY/ConPTY interactive shell (wired: dials `/api/clients/terminal` on request; still needs `disable_web_ssh=false` + non-http-only) |
-| `ping` | +~30 KB | No | ICMP → TCP → HTTP three-tier ping |
-| `self-update` | +~15 KB | No | GitHub Release auto-update |
-| **`full` (all features)** | **~196 KB agent + ~1 MB TLS** | — | Complete agent, ~1.5 MB stripped total |
-
-> Deltas reflect our own code only. Every build pays a fixed ~1 MB for the rustls+ring+webpki TLS stack regardless of features.
-
-## Design Principles
-
-- **Zero dependencies in the hot path** — no serde, no clap, no flate2, no tokio
-- **Custom JSON encoder** (~300 lines) — wire-identical output, zero allocation
-- **Custom gzip encoder** (~200 lines) — fixed-Huffman DEFLATE, valid gzip, no decode needed
-- **Self-implemented SHA-1 + Base64** (~160 lines) — WebSocket handshake with no crypto crates
-- **OS-native TLS root certificates** — `/etc/ssl/certs` on Linux, CryptoAPI on Windows, Security.framework on macOS
-- **cfg-gated platform dispatch** — compile-time type selection, no vtable overhead
-- **Explicit config passing** — no globals, fully testable without environment setup
-
-## Documentation
-
-- 📐 **[docs/plan/spec.md](docs/plan/spec.md)** — full design spec (DD1–DD6 design decisions)
-- 🏛️ **[docs/plan/architecture-reference.md](docs/plan/architecture-reference.md)** — 13 parallel design documents, the architecture blueprint
-- ⚖️ **[docs/COMPARISON.md](docs/COMPARISON.md)** — Go / Zig / Rust agent comparison + benchmarks
-- 🧪 **[docs/TESTING.md](docs/TESTING.md)** — test strategy + three-platform validation
-- 📋 **[CHANGELOG.md](CHANGELOG.md)** — release history (v0.1.0 → v0.1.6)
-
-## Contributing
-
-Contributions welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for dev setup, the featherweight philosophy (no deps in the hot path), commit style, and test requirements.
-
-- 🐛 **[Issues](https://github.com/DeliciousBuding/komari-agent-rs/issues)** — bug reports & feature requests
-- 💬 **[Discussions](https://github.com/DeliciousBuding/komari-agent-rs/discussions)** — Q&A and ideas
-- 🔒 **[SECURITY.md](SECURITY.md)** — vulnerability disclosure
+- [Architecture](docs/architecture.md): module boundaries, scheduling, resource limits and security decisions.
+- [Support matrix](docs/COMPARISON.md): feature and platform coverage.
+- [Testing](docs/TESTING.md): reproducible checks and verification limits.
+- [Roadmap](ROADMAP.md): upstream references and remaining work.
+- [Contributing](CONTRIBUTING.md) and [Security policy](SECURITY.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+[MIT](LICENSE).

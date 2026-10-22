@@ -1,6 +1,59 @@
 # Changelog
 
-## v0.5.1 (2026-10-22)
+## v0.6.0 (2026-10-22)
+
+### Compatibility changes
+- Target Komari 1.5+ v2 JSON-RPC only. WebSocket failure falls back to v2 HTTP;
+  removed v1 endpoints are never called. Explicit protocol_version=1 is rejected
+  with a migration error. Keep a prior release for pre-v2 servers.
+- Default reporting interval is 3 seconds, following the Go agent. Explicit
+  existing interval settings remain effective. Control polling and heartbeats
+  are independent of a long reporting interval.
+- Follow Go NIC prefix/include/exclude priority and whole-name glob patterns.
+  Windows filters now match adapter aliases rather than description substrings;
+  migrate existing filters. Inactive counters and non-Go-excluded virtual NICs
+  are no longer implicitly removed; configure explicit exclusions if needed.
+- Komari 1.5.1 requires reports within its 11-second WS deadline; long intervals
+  may fall back to HTTP. Komari 1.6.0 supports independent Ping-based keepalive.
+
+### Reliability and platform fixes
+- Decode nested task parameters and strict JSON escapes through a shared parser.
+  Validate successful HTTP status and the JSON-RPC envelope before accepting a
+  response; stale HTTP pull sessions cannot dispatch late events.
+- Share bounded subprocess management across exec and metric collectors. Unix
+  process groups and Windows Job Objects own ordinary descendants; a 30-second
+  exec deadline and 256 KiB shared output cap prevent pipe/deadline deadlocks.
+- Bound HTTP, WebSocket and inflated control messages to 1 MiB. Check response
+  framing, preserve IPv6/port authorities and avoid reflecting private payloads.
+- Preserve partially read WebSocket frames across socket timeouts, distinguish
+  clean EOF from reset/truncation, and use the actual package version in Upgrade.
+- Reassemble bounded WebSocket continuation messages, including compressed
+  upstream messages and interleaved Ping/Pong; reject invalid frame sequences.
+- Save monthly counters through a synced sibling file and atomic replacement;
+  failed saves preserve old state. Reject malformed persisted months/counters.
+- Bound JSON configuration to 1 MiB and 32 validation levels; reject duplicate
+  settings/trailing data, preserve Unicode and redact values from parse errors.
+- Cache successful Linux CPU identification, identify ARM cores, count physical
+  topology correctly and avoid double-counting Linux guest CPU time.
+- Preserve root overlay/loop filesystems, deduplicate devices/ZFS pools by their
+  largest capacity and filter network filesystems. Read AMD sysfs utilization,
+  VRAM and temperature when command-line tooling is unavailable.
+- Verify exact release checksums before installation. Preserve existing config,
+  keep credentials out of Windows task arguments, and retain a rollback binary.
+  Optional self-update handles API formatting/HTTPS redirects safely, strips
+  authentication on origin changes and rolls back failed replacement/re-exec.
+  Windows reports that an installed update needs a supervisor restart.
+
+### Community and documentation
+- Thanks to Hongquan Zou ([IShinji](https://github.com/IShinji)) for the reviewed
+  contributions in #105 through #113. Integrated fixes extend those patches with
+  failure-path tests, configuration preservation and resource limits.
+- Align macOS C/Rust deployment targets and cache keys; run offline Windows
+  installer regressions. Publish current architecture, compatibility and testing
+  boundaries; historical planning entries no longer claim runtime authority.
+
+The security fixes below were prepared as 0.5.1 source changes and are included
+in 0.6.0; no separate 0.5.1 release assets were published.
 
 ### Fixed
 - Update locked `rustls` to 0.23.46 for RUSTSEC-2026-0346 through

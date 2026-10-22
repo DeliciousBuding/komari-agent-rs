@@ -10,6 +10,8 @@ mod monitor;
 mod protocol;
 mod proxy;
 mod server;
+#[path = "process.rs"]
+mod subprocess;
 mod tls;
 mod ws;
 
@@ -67,9 +69,11 @@ fn main() {
     if !config.disable_auto_update {
         match update::check_and_update(env!("CARGO_PKG_VERSION"), &config) {
             Ok(true) => {
-                // Updated and (on Unix) re-execed; on Windows the new binary
-                // is staged for next launch via MoveFileEx(DELAY_UNTIL_REBOOT).
-                eprintln!("[komari] update applied, continuing with current process");
+                // Unix success re-execs and does not return. On Windows the
+                // installed file is for the next supervisor-controlled launch.
+                eprintln!(
+                    "[komari] new executable installed; restart pending, current process unchanged"
+                );
             }
             Ok(false) => { /* up to date */ }
             Err(e) => {

@@ -14,7 +14,7 @@
 //!
 //! `run()` delegates to [`reconnection::run_reconnection_loop`], which owns
 //! the full connect→maintain→reconnect lifecycle driven by:
-//! - [`crate::protocol::fsm::ProtocolFsm`] — 3-strike v2→v1 fallback
+//! - [`crate::protocol::fsm::ProtocolFsm`] — 3-strike WS→HTTP fallback (v2 only)
 //! - [`backoff::Backoff`] — exponential retry delays
 //! - [`update_basic_info`] — periodic system-info refresh
 //! - [`build_static_heartbeat`] — fallback heartbeat (until monitor wired)
@@ -39,9 +39,6 @@ use std::sync::Arc;
 
 macro_rules! info {
     ($($arg:tt)*) => (eprintln!("[komari] {}", format!($($arg)*)));
-}
-macro_rules! warn {
-    ($($arg:tt)*) => (eprintln!("[komari] WARN: {}", format!($($arg)*)));
 }
 #[allow(unused_macros)]
 macro_rules! error {
@@ -84,101 +81,47 @@ fn build_static_heartbeat() -> Vec<u8> {
 // Basic info upload (periodic — called from reconnection loop)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Upload basic system identification info to the Komari server.
-///
-/// Called at startup and periodically thereafter. POSTs either a JSON-RPC v2
-/// `agent.basicInfo` notification or the v1 raw JSON expected by
-/// `/api/clients/uploadBasicInfo`.
+/// Upload basic system identification via the v2 JSON-RPC endpoint.
+/// Called after connection and periodically during healthy sessions.
 pub(super) fn update_basic_info(
     config: &Config,
     tls_cfg: &Arc<rustls::ClientConfig>,
     dial: &crate::proxy::Dialer,
 ) -> Result<(), String> {
-    let base = config.endpoint.trim_end_matches('/');
-    let encoded_token = crate::ws::url_encode(&config.token);
-
-    // Protocol ladder: v2 first (POST /api/clients/v2/rpc — plain HTTP, works
-    // for http_only deployments too), v1 upload endpoint as legacy fallback.
-    // Pre-0.4.0 http_only forced v1-only, which broke against Komari 1.5.0
-    // (v1 endpoints removed).
-    let protos: &[bool] = if config.protocol_version < 2 {
-        &[false]
-    } else {
-        &[true, false]
-    };
-    // Extended fields first; older servers that reject them get the compact
-    // payload on retry (mirrors Go uploadBasicInfo fallback).
-    let payloads: &[bool] = &[true, false];
-
-    let mut last_code: u16 = 0;
-    'outer: for &is_v2 in protos {
-        let url = if is_v2 {
-            format!("{}/api/clients/v2/rpc?token={}", base, encoded_token)
-        } else {
-            format!(
-                "{}/api/clients/uploadBasicInfo?token={}",
-                base, encoded_token
-            )
-        };
-        for &extended in payloads {
-            let body = if is_v2 {
-                build_basic_info_v2(config, extended)
-            } else {
-                build_basic_info_v1(config, extended)
-            };
-            match crate::http::http_post(&url, &body, "application/json", None, &[], tls_cfg, dial)
-            {
-                Ok(resp) if resp.status_code == 200 => {
-                    info!(
-                        "Basic info uploaded (v{}, {})",
-                        if is_v2 { 2 } else { 1 },
-                        if extended { "full" } else { "compat" }
-                    );
-                    return Ok(());
-                }
-                Ok(resp) => {
-                    last_code = resp.status_code;
-                    // v2 route missing on this server → abandon v2 payloads and
-                    // fall through to the v1 endpoint on the next outer iter.
-                    if is_v2 && resp.status_code == 404 {
-                        warn!("v2 basicInfo endpoint missing (HTTP 404), falling back to v1");
-                        continue 'outer;
-                    }
-                    warn!(
-                        "basic info HTTP {} (v{}, {})",
-                        resp.status_code,
-                        if is_v2 { 2 } else { 1 },
-                        if extended {
-                            "full, retrying compat"
-                        } else {
-                            "compat"
-                        }
-                    );
-                }
-                Err(e) => {
-                    warn!("basic info transport error: {}", e);
-                }
-            }
+    let url = format!(
+        "{}{}?token={}",
+        config.endpoint.trim_end_matches('/'),
+        crate::protocol::fsm::RPC_PATH,
+        crate::ws::url_encode(&config.token)
+    );
+    let body = build_basic_info_v2(config);
+    match crate::http::http_post(&url, &body, "application/json", None, &[], tls_cfg, dial) {
+        Ok(resp) if resp.status_code == 200 => {
+            v2::validate_response(&resp.body).map_err(str::to_string)?;
+            info!("Basic info uploaded (v2)");
+            Ok(())
         }
+        Ok(resp) => Err(format!(
+            "Basic info upload returned HTTP {}",
+            resp.status_code
+        )),
+        Err(e) => Err(format!("Basic info transport error: {e}")),
     }
-    let msg = format!("Basic info upload returned HTTP {}", last_code);
-    warn!("{}", msg);
-    Err(msg)
 }
 
 /// Collect static system identification from every collector and encode as
-/// flat JSON (the inner `info` object shared by v1 and v2 uploads).
+/// flat JSON (the inner v2 `info` object).
 ///
 /// Field set matches Go `uploadBasicInfo` exactly:
 /// cpu_name, cpu_cores, cpu_physical_cores, arch, os, kernel_version, ipv4,
 /// ipv6, mem_total, swap_total, disk_total, gpu_name, virtualization, version.
-fn collect_basic_info(config: &Config, include_extended: bool) -> Vec<u8> {
+fn collect_basic_info(config: &Config) -> Vec<u8> {
     let mut arena = crate::arena::ScratchArena::new();
     let mut prev_cpu = crate::monitor::cpu::PrevCpu::default();
     let mut buf = vec![0u8; 2048];
     let len = {
         let mut j = crate::json::JsonBuf::new(&mut buf);
-        let _ = encode_basic_info(&mut j, &mut arena, &mut prev_cpu, config, include_extended);
+        let _ = encode_basic_info(&mut j, &mut arena, &mut prev_cpu, config);
         j.finish().len()
     };
     buf.truncate(len);
@@ -187,17 +130,11 @@ fn collect_basic_info(config: &Config, include_extended: bool) -> Vec<u8> {
 
 /// Encode the basic-info JSON into `j`.  Each collector is best-effort: a
 /// failure yields a sensible default rather than aborting the whole payload.
-///
-/// `include_extended` controls the `kernel_version` and `cpu_physical_cores`
-/// fields. Older Komari servers (<= 1.0.2 / <= 1.2.0, and the v1.1.9 fork)
-/// reject the payload when these are present — the caller retries with this
-/// flag off (mirrors Go `uploadBasicInfo` fallback).
 fn encode_basic_info(
     j: &mut crate::json::JsonBuf,
     arena: &mut crate::arena::ScratchArena,
     prev_cpu: &mut crate::monitor::cpu::PrevCpu,
     config: &Config,
-    include_extended: bool,
 ) -> Result<(), crate::json::JsonErr> {
     use crate::json::Field;
 
@@ -232,14 +169,10 @@ fn encode_basic_info(
     j.begin_obj()?;
     j.str_field(Field::CpuName, cpu.name)?;
     j.u64_field(Field::CpuCores, cpu.cores as u64)?;
-    if include_extended {
-        j.u64_field(Field::CpuPhysicalCores, cpu.physical_cores as u64)?;
-    }
+    j.u64_field(Field::CpuPhysicalCores, cpu.physical_cores as u64)?;
     j.str_field(Field::Arch, cpu.arch)?;
     j.str_field(Field::Os, &os.name)?;
-    if include_extended {
-        j.str_field(Field::KernelVersion, &os.kernel_version)?;
-    }
+    j.str_field(Field::KernelVersion, &os.kernel_version)?;
     j.str_field(Field::Ipv4, ipv4.as_deref().unwrap_or(""))?;
     j.str_field(Field::Ipv6, ipv6.as_deref().unwrap_or(""))?;
     j.u64_field(Field::MemTotal, mem.total)?;
@@ -252,17 +185,12 @@ fn encode_basic_info(
     Ok(())
 }
 
-fn build_basic_info_v2(config: &Config, include_extended: bool) -> Vec<u8> {
-    let info = collect_basic_info(config, include_extended);
+fn build_basic_info_v2(config: &Config) -> Vec<u8> {
+    let info = collect_basic_info(config);
     // Wrap as JSON-RPC notification: {"jsonrpc":"2.0","method":"agent.basicInfo","params":{"info":<info>}}
     let mut params = Vec::with_capacity(info.len() + 20);
     params.extend_from_slice(b"{\"info\":");
     params.extend_from_slice(&info);
     params.push(b'}');
     v2::new_notification(v2::METHOD_AGENT_BASIC_INFO, &params)
-}
-
-fn build_basic_info_v1(config: &Config, include_extended: bool) -> Vec<u8> {
-    // V1: flat JSON, no JSON-RPC wrapper.
-    collect_basic_info(config, include_extended)
 }

@@ -62,8 +62,6 @@ impl PrevNetSnapshot {
 // ── FFI: getifaddrs / freeifaddrs (libSystem) ────────────────────────────────
 
 const AF_LINK: u16 = 18;
-const IFF_UP: u32 = 1;
-const IFF_LOOPBACK: u32 = 8;
 
 #[repr(C)]
 struct SockAddrDl {
@@ -110,31 +108,15 @@ use crate::monitor::ip::macos::{freeifaddrs, getifaddrs};
 
 // ── Interface filtering ─────────────────────────────────────────────────────
 
-fn is_virtual(name: &str) -> bool {
-    const VP: &[&str] = &["utun", "llw", "awdl", "bridge", "gif", "stf", "XHC"];
-    name == "lo0" || name.starts_with("anpi") || VP.iter().any(|p| name.starts_with(p))
-}
-
-fn glob_match(pat: &str, name: &str) -> bool {
-    match pat.split_once('*') {
-        Some((pre, suf)) => name.starts_with(pre) && name.ends_with(suf),
-        None => pat == name,
-    }
-}
-
-fn include_nic(name: &str, cfg: &Config) -> bool {
-    if !cfg.include_nics.is_empty() {
-        return cfg.include_nics.iter().any(|p| glob_match(p, name));
-    }
-    !cfg.exclude_nics.iter().any(|p| glob_match(p, name))
-}
+use super::include_nic;
 
 // ── collect ─────────────────────────────────────────────────────────────────
 
 /// Collect network statistics for all eligible interfaces via `getifaddrs`.
 ///
 /// Iterates AF_LINK entries to read `ifi_ibytes` / `ifi_obytes` cumulative
-/// counters.  Filters loopback and virtual interfaces (utun*, awdl*, etc.).
+/// counters, including inactive interfaces' cumulative traffic like Go netstat.
+/// Applies the shared upstream NIC-name selection rules.
 /// Computes per-second upload/download speeds via delta from the previous tick.
 pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo, MAX_NETWORKS> {
     let mut out = SmallVec::new();
@@ -156,12 +138,6 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
     while !cur.is_null() {
         let ifa = unsafe { &*cur };
 
-        // Must be up and not loopback
-        if (ifa.ifa_flags & IFF_UP) == 0 || (ifa.ifa_flags & IFF_LOOPBACK) != 0 {
-            cur = ifa.ifa_next;
-            continue;
-        }
-
         // Get interface name
         if ifa.ifa_name.is_null() {
             cur = ifa.ifa_next;
@@ -175,7 +151,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
             }
         };
 
-        if is_virtual(name) || !include_nic(name, config) {
+        if !include_nic(name, config) {
             cur = ifa.ifa_next;
             continue;
         }

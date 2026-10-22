@@ -27,8 +27,8 @@ use rustls::pki_types::ServerName;
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-/// Maximum WebSocket frame payload accepted on read (16 MB).
-const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024;
+/// Maximum WebSocket frame payload accepted on read (1 MiB).
+const MAX_FRAME_SIZE: u64 = 1024 * 1024;
 
 /// Chunk size for stack-based send masking.
 const MASK_CHUNK_SIZE: usize = 4096;
@@ -309,6 +309,7 @@ pub struct WsConnection {
     stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
     /// Whether permessage-deflate (RFC 7692) was negotiated with the server.
     compression_enabled: bool,
+    frame_reader: FrameReader,
 }
 
 impl WsConnection {
@@ -337,6 +338,12 @@ impl WsConnection {
     ) -> Result<Self, WsErr> {
         // ── 1. Parse URL → host + port (path supplied by caller) ──
         let (host, port, _default_path) = parse_endpoint(endpoint)?;
+        if !ws_path.starts_with('/')
+            || ws_path.bytes().any(|b| b <= 0x20 || b == 0x7f)
+            || ws_path.contains('#')
+        {
+            return Err(WsErr::Protocol("invalid WebSocket request path".into()));
+        }
 
         // ── 2. Reach (host, port) via the unified Dialer ──
         //
@@ -382,7 +389,7 @@ impl WsConnection {
         })?;
 
         let upgrade_request = build_upgrade_request(
-            &host,
+            &crate::http::host_header(&host, port, true),
             ws_path,
             token,
             ws_key_str,
@@ -427,6 +434,7 @@ impl WsConnection {
         Ok(Self {
             stream,
             compression_enabled: enable_compression && permessage,
+            frame_reader: FrameReader::default(),
         })
     }
 
@@ -478,95 +486,12 @@ impl WsConnection {
         write_masked_frame(&mut self.stream, WsOpcode::Close as u8, &[], false)
     }
 
-    /// Read and parse the next WebSocket frame.
-    ///
-    /// Blocks until a complete frame arrives, subject to the socket read
-    /// timeout.  Returns `Ok(None)` if the stream returns 0 bytes before a
-    /// complete frame header (clean EOF).
-    ///
-    /// Fragmented frames (FIN=0) are rejected — we do not buffer continuation
-    /// frames.  Komari protocol messages are always single-frame.
+    /// Read one complete frame, preserving consumed bytes across socket
+    /// timeouts. Only an actual zero-byte read at a frame boundary is clean
+    /// EOF; resets, TLS errors and truncated frames remain errors.
     pub fn read_message(&mut self) -> Result<Option<WsMessage>, WsErr> {
-        // ── Read first 2 fixed bytes ──
-        let mut buf2 = [0u8; 2];
-        match read_exact(&mut self.stream, &mut buf2) {
-            Ok(()) => {}
-            Err(WsErr::Io(ref e)) if is_eof_string(e) => return Ok(None),
-            Err(e) => return Err(e),
-        }
-
-        let fin = (buf2[0] & 0x80) != 0;
-        let rsv1 = (buf2[0] & 0x40) != 0;
-        let opcode_raw = buf2[0] & 0x0F;
-        let masked = (buf2[1] & 0x80) != 0;
-        let mut payload_len = (buf2[1] & 0x7F) as u64;
-
-        // ── Extended payload length ──
-        if payload_len == 126 {
-            let mut ext = [0u8; 2];
-            read_exact(&mut self.stream, &mut ext)?;
-            payload_len = u16::from_be_bytes(ext) as u64;
-        } else if payload_len == 127 {
-            let mut ext = [0u8; 8];
-            read_exact(&mut self.stream, &mut ext)?;
-            payload_len = u64::from_be_bytes(ext);
-        }
-
-        // ── Size guard ──
-        if payload_len > MAX_FRAME_SIZE {
-            return Err(WsErr::Protocol(format!(
-                "frame payload too large: {} bytes (max {})",
-                payload_len, MAX_FRAME_SIZE
-            )));
-        }
-
-        // ── Masking key ──
-        let mut mask_key = [0u8; 4];
-        if masked {
-            read_exact(&mut self.stream, &mut mask_key)?;
-        }
-
-        // ── Payload ──
-        let mut payload = vec![0u8; payload_len as usize];
-        if payload_len > 0 {
-            read_exact(&mut self.stream, &mut payload)?;
-        }
-
-        if masked {
-            apply_mask(&mut payload, mask_key);
-        }
-
-        // permessage-deflate (RFC 7692 §7.2.1 + gorilla/websocket interop):
-        // Server (gorilla EnableCompression) strips a trailing Z_SYNC_FLUSH
-        // marker before framing. Decompression must re-append:
-        //   1) 00 00 FF FF  — RFC 7692 §7.2.1
-        //   2) 01 00 00 FF FF — empty final stored block
-        // Gorilla does both in decompressNoContextTakeover; only (1) leaves
-        // flate readers (and our inflate_raw) with UnexpectedEof on many frames.
-        // Control frames are never compressed.
-        if rsv1 && self.compression_enabled && (opcode_raw == 1 || opcode_raw == 2) {
-            payload = inflate_permessage_deflate(&payload)?;
-        }
-
-        // ── Fragmentation guard ──
-        if !fin {
-            return Err(WsErr::Protocol(
-                "fragmented frames not supported".to_string(),
-            ));
-        }
-
-        // ── Opcode dispatch ──
-        match opcode_raw {
-            1 => Ok(Some(WsMessage::Text(payload))),
-            2 => Ok(Some(WsMessage::Binary(payload))),
-            8 => Ok(Some(WsMessage::Close)),
-            9 => Ok(Some(WsMessage::Ping(payload))),
-            10 => Ok(Some(WsMessage::Pong(payload))),
-            _ => Err(WsErr::Protocol(format!(
-                "unknown or unsupported opcode: {}",
-                opcode_raw
-            ))),
-        }
+        self.frame_reader
+            .read_message(&mut self.stream, self.compression_enabled)
     }
 
     /// Return shared references to the inner TCP socket and TLS state.
@@ -585,52 +510,28 @@ impl WsConnection {
 /// Accepts `https://host[:port][/path]` or `wss://host[:port][/path]`.
 /// Defaults: port = 443 if omitted, path = `/api/clients/v2/rpc` if root-only.
 fn parse_endpoint(endpoint: &str) -> Result<(String, u16, String), WsErr> {
-    // Strip scheme.
-    let rest = if let Some(idx) = endpoint.find("://") {
-        &endpoint[idx + 3..]
-    } else {
+    let normalized;
+    let url = if let Some(rest) = endpoint.strip_prefix("wss://") {
+        normalized = format!("https://{rest}");
+        normalized.as_str()
+    } else if endpoint.starts_with("https://") {
         endpoint
-    };
-
-    // Split host[:port] from path.
-    let (host_port, path) = match rest.find('/') {
-        Some(idx) => (&rest[..idx], &rest[idx..]),
-        None => (rest, "/api/clients/v2/rpc"),
-    };
-
-    // Split host from port.
-    let (host, port) = match host_port.rfind(':') {
-        Some(idx) => {
-            let cand_host = &host_port[..idx];
-            let cand_port = &host_port[idx + 1..];
-
-            // Skip if the colon is for an IPv6 address (e.g. "[::1]:port").
-            let is_ipv6_bracket = cand_host.starts_with('[') && !cand_host.contains(']');
-
-            if is_ipv6_bracket {
-                // The colon is part of the IPv6 address; keep looking for a port.
-                // For simplicity: if no closing bracket, treat the whole thing as
-                // host with default port (IPv6 without port is rare in configs).
-                (host_port.to_string(), 443)
-            } else {
-                match cand_port.parse::<u16>() {
-                    Ok(p) => {
-                        let h = cand_host.trim_start_matches('[').trim_end_matches(']');
-                        (h.to_string(), p)
-                    }
-                    Err(_) => (host_port.to_string(), 443),
-                }
-            }
-        }
-        None => (host_port.to_string(), 443),
-    };
-
-    let path = if path.starts_with('/') {
-        path.to_string()
     } else {
-        format!("/{}", path)
+        return Err(WsErr::Protocol(
+            "TLS WebSocket requires https:// or wss://".into(),
+        ));
     };
-
+    let (host, port, path, query) = crate::http::parse_url(url)
+        .map_err(|_| WsErr::Protocol("invalid WebSocket endpoint".into()))?;
+    let mut path = if path == "/" {
+        "/api/clients/v2/rpc".to_string()
+    } else {
+        path
+    };
+    if !query.is_empty() {
+        path.push('?');
+        path.push_str(&query);
+    }
     Ok((host, port, path))
 }
 
@@ -715,7 +616,11 @@ fn build_upgrade_request(
         // RFC 7692: offer permessage-deflate. Server echoes it back if accepted.
         req.push_str("Sec-WebSocket-Extensions: permessage-deflate\r\n");
     }
-    req.push_str("User-Agent: komari-agent-rs/0.1.0\r\n");
+    req.push_str(concat!(
+        "User-Agent: komari-agent-rs/",
+        env!("CARGO_PKG_VERSION"),
+        "\r\n"
+    ));
     req.push_str("Accept: */*\r\n");
     for (name, value) in extra_headers {
         req.push_str(name);
@@ -745,9 +650,9 @@ fn inflate_permessage_deflate(compressed: &[u8]) -> Result<Vec<u8>, WsErr> {
     let mut inflated = Vec::with_capacity(compressed.len().saturating_mul(2).max(64));
     crate::inflate::inflate_raw(&with_trailer, &mut inflated)
         .map_err(|e| WsErr::Protocol(format!("permessage-deflate inflate error: {e}")))?;
-    if inflated.len() > 64 * 1024 * 1024 {
+    if inflated.len() > MAX_FRAME_SIZE as usize {
         return Err(WsErr::Protocol(
-            "permessage-deflate output exceeded 64 MiB safety limit".to_string(),
+            "permessage-deflate output exceeded 1 MiB safety limit".to_string(),
         ));
     }
     Ok(inflated)
@@ -859,25 +764,240 @@ fn parse_http_response(response: &str) -> Result<(u16, Option<String>, bool), Ws
     Ok((status_code, accept, permessage))
 }
 
-/// Read exactly `buf.len()` bytes into `buf`, retrying on partial reads.
-fn read_exact(
-    stream: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
-    buf: &mut [u8],
-) -> Result<(), WsErr> {
-    let mut total = 0;
-    while total < buf.len() {
-        let n = stream.read(&mut buf[total..])?;
-        if n == 0 {
-            return Err(WsErr::Io("connection closed unexpectedly".to_string()));
-        }
-        total += n;
-    }
-    Ok(())
+/// One in-flight frame plus an optional fragmented data message. The sum of
+/// retained data payloads is at most 1 MiB; control frames are at most 125 B.
+/// Timeouts preserve both frame offsets and message reassembly. Terminal
+/// errors poison this reader until reconnection.
+#[derive(Default)]
+struct FrameReader {
+    header: [u8; 14],
+    header_read: usize,
+    payload: Vec<u8>,
+    payload_read: usize,
+    message: Vec<u8>,
+    message_opcode: u8,
+    message_compressed: bool,
+    failed: bool,
 }
 
-/// Heuristic to detect EOF/connection-closed errors from their message text.
-fn is_eof_string(s: &str) -> bool {
-    s.contains("closed") || s.contains("eof") || s.contains("end of file") || s.contains("reset")
+struct ReceivedFrame {
+    fin: bool,
+    opcode: u8,
+    compressed: bool,
+    payload: Vec<u8>,
+}
+
+impl FrameReader {
+    fn read_message<R: Read>(
+        &mut self,
+        stream: &mut R,
+        compression_enabled: bool,
+    ) -> Result<Option<WsMessage>, WsErr> {
+        loop {
+            let Some(ReceivedFrame {
+                fin,
+                opcode,
+                compressed,
+                payload,
+            }) = self.read_frame(stream, compression_enabled)?
+            else {
+                if self.message_opcode != 0 {
+                    self.failed = true;
+                    return Err(WsErr::Io(
+                        "unexpected EOF before final WebSocket continuation".to_string(),
+                    ));
+                }
+                return Ok(None);
+            };
+            match opcode {
+                8 => {
+                    self.message = Vec::new();
+                    self.message_opcode = 0;
+                    self.message_compressed = false;
+                    return Ok(Some(WsMessage::Close));
+                }
+                9 => return Ok(Some(WsMessage::Ping(payload))),
+                10 => return Ok(Some(WsMessage::Pong(payload))),
+                _ => {}
+            }
+            if opcode != 0 {
+                self.message_opcode = opcode;
+                self.message_compressed = compressed;
+                self.message = payload;
+            } else {
+                // Avoid geometric capacity growth beyond the message limit.
+                self.message.reserve_exact(payload.len());
+                self.message.extend_from_slice(&payload);
+            }
+            if !fin {
+                continue;
+            }
+            self.failed = true;
+            let mut payload = std::mem::take(&mut self.message);
+            if self.message_compressed {
+                // RFC 7692 compresses the whole message, not individual frames.
+                payload = inflate_permessage_deflate(&payload)?;
+            }
+            let message = if self.message_opcode == 1 {
+                WsMessage::Text(payload)
+            } else {
+                WsMessage::Binary(payload)
+            };
+            self.message_opcode = 0;
+            self.message_compressed = false;
+            self.failed = false;
+            return Ok(Some(message));
+        }
+    }
+
+    /// Read one frame, retaining all offsets on timeout. Controls may be
+    /// returned while message_opcode/message still track a fragmented message.
+    fn read_frame<R: Read>(
+        &mut self,
+        stream: &mut R,
+        compression_enabled: bool,
+    ) -> Result<Option<ReceivedFrame>, WsErr> {
+        if self.failed {
+            return Err(WsErr::Protocol(
+                "cannot resume a failed WebSocket frame reader".to_string(),
+            ));
+        }
+        if !fill_frame_part(
+            stream,
+            &mut self.header[..2],
+            &mut self.header_read,
+            &mut self.failed,
+        )? {
+            if self.header_read == 0 {
+                return Ok(None);
+            }
+            self.failed = true;
+            return Err(truncated_frame());
+        }
+
+        let fin = self.header[0] & 0x80 != 0;
+        let rsv1 = self.header[0] & 0x40 != 0;
+        let opcode = self.header[0] & 0x0F;
+        let masked = self.header[1] & 0x80 != 0;
+        let short_len = self.header[1] & 0x7F;
+        let control = matches!(opcode, 8..=10);
+        let invalid = if self.header[0] & 0x30 != 0 {
+            Some("unsupported WebSocket reserved bits")
+        } else if !matches!(opcode, 0..=2 | 8..=10) {
+            Some("unsupported WebSocket opcode")
+        } else if control && (!fin || short_len > 125 || rsv1) {
+            Some("invalid WebSocket control frame")
+        } else if rsv1 && (!compression_enabled || opcode == 0) {
+            Some("invalid WebSocket compression flag")
+        } else if opcode == 0 && self.message_opcode == 0 {
+            Some("unexpected WebSocket continuation frame")
+        } else if matches!(opcode, 1 | 2) && self.message_opcode != 0 {
+            Some("new WebSocket data frame before final continuation")
+        } else {
+            None
+        };
+        if let Some(message) = invalid {
+            self.failed = true;
+            return Err(WsErr::Protocol(message.to_string()));
+        }
+        let length_end = match short_len {
+            126 => 4,
+            127 => 10,
+            _ => 2,
+        };
+        let header_len = length_end + if masked { 4 } else { 0 };
+        if !fill_frame_part(
+            stream,
+            &mut self.header[..header_len],
+            &mut self.header_read,
+            &mut self.failed,
+        )? {
+            self.failed = true;
+            return Err(truncated_frame());
+        }
+        let payload_len = match short_len {
+            126 => u16::from_be_bytes(self.header[2..4].try_into().unwrap()) as u64,
+            127 => u64::from_be_bytes(self.header[2..10].try_into().unwrap()),
+            n => n as u64,
+        };
+        if payload_len > MAX_FRAME_SIZE
+            || (!control && payload_len > MAX_FRAME_SIZE - self.message.len() as u64)
+        {
+            self.failed = true;
+            return Err(WsErr::Protocol(
+                "frame or reassembled message payload exceeds 1 MiB safety limit".to_string(),
+            ));
+        }
+
+        // Resize only on the first visit to this frame's payload. A retry
+        // retains bytes and payload_read rather than starting at byte zero.
+        self.payload.resize(payload_len as usize, 0);
+        if !fill_frame_part(
+            stream,
+            &mut self.payload,
+            &mut self.payload_read,
+            &mut self.failed,
+        )? {
+            self.failed = true;
+            return Err(truncated_frame());
+        }
+
+        // A decoding error is terminal too: never reinterpret this frame's
+        // remaining bytes as a new header on a caller's accidental retry.
+        self.failed = true;
+        let mut payload = std::mem::take(&mut self.payload);
+        if masked {
+            apply_mask(
+                &mut payload,
+                self.header[length_end..header_len].try_into().unwrap(),
+            );
+        }
+        self.header_read = 0;
+        self.payload_read = 0;
+        self.failed = false;
+        Ok(Some(ReceivedFrame {
+            fin,
+            opcode,
+            compressed: rsv1,
+            payload,
+        }))
+    }
+}
+
+/// Fill a persistent part of a frame. The offset is updated after every
+/// successful read, including reads followed by a timeout in this call.
+fn fill_frame_part<R: Read>(
+    stream: &mut R,
+    buf: &mut [u8],
+    filled: &mut usize,
+    failed: &mut bool,
+) -> Result<bool, WsErr> {
+    while *filled < buf.len() {
+        match stream.read(&mut buf[*filled..]) {
+            Ok(0) => return Ok(false),
+            Ok(n) => *filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                // Current sync callers recognize this static timeout text.
+                // Do not depend on localized OS messages or erase progress.
+                return Err(WsErr::Io("WebSocket read timed out".to_string()));
+            }
+            Err(e) => {
+                *failed = true;
+                return Err(e.into());
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn truncated_frame() -> WsErr {
+    WsErr::Io("unexpected EOF within WebSocket frame".to_string())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -886,7 +1006,508 @@ fn is_eof_string(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Deterministic transport: each step supplies bytes or an OS error.
+    /// Reads never bypass a scripted timeout, even in the middle of a frame.
+    struct ScriptedRead {
+        steps: std::collections::VecDeque<std::io::Result<Vec<u8>>>,
+        pending: std::io::Cursor<Vec<u8>>,
+        consumed: usize,
+    }
+
+    impl ScriptedRead {
+        fn new(steps: Vec<std::io::Result<Vec<u8>>>) -> Self {
+            Self {
+                steps: steps.into(),
+                pending: std::io::Cursor::new(Vec::new()),
+                consumed: 0,
+            }
+        }
+    }
+
+    impl Read for ScriptedRead {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pending.position() == self.pending.get_ref().len() as u64 {
+                match self.steps.pop_front() {
+                    Some(Ok(bytes)) => self.pending = std::io::Cursor::new(bytes),
+                    Some(Err(error)) => return Err(error),
+                    None => return Ok(0),
+                }
+            }
+            let count = self.pending.read(buf)?;
+            self.consumed += count;
+            Ok(count)
+        }
+    }
+
+    fn read_error(kind: std::io::ErrorKind) -> std::io::Result<Vec<u8>> {
+        // Deliberately misleading text: only ErrorKind controls retryability.
+        Err(std::io::Error::new(kind, "closed reset eof"))
+    }
+
+    fn test_frame(opcode: u8, payload: &[u8], masked: bool) -> Vec<u8> {
+        let mut wire = vec![0x80 | opcode];
+        let mask_bit = if masked { 0x80 } else { 0 };
+        if payload.len() < 126 {
+            wire.push(mask_bit | payload.len() as u8);
+        } else if payload.len() <= u16::MAX as usize {
+            wire.push(mask_bit | 126);
+            wire.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        } else {
+            wire.push(mask_bit | 127);
+            wire.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        }
+        let mut payload = payload.to_vec();
+        if masked {
+            let key = [1, 2, 3, 4];
+            wire.extend_from_slice(&key);
+            apply_mask(&mut payload, key);
+        }
+        wire.extend_from_slice(&payload);
+        wire
+    }
+
+    fn assert_read_timeout(result: Result<Option<WsMessage>, WsErr>) {
+        assert!(matches!(result, Err(WsErr::Io(ref s)) if s == "WebSocket read timed out"));
+    }
+
+    #[test]
+    fn frame_reader_idle_timeout_is_retryable_and_interrupted_is_retried() {
+        let wire = test_frame(1, b"hello", false);
+        let mut stream = ScriptedRead::new(vec![
+            read_error(std::io::ErrorKind::WouldBlock),
+            read_error(std::io::ErrorKind::TimedOut),
+            read_error(std::io::ErrorKind::Interrupted),
+            Ok(wire),
+        ]);
+        let mut reader = FrameReader::default();
+        assert_read_timeout(reader.read_message(&mut stream, false));
+        assert_read_timeout(reader.read_message(&mut stream, false));
+        assert_eq!(reader.header_read, 0);
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Text(b"hello".to_vec()))
+        );
+        assert_eq!(reader.read_message(&mut stream, false).unwrap(), None);
+    }
+
+    #[test]
+    fn frame_reader_preserves_every_header_mask_and_payload_split_across_timeout() {
+        for masked in [false, true] {
+            for payload in [b"hello".to_vec(), vec![b'x'; 130], vec![b'y'; 65536]] {
+                let wire = test_frame(1, &payload, masked);
+                let header_len = wire.len() - payload.len();
+                let splits: Vec<usize> = if wire.len() < 200 {
+                    (1..wire.len()).collect()
+                } else {
+                    (1..=header_len)
+                        .chain([header_len + 1, header_len + 32768, wire.len() - 1])
+                        .collect()
+                };
+                for split in splits {
+                    let next_frame = test_frame(9, b"next", false);
+                    let mut tail = wire[split..].to_vec();
+                    tail.extend_from_slice(&next_frame);
+                    let mut stream = ScriptedRead::new(vec![
+                        Ok(wire[..split].to_vec()),
+                        read_error(std::io::ErrorKind::TimedOut),
+                        read_error(std::io::ErrorKind::WouldBlock),
+                        Ok(tail),
+                    ]);
+                    let mut reader = FrameReader::default();
+                    assert_read_timeout(reader.read_message(&mut stream, false));
+                    assert_eq!(reader.header_read + reader.payload_read, split);
+                    assert_read_timeout(reader.read_message(&mut stream, false));
+                    assert_eq!(reader.header_read + reader.payload_read, split);
+                    assert_eq!(
+                        reader.read_message(&mut stream, false).unwrap(),
+                        Some(WsMessage::Text(payload.clone())),
+                        "split {split} of {}",
+                        wire.len()
+                    );
+                    assert_eq!(
+                        stream.consumed,
+                        wire.len(),
+                        "must not consume the next frame"
+                    );
+                    assert_eq!(
+                        reader.read_message(&mut stream, false).unwrap(),
+                        Some(WsMessage::Ping(b"next".to_vec()))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frame_reader_can_resume_multiple_timeouts_within_one_frame() {
+        let mut wire = test_frame(9, b"ping", false);
+        wire.extend_from_slice(&test_frame(1, b"text", false));
+        wire.extend_from_slice(&test_frame(8, &[], false));
+        let mut steps = Vec::new();
+        for byte in wire {
+            steps.push(read_error(std::io::ErrorKind::TimedOut));
+            steps.push(Ok(vec![byte]));
+        }
+        let mut stream = ScriptedRead::new(steps);
+        let mut reader = FrameReader::default();
+        for expected in [
+            WsMessage::Ping(b"ping".to_vec()),
+            WsMessage::Text(b"text".to_vec()),
+            WsMessage::Close,
+        ] {
+            loop {
+                match reader.read_message(&mut stream, false) {
+                    Ok(Some(message)) => {
+                        assert_eq!(message, expected);
+                        break;
+                    }
+                    result => assert_read_timeout(result),
+                }
+            }
+        }
+        assert_eq!(reader.read_message(&mut stream, false).unwrap(), None);
+    }
+
+    #[test]
+    fn frame_reader_truncated_frames_and_resets_are_not_clean_eof() {
+        let wire = test_frame(1, &[b'x'; 130], true);
+        for split in [1, 2, 3, 4, 5, 7, 8, 9, wire.len() - 1] {
+            let mut stream = ScriptedRead::new(vec![Ok(wire[..split].to_vec())]);
+            let mut reader = FrameReader::default();
+            assert!(matches!(
+                reader.read_message(&mut stream, false),
+                Err(WsErr::Io(_))
+            ));
+            assert!(reader.failed);
+            assert!(reader.read_message(&mut stream, false).is_err());
+            assert_eq!(stream.consumed, split);
+        }
+        for kind in [
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::ConnectionAborted,
+        ] {
+            for prefix in [Vec::new(), wire[..9].to_vec()] {
+                let mut steps = Vec::new();
+                if !prefix.is_empty() {
+                    steps.push(Ok(prefix));
+                }
+                steps.push(read_error(kind));
+                let mut stream = ScriptedRead::new(steps);
+                let mut reader = FrameReader::default();
+                assert!(matches!(
+                    reader.read_message(&mut stream, false),
+                    Err(WsErr::Io(_))
+                ));
+                assert!(reader.failed);
+            }
+        }
+    }
+
+    #[test]
+    fn frame_reader_keeps_one_mib_cap_before_payload_allocation() {
+        let mut header = vec![0x81, 127];
+        header.extend_from_slice(&(MAX_FRAME_SIZE + 1).to_be_bytes());
+        let mut stream = ScriptedRead::new(vec![Ok(header.clone()), Ok(vec![b'x'; 10])]);
+        let mut reader = FrameReader::default();
+        assert!(matches!(
+            reader.read_message(&mut stream, false),
+            Err(WsErr::Protocol(_))
+        ));
+        assert!(reader.payload.is_empty());
+        assert_eq!(reader.payload.capacity(), 0);
+        assert_eq!(stream.consumed, header.len());
+
+        let payload = vec![b'x'; MAX_FRAME_SIZE as usize];
+        let mut stream = ScriptedRead::new(vec![Ok(test_frame(2, &payload, false))]);
+        let mut reader = FrameReader::default();
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Binary(payload))
+        );
+    }
+
+    #[test]
+    fn frame_reader_compressed_text_survives_payload_timeout() {
+        let compressed = hex_decode(
+            "04c0310a84301085e1bbfc7558c2967315b19038852251f226362177f71b9cba6b7b0ac6ff97491c3b4626d15cfd0a6ce0afd710b6ac09c5165d18eaa5b8c49c1f00",
+        );
+        let mut wire = test_frame(1, &compressed, false);
+        wire[0] |= 0x40;
+        let mut stream = ScriptedRead::new(vec![
+            Ok(wire[..20].to_vec()),
+            read_error(std::io::ErrorKind::TimedOut),
+            Ok(wire[20..].to_vec()),
+        ]);
+        let mut reader = FrameReader::default();
+        assert_read_timeout(reader.read_message(&mut stream, true));
+        assert_eq!(
+            reader.read_message(&mut stream, true).unwrap(),
+            Some(WsMessage::Text(
+                br#"{"jsonrpc":"2.0","id":"0","result":{"events":[],"status":"success"}}"#.to_vec()
+            ))
+        );
+    }
+
+    #[test]
+    fn frame_reader_resumes_header_extended_length_and_payload_on_real_socket_timeout() {
+        use std::sync::mpsc;
+        let wire = test_frame(1, &[b'x'; 130], false);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(25)))
+            .unwrap();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (written_tx, written_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut start = 0;
+            for end in [1, 3, 10, wire.len()] {
+                resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                socket.write_all(&wire[start..end]).unwrap();
+                written_tx.send(()).unwrap();
+                start = end;
+            }
+        });
+        let mut reader = FrameReader::default();
+        for consumed in [1, 3, 10] {
+            resume_tx.send(()).unwrap();
+            written_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_read_timeout(reader.read_message(&mut client, false));
+            assert_eq!(reader.header_read + reader.payload_read, consumed);
+        }
+        resume_tx.send(()).unwrap();
+        written_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            reader.read_message(&mut client, false).unwrap(),
+            Some(WsMessage::Text(vec![b'x'; 130]))
+        );
+        server.join().unwrap();
+    }
+
+    fn fragment_frame(opcode: u8, payload: &[u8], fin: bool, compressed: bool) -> Vec<u8> {
+        let mut wire = test_frame(opcode, payload, false);
+        if !fin {
+            wire[0] &= !0x80;
+        }
+        if compressed {
+            wire[0] |= 0x40;
+        }
+        wire
+    }
+
+    #[test]
+    fn frame_reader_reassembles_continuations_with_interleaved_controls() {
+        let mut wire = fragment_frame(1, b"hel", false, false);
+        wire.extend_from_slice(&fragment_frame(0, b"lo ", false, false));
+        wire.extend_from_slice(&test_frame(9, b"ping", false));
+        wire.extend_from_slice(&test_frame(10, b"pong", false));
+        wire.extend_from_slice(&fragment_frame(0, b"world", true, false));
+        wire.extend_from_slice(&test_frame(2, b"binary", false));
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Ping(b"ping".to_vec()))
+        );
+        assert_eq!(reader.message_opcode, 1);
+        assert_eq!(reader.message, b"hello ");
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Pong(b"pong".to_vec()))
+        );
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Text(b"hello world".to_vec()))
+        );
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Binary(b"binary".to_vec()))
+        );
+    }
+
+    #[test]
+    fn frame_reader_reassembles_compressed_message_across_timeouts_and_ping() {
+        // Gorilla v1.5.3 NextWriter/flushFrame(false) sends opcode=1 + RSV1
+        // once, then opcode=0 without RSV1. Inflate only after final FIN.
+        let compressed = hex_decode(
+            "04c0310a84301085e1bbfc7558c2967315b19038852251f226362177f71b9cba6b7b0ac6ff97491c3b4626d15cfd0a6ce0afd710b6ac09c5165d18eaa5b8c49c1f00",
+        );
+        let mut wire = fragment_frame(1, &compressed[..10], false, true);
+        wire.extend_from_slice(&test_frame(9, b"alive", false));
+        wire.extend_from_slice(&fragment_frame(0, &compressed[10..30], false, false));
+        wire.extend_from_slice(&fragment_frame(0, &compressed[30..], true, false));
+        let mut steps = Vec::new();
+        for byte in wire {
+            steps.push(Ok(vec![byte]));
+            steps.push(read_error(std::io::ErrorKind::TimedOut));
+        }
+        let mut stream = ScriptedRead::new(steps);
+        let mut reader = FrameReader::default();
+        for expected in [
+            WsMessage::Ping(b"alive".to_vec()),
+            WsMessage::Text(
+                br#"{"jsonrpc":"2.0","id":"0","result":{"events":[],"status":"success"}}"#.to_vec(),
+            ),
+        ] {
+            loop {
+                match reader.read_message(&mut stream, true) {
+                    Ok(Some(message)) => {
+                        assert_eq!(message, expected);
+                        break;
+                    }
+                    result => assert_read_timeout(result),
+                }
+            }
+        }
+        assert_eq!(reader.message_opcode, 0);
+        assert!(reader.message.is_empty());
+    }
+
+    #[test]
+    fn frame_reader_validates_continuation_sequences_control_fin_and_reserved_bits() {
+        let first = fragment_frame(1, b"first", false, false);
+        let cases = [
+            (Vec::new(), fragment_frame(0, b"orphan", true, false), true),
+            (first.clone(), test_frame(1, b"new text", false), true),
+            (first.clone(), test_frame(2, b"new binary", false), true),
+            (
+                first.clone(),
+                fragment_frame(0, b"bad RSV1", true, true),
+                true,
+            ),
+            (
+                Vec::new(),
+                fragment_frame(1, b"unnegotiated", true, true),
+                false,
+            ),
+            (Vec::new(), vec![0xA1, 0], true), // RSV2
+            (Vec::new(), vec![0x91, 0], true), // RSV3
+            (Vec::new(), vec![0x83, 0], true), // reserved opcode
+        ];
+        for (prefix, frame, compression_enabled) in cases {
+            let mut wire = prefix;
+            wire.extend_from_slice(&frame);
+            let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+            let mut reader = FrameReader::default();
+            assert!(matches!(
+                reader.read_message(&mut stream, compression_enabled),
+                Err(WsErr::Protocol(_))
+            ));
+            assert!(reader.failed);
+        }
+        for opcode in [8, 9, 10] {
+            for (fin, rsv1, len) in [(false, false, 0), (true, true, 0), (true, false, 126)] {
+                let wire = fragment_frame(opcode, &vec![0; len], fin, rsv1);
+                let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+                let mut reader = FrameReader::default();
+                assert!(matches!(
+                    reader.read_message(&mut stream, true),
+                    Err(WsErr::Protocol(_))
+                ));
+                assert!(reader.failed);
+                assert_eq!(
+                    stream.consumed, 2,
+                    "reject invalid control header before allocating payload"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_reader_bounds_whole_fragmented_message_before_next_payload_allocation() {
+        let first = fragment_frame(2, &vec![b'a'; MAX_FRAME_SIZE as usize / 2], false, false);
+        let mut continuation_header = vec![0x80, 127];
+        continuation_header.extend_from_slice(&(MAX_FRAME_SIZE / 2 + 1).to_be_bytes());
+        let consumed = first.len() + continuation_header.len();
+        let mut wire = first.clone();
+        wire.extend_from_slice(&continuation_header);
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+        assert!(matches!(
+            reader.read_message(&mut stream, false),
+            Err(WsErr::Protocol(_))
+        ));
+        assert_eq!(stream.consumed, consumed);
+        assert!(reader.payload.is_empty());
+        assert_eq!(reader.message.len(), MAX_FRAME_SIZE as usize / 2);
+
+        let mut wire = first;
+        wire.extend_from_slice(&fragment_frame(
+            0,
+            &vec![b'b'; MAX_FRAME_SIZE as usize / 2],
+            true,
+            false,
+        ));
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+        let Some(WsMessage::Binary(payload)) = reader.read_message(&mut stream, false).unwrap()
+        else {
+            panic!("binary message");
+        };
+        assert_eq!(payload.len(), MAX_FRAME_SIZE as usize);
+        assert_eq!(payload[0], b'a');
+        assert_eq!(payload[payload.len() - 1], b'b');
+    }
+
+    #[test]
+    fn frame_reader_fragmented_eof_is_error_and_close_can_interrupt_reassembly() {
+        let first = fragment_frame(1, b"unfinished", false, false);
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(first.clone())]);
+        assert!(matches!(
+            reader.read_message(&mut stream, false),
+            Err(WsErr::Io(_))
+        ));
+        assert!(reader.failed);
+        let mut wire = first;
+        wire.extend_from_slice(&test_frame(8, &[], false));
+        let mut reader = FrameReader::default();
+        let mut stream = ScriptedRead::new(vec![Ok(wire)]);
+        assert_eq!(
+            reader.read_message(&mut stream, false).unwrap(),
+            Some(WsMessage::Close)
+        );
+        assert!(reader.message.is_empty());
+        assert_eq!(reader.message_opcode, 0);
+    }
+
     // ── parse_endpoint ──
+
+    #[test]
+    fn endpoint_authority_is_shared_and_rejects_injection() {
+        assert_eq!(
+            parse_endpoint("https://[::1]").unwrap(),
+            ("::1".into(), 443, "/api/clients/v2/rpc".into())
+        );
+        assert_eq!(
+            parse_endpoint("wss://[::1]:8443/rpc?x=1").unwrap(),
+            ("::1".into(), 8443, "/rpc?x=1".into())
+        );
+        for endpoint in [
+            "https://host:bad",
+            "https://host\r\nX:yes",
+            "https://user:synthetic@host", // # leak-guard-allow:LG-F4C6A155 synthetic rejected userinfo fixture
+            "https://host/#fragment",
+            "https://[::1",
+        ] {
+            assert!(parse_endpoint(endpoint).is_err());
+        }
+        let request = build_upgrade_request(
+            &crate::http::host_header("::1", 8443, true),
+            "/rpc",
+            "synthetic",
+            "key",
+            &[],
+            false,
+        );
+        assert!(request.contains("Host: [::1]:8443\r\n"));
+        assert!(request.contains(&format!(
+            "User-Agent: komari-agent-rs/{}\r\n",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
 
     #[test]
     fn parse_endpoint_https_defaults() {

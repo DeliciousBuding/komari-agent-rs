@@ -6,6 +6,7 @@ use super::{GpuBackend, GpuDetectErr, GpuInfo};
 use crate::arena::{MAX_GPUS, SmallVec};
 use crate::monitor::run_with_timeout;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -255,15 +256,25 @@ fn extract_json_string_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 // Reads device name from uevent.
 
 fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
-    let mut gpus: SmallVec<GpuInfo, MAX_GPUS> = SmallVec::new();
+    detect_sysfs_drm_at(Path::new("/sys/class/drm"))
+}
 
-    // Iterate card0..card15
-    for idx in 0..16u32 {
-        let card_path = format!("/sys/class/drm/card{}", idx);
-        let device_path = format!("{}/device", card_path);
+fn detect_sysfs_drm_at(root: &Path) -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
+    let mut gpus: SmallVec<GpuInfo, MAX_GPUS> = SmallVec::new();
+    let cards = fs::read_dir(root).map_err(|e| GpuDetectErr::Subprocess(e.to_string()))?;
+    for card in cards.flatten() {
+        let name = card.file_name();
+        let Some(index) = name.to_str().and_then(|name| name.strip_prefix("card")) else {
+            continue;
+        };
+        // DRM also exposes card0-HDMI-A-1 connectors: those are not GPUs.
+        if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let device_path = card.path().join("device");
 
         // Check vendor
-        let vendor_path = format!("{}/vendor", device_path);
+        let vendor_path = device_path.join("vendor");
         let vendor_str = match fs::read_to_string(&vendor_path) {
             Ok(s) => s.trim().to_string(),
             Err(_) => continue,
@@ -281,18 +292,25 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
         };
 
         // Read device ID
-        let device_path_file = format!("{}/device", device_path);
+        let device_path_file = device_path.join("device");
         let device_str = fs::read_to_string(&device_path_file).unwrap_or_default();
         let device_id =
             u32::from_str_radix(device_str.trim().trim_start_matches("0x"), 16).unwrap_or(0);
 
         // Read device name from uevent, apply driver filtering and name mapping
-        let uevent_path = format!("{}/uevent", device_path);
+        let uevent_path = device_path.join("uevent");
         let uevent = fs::read_to_string(&uevent_path).unwrap_or_default();
         let raw_driver = uevent
             .lines()
             .find(|l| l.starts_with("DRIVER="))
-            .map(|l| l.trim_start_matches("DRIVER=").to_string());
+            .map(|l| l.trim_start_matches("DRIVER=").to_string())
+            .or_else(|| {
+                fs::read_link(device_path.join("driver"))
+                    .ok()?
+                    .file_name()?
+                    .to_str()
+                    .map(str::to_string)
+            });
 
         let model = match raw_driver {
             Some(ref drv) if is_virtual_drm_driver(drv) => continue,
@@ -302,7 +320,7 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
             }
         };
 
-        gpus.push(GpuInfo {
+        let mut info = GpuInfo {
             name: model,
             memory_total: 0,
             memory_used: 0,
@@ -310,8 +328,28 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
             temperature: 0,
             vendor_id,
             device_id,
-        })
-        .map_err(|_| GpuDetectErr::TooManyGpus)?;
+        };
+        // rocm-smi is optional: amdgpu exposes these metrics directly. Do not
+        // invent dynamic readings for other DRM drivers or missing sysfs files.
+        if raw_driver.as_deref() == Some("amdgpu") {
+            for file in ["product_name", "product_description"] {
+                if let Ok(name) = fs::read_to_string(device_path.join(file))
+                    && !name.trim().is_empty()
+                {
+                    info.name = name.trim().to_string();
+                    break;
+                }
+            }
+            info.utilization = fs::read_to_string(device_path.join("gpu_busy_percent"))
+                .ok()
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .filter(|v| v.is_finite() && (0.0..=100.0).contains(v))
+                .unwrap_or(0.0);
+            info.memory_total = read_sysfs_u64(&device_path.join("mem_info_vram_total"));
+            info.memory_used = read_sysfs_u64(&device_path.join("mem_info_vram_used"));
+            info.temperature = read_amd_temperature(&device_path);
+        }
+        gpus.push(info).map_err(|_| GpuDetectErr::TooManyGpus)?;
     }
 
     if gpus.is_empty() {
@@ -321,6 +359,52 @@ fn detect_sysfs_drm() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     } else {
         Ok(gpus)
     }
+}
+
+fn read_sysfs_u64(path: &Path) -> u64 {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn read_amd_temperature(device: &Path) -> u64 {
+    let Ok(hwmons) = fs::read_dir(device.join("hwmon")) else {
+        return 0;
+    };
+    let mut fallback = 0;
+    for hwmon in hwmons.flatten() {
+        let Ok(files) = fs::read_dir(hwmon.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let name = file.file_name();
+            let Some(sensor) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix("temp"))
+                .and_then(|name| name.strip_suffix("_input"))
+            else {
+                continue;
+            };
+            if sensor.is_empty() || !sensor.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let temperature = read_sysfs_u64(&file.path()) / 1000;
+            if temperature == 0 {
+                continue;
+            }
+            let label = fs::read_to_string(hwmon.path().join(format!("temp{sensor}_label")))
+                .unwrap_or_default()
+                .to_lowercase();
+            if label.contains("junction") || label.contains("edge") {
+                return temperature;
+            }
+            if fallback == 0 {
+                fallback = temperature;
+            }
+        }
+    }
+    fallback
 }
 
 // ── 4. Final fallback: lspci ──────────────────────────────────────────────
@@ -429,5 +513,110 @@ fn map_driver_name(driver: &str) -> Option<&'static str> {
         "ast" => Some("ASPEED Graphics"),
         "mgag200" => Some("Matrox G200"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct SysfsFixture(PathBuf);
+
+    impl SysfsFixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "komari-gpu-test-{}-{stamp}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn write(&self, path: &str, content: &str) {
+            let path = self.0.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+
+        fn card(&self, card: &str, vendor: &str, driver: &str) {
+            self.write(&format!("{card}/device/vendor"), vendor);
+            self.write(&format!("{card}/device/device"), "0x1234\n");
+            self.write(
+                &format!("{card}/device/uevent"),
+                &format!("DRIVER={driver}\n"),
+            );
+        }
+    }
+
+    impl Drop for SysfsFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn amd_sysfs_metrics_without_rocm() {
+        let fixture = SysfsFixture::new();
+        // Card indices are not limited to 0..15.
+        fixture.card("card17", "0x1002\n", "amdgpu");
+        fixture.write("card17/device/product_name", "Synthetic AMD GPU\n");
+        fixture.write("card17/device/gpu_busy_percent", "42\n");
+        fixture.write("card17/device/mem_info_vram_total", "8589934592\n");
+        fixture.write("card17/device/mem_info_vram_used", "1073741824\n");
+        fixture.write("card17/device/hwmon/hwmon0/temp1_label", "edge\n");
+        fixture.write("card17/device/hwmon/hwmon0/temp1_input", "62500\n");
+        let gpus = detect_sysfs_drm_at(&fixture.0).unwrap();
+        assert_eq!(gpus.len(), 1);
+        let gpu = &gpus[0];
+        assert_eq!(gpu.name, "Synthetic AMD GPU");
+        assert_eq!(gpu.utilization, 42.0);
+        assert_eq!(gpu.memory_total, 8_589_934_592);
+        assert_eq!(gpu.memory_used, 1_073_741_824);
+        assert_eq!(gpu.temperature, 62);
+    }
+
+    #[test]
+    fn sysfs_ignores_connectors_and_non_amd_metrics() {
+        let fixture = SysfsFixture::new();
+        fixture.card("card0", "0x8086", "i915");
+        fixture.write("card0/device/gpu_busy_percent", "90");
+        fixture.write("card0/device/mem_info_vram_total", "100");
+        fixture.card("card0-HDMI-A-1", "0x1002", "amdgpu");
+        fixture.card("card1", "0x10de", "virtio_gpu");
+        let gpus = detect_sysfs_drm_at(&fixture.0).unwrap();
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "Intel Integrated Graphics");
+        assert_eq!(gpus[0].utilization, 0.0);
+        assert_eq!(gpus[0].memory_total, 0);
+    }
+
+    #[test]
+    fn amd_sysfs_missing_invalid_values_and_temperature_fallback() {
+        let fixture = SysfsFixture::new();
+        fixture.card("card0", "0x1002", "amdgpu");
+        fixture.write("card0/device/gpu_busy_percent", "NaN");
+        fixture.write("card0/device/mem_info_vram_total", "-1");
+        fixture.write("card0/device/hwmon/hwmon0/temp1_input", "bad");
+        fixture.write("card0/device/hwmon/hwmon0/temp2_input", "51000");
+        let gpus = detect_sysfs_drm_at(&fixture.0).unwrap();
+        assert_eq!(gpus[0].name, "AMD GPU");
+        assert_eq!(gpus[0].utilization, 0.0);
+        assert_eq!(gpus[0].memory_total, 0);
+        assert_eq!(gpus[0].memory_used, 0);
+        assert_eq!(gpus[0].temperature, 51);
+        fixture.write("card0/device/gpu_busy_percent", "101");
+        fixture.write("card0/device/hwmon/hwmon0/temp3_label", "junction");
+        fixture.write("card0/device/hwmon/hwmon0/temp3_input", "70000");
+        let gpus = detect_sysfs_drm_at(&fixture.0).unwrap();
+        assert_eq!(gpus[0].utilization, 0.0);
+        assert_eq!(gpus[0].temperature, 70);
     }
 }
