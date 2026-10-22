@@ -44,7 +44,7 @@ OS roots are loaded at process startup. rustls-webpki validates paths, server na
 |---|---|
 | HTTP control response | 1 MiB |
 | JSON configuration file | 1 MiB, 32-level shared validation bound, no duplicate keys |
-| WebSocket frame and inflated control message | 1 MiB |
+| WebSocket frame, reassembled message and inflated control message | 1 MiB each |
 | Subprocess captured stdout + stderr | 256 KiB |
 | Exec | 30-second execution/input/output deadline |
 | Interactive terminals | At most 2 sessions; idle timeout |
@@ -63,6 +63,11 @@ Optional self-update is disabled by default. It follows bounded HTTPS redirects 
 ## Compression
 
 HTTP reports use gzip when enabled. WebSocket compression follows negotiated permessage-deflate and never compresses control frames. The decoder supports stored, fixed and dynamic DEFLATE blocks with bounded expansion. Gorilla's non-final deflate trailer requires both the sync-flush bytes and a final empty stored block; fixture tests preserve this interoperability detail.
+
+The WS reader retains partial header/payload progress across read timeouts.
+Continuation frames are reassembled before decoding/decompression, with Ping/Pong
+handled between fragments. Invalid sequences, truncated frames and resets cause
+reconnection rather than interpreting remaining bytes as a new header.
 
 ## Upstream decisions
 

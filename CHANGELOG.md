@@ -27,6 +27,8 @@
   framing, preserve IPv6/port authorities and avoid reflecting private payloads.
 - Preserve partially read WebSocket frames across socket timeouts, distinguish
   clean EOF from reset/truncation, and use the actual package version in Upgrade.
+- Reassemble bounded WebSocket continuation messages, including compressed
+  upstream messages and interleaved Ping/Pong; reject invalid frame sequences.
 - Save monthly counters through a synced sibling file and atomic replacement;
   failed saves preserve old state. Reject malformed persisted months/counters.
 - Bound JSON configuration to 1 MiB and 32 validation levels; reject duplicate
