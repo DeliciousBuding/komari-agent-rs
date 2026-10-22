@@ -3,6 +3,7 @@ mod autodiscovery;
 mod config;
 mod crypto;
 mod dns;
+mod file_control;
 mod gzip;
 mod http;
 mod inflate;

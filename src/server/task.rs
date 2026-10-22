@@ -66,6 +66,10 @@ fn lookup_field<'a>(data: &'a [u8], key: &str) -> Option<&'a [u8]> {
     object_field(data, key).or_else(|| object_field(object_field(data, "params")?, key))
 }
 
+pub(crate) fn extract_json_raw<'a>(data: &'a [u8], key: &str) -> Option<&'a [u8]> {
+    lookup_field(data, key)
+}
+
 /// Extract a JSON string value for `key` (top level, else nested `params`).
 /// Escape sequences are decoded. Returns `None` if the key is missing, the
 /// value is not a string, or the JSON is malformed.

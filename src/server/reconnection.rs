@@ -801,6 +801,9 @@ fn dispatch_server_message(
                 super::task::extract_json_string(data, "request_id").unwrap_or_default();
             handle_startup_config_request(config, dial, tls_cfg, &request_id);
         }
+        "agent.file" => {
+            crate::file_control::spawn(config, dial, tls_cfg, data);
+        }
         "agent.switchVersion" => {
             let version = super::task::extract_json_string(data, "version").unwrap_or_default();
             handle_switch_version(config, &version);
@@ -1319,6 +1322,9 @@ pub(crate) fn agent_capabilities(config: &Config) -> Vec<&'static str> {
     if cfg!(feature = "terminal") && !config.disable_web_ssh && !config.http_only {
         caps.push("terminal");
     }
+    if !config.disable_web_ssh {
+        caps.push("file");
+    }
     if cfg!(feature = "self-update") && !config.disable_web_ssh && !config.disable_auto_update {
         caps.push("switch_version");
     }
@@ -1376,6 +1382,7 @@ mod p8_tests {
         let mut c = Config::default();
         c.http_only = true;
         c.disable_web_ssh = false;
+        assert!(agent_capabilities(&c).contains(&"file"));
         c.disable_exec = false;
         let caps = agent_capabilities(&c);
         assert!(caps.contains(&"message"));

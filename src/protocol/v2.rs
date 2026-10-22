@@ -33,6 +33,8 @@ pub const METHOD_AGENT_MESSAGE: &str = "agent.message";
 pub const METHOD_AGENT_EVENT: &str = "agent.event";
 pub const METHOD_AGENT_TERMINAL: &str = "agent.terminal.request";
 pub const METHOD_AGENT_PULL: &str = "agent.pull";
+pub const METHOD_AGENT_FILE: &str = "agent.file";
+pub const METHOD_AGENT_FILE_RESULT: &str = "agent.file.result";
 
 // Server-initiated agent-control events (upstream server `main` after
 // 1.5.0-fix1; no-op on servers <= 1.5.0-fix1, which never emit these).

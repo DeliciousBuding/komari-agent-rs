@@ -628,6 +628,9 @@ fn select_release(json: &str, target: &str) -> Option<(String, String, String)> 
             break;
         }
         let end = skip_value(members, pos);
+        if end <= pos {
+            return None;
+        }
         let release = std::str::from_utf8(members.get(pos..end)?).ok()?;
         let prerelease = object_field(release.as_bytes(), "prerelease") == Some(b"true".as_slice());
         let draft = object_field(release.as_bytes(), "draft") == Some(b"true".as_slice());

@@ -3,7 +3,7 @@
 // Pure std + rustls. Manual HTTP/1.1 formatting.
 
 use std::fmt;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,11 @@ pub struct HttpResponse {
     #[allow(dead_code)]
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+pub struct StreamResponse {
+    pub status_code: u16,
+    pub body_len: u64,
 }
 
 // ── HttpErr ──────────────────────────────────────────────────────────────
@@ -238,6 +243,138 @@ fn http_request(
 
     // 7. Parse status line + headers + body
     parse_http_response(&resp_buf)
+}
+
+/// Stream an exact-size POST body and an exact/bounded response without
+/// buffering file contents. Used by Komari's authenticated file relay.
+#[allow(clippy::too_many_arguments)]
+pub fn http_post_stream<R: Read, W: Write>(
+    url: &str,
+    body: &mut R,
+    body_len: u64,
+    response: &mut W,
+    response_limit: u64,
+    expected_response: Option<u64>,
+    content_type: &str,
+    extra_headers: &[(String, String)],
+    tls_cfg: &Arc<rustls::ClientConfig>,
+    dial: &crate::proxy::Dialer,
+    timeout: Duration,
+) -> Result<StreamResponse, HttpErr> {
+    let (host, port, path, query) = parse_url(url)?;
+    let tcp = dial
+        .connect(&host, port, Duration::from_secs(30))
+        .map_err(|error| match error {
+            crate::proxy::NetErr::Io(error) => HttpErr::Io(error),
+            crate::proxy::NetErr::Dns(error) => {
+                HttpErr::Parse(format!("DNS resolution failed for '{host}': {error}"))
+            }
+            crate::proxy::NetErr::Proxy(error) => HttpErr::Io(io::Error::other(error)),
+        })?;
+    tcp.set_read_timeout(Some(timeout))?;
+    tcp.set_write_timeout(Some(timeout))?;
+    let mut stream = if url.starts_with("https://") {
+        let server_name = rustls::pki_types::ServerName::try_from(host.as_str())
+            .map_err(|error| HttpErr::Tls(format!("invalid SNI: {error}")))?
+            .to_owned();
+        let connection = rustls::ClientConnection::new(Arc::clone(tls_cfg), server_name)
+            .map_err(|error| HttpErr::Tls(format!("TLS: {error}")))?;
+        MaybeTls::Tls(Box::new(rustls::StreamOwned::new(connection, tcp)))
+    } else {
+        MaybeTls::Plain(tcp)
+    };
+
+    let target = if query.is_empty() {
+        path
+    } else {
+        format!("{path}?{query}")
+    };
+    write!(stream, "POST {target} HTTP/1.1\r\n")?;
+    write!(
+        stream,
+        "Host: {}\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\nAccept-Encoding: identity\r\n",
+        host_header(&host, port, url.starts_with("https://"))
+    )?;
+    for (name, value) in extra_headers {
+        if name.bytes().any(|byte| byte <= b' ' || byte >= 127)
+            || value.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))
+        {
+            return Err(HttpErr::Parse("invalid HTTP header".into()));
+        }
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    stream.write_all(b"Connection: close\r\n\r\n")?;
+    let copied = io::copy(&mut body.take(body_len), &mut stream)?;
+    if copied != body_len {
+        return Err(HttpErr::Parse("request body ended early".into()));
+    }
+    stream.flush()?;
+
+    let mut reader = io::BufReader::new(stream);
+    let status = read_bounded_line(&mut reader, 8192)?;
+    let status_code = status
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| HttpErr::Parse("invalid HTTP status".into()))?;
+    let mut content_length = None;
+    let mut header_bytes = status.len();
+    loop {
+        let line = read_bounded_line(&mut reader, 8192)?;
+        header_bytes += line.len();
+        if header_bytes > 65536 {
+            return Err(HttpErr::Parse("HTTP headers exceed 64 KiB limit".into()));
+        }
+        if line.is_empty() {
+            break;
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| HttpErr::Parse("malformed HTTP header".into()))?;
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(HttpErr::Parse("duplicate content length".into()));
+            }
+            content_length = Some(
+                value
+                    .parse::<u64>()
+                    .map_err(|_| HttpErr::Parse("invalid content length".into()))?,
+            );
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(HttpErr::Parse(
+                "streaming transfer requires Content-Length".into(),
+            ));
+        } else if name.eq_ignore_ascii_case("content-encoding")
+            && !value.eq_ignore_ascii_case("identity")
+        {
+            return Err(HttpErr::Parse("unsupported content encoding".into()));
+        }
+    }
+    let length = content_length.unwrap_or(0);
+    if length > response_limit || expected_response.is_some_and(|expected| expected != length) {
+        return Err(HttpErr::Parse("invalid streaming response length".into()));
+    }
+    let copied = io::copy(&mut reader.take(length), response)?;
+    if copied != length {
+        return Err(HttpErr::Parse("response body ended early".into()));
+    }
+    Ok(StreamResponse {
+        status_code,
+        body_len: copied,
+    })
+}
+
+fn read_bounded_line(reader: &mut impl BufRead, limit: usize) -> Result<String, HttpErr> {
+    let mut line = Vec::new();
+    reader
+        .take((limit + 1) as u64)
+        .read_until(b'\n', &mut line)?;
+    if line.len() > limit || !line.ends_with(b"\r\n") {
+        return Err(HttpErr::Parse("invalid or oversized HTTP line".into()));
+    }
+    line.truncate(line.len() - 2);
+    String::from_utf8(line).map_err(|_| HttpErr::Parse("HTTP header is not UTF-8".into()))
 }
 
 pub(crate) fn host_header(host: &str, port: u16, tls: bool) -> String {
@@ -470,12 +607,66 @@ fn decode_chunked(mut raw: &[u8]) -> Result<Vec<u8>, HttpErr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn authority_preserves_ipv6_and_nondefault_ports() {
         assert_eq!(host_header("::1", 8443, true), "[::1]:8443");
         assert_eq!(host_header("example.test", 8443, true), "example.test:8443");
         assert_eq!(host_header("example.test", 443, true), "example.test");
+    }
+
+    #[test]
+    fn streaming_post_copies_exact_request_and_response_lengths() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = io::BufReader::new(socket.try_clone().unwrap());
+            let mut line = String::new();
+            let mut length = 0usize;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line
+                    .strip_prefix("Content-Length:")
+                    .map(str::trim)
+                    .and_then(|value| value.parse::<usize>().ok())
+                {
+                    length = value;
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            assert_eq!(body, b"stream-request");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nstream-response")
+                .unwrap();
+        });
+        let mut input = &b"stream-request"[..];
+        let mut output = Vec::new();
+        let response = http_post_stream(
+            &format!("http://{address}/transfer"),
+            &mut input,
+            14,
+            &mut output,
+            15,
+            Some(15),
+            "application/octet-stream",
+            &[],
+            &Arc::new(crate::tls::make_tls_config(&crate::config::Config::default()).unwrap()),
+            &crate::proxy::Dialer::system(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.body_len, 15);
+        assert_eq!(output, b"stream-response");
     }
 
     #[test]
