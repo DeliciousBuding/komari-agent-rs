@@ -116,11 +116,11 @@ jobs:
 
       - name: Build (native)
         if: ${{ !matrix.use_cross }}
-        run: cargo build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
+        run: cargo build --locked --release --target ${{ matrix.target }} --features ${{ matrix.features }}
 
       - name: Build (cross)
         if: ${{ matrix.use_cross }}
-        run: cross build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
+        run: cross build --locked --release --target ${{ matrix.target }} --features ${{ matrix.features }}
 
       - name: Check binary size < 2MB (Linux)
         if: ${{ matrix.size_check && runner.os == 'Linux' }}

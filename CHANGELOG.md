@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.5.1 (2026-10-22)
+
+### Fixed
+- Update locked `rustls-webpki` to 0.103.16, addressing
+  [RUSTSEC-2026-0382 / CVE-2026-111943](https://rustsec.org/advisories/RUSTSEC-2026-0382.html).
+  Certificate paths containing distrusted emSign intermediate public keys are
+  rejected even when the operating system's trust anchors permit the path.
+- Windows network collection filters NDIS filter-interface rows before applying
+  its bounded interface capacity, so filter rows cannot crowd out real adapters.
+  Rate snapshots use interface LUIDs rather than truncated descriptions, fixing
+  missing or ambiguous baselines for long adapter names. Display names are
+  truncated only at UTF-8 character boundaries.
+
+### Verification
+- Windows CI now runs the test suite, including synthetic filter-saturation,
+  long-name/rate and FFI-layout regressions.
+- CI and release builds use `--locked` to build the reviewed dependency graph.
+
+### Upgrade notes
+- Restart the agent after replacing the binary. Native system trust roots are
+  loaded at process startup; changing the operating system CA store alone does
+  not update an already-running process.
+- Keep `ignore_unsafe_cert=false` (the default). Explicitly disabling certificate
+  verification bypasses these protections. No configuration migration is needed.
+
 ## v0.5.0 (2026-09-23)
 
 Follows the upstream server's post-1.5.0-fix1 agent-control additions
