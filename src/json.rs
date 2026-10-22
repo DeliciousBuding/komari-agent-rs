@@ -127,7 +127,14 @@ fn value_end(b: &[u8], i: usize, depth: usize) -> Option<usize> {
     }
 }
 
-/// Direct object lookup. Reject malformed/trailing data and duplicate target keys.
+/// Validate a complete object, including the shared depth and duplicate-key bounds.
+pub(crate) fn is_valid_object(b: &[u8]) -> bool {
+    let start = skip_ws(b, 0);
+    b.get(start) == Some(&b'{')
+        && value_end(b, start, 0).is_some_and(|end| skip_ws(b, end) == b.len())
+}
+
+/// Direct object lookup. Reject malformed/trailing data and duplicate keys.
 pub(crate) fn object_field<'a>(b: &'a [u8], key: &str) -> Option<&'a [u8]> {
     let start = skip_ws(b, 0);
     if b.get(start) != Some(&b'{') {

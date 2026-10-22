@@ -17,6 +17,7 @@
 use std::env;
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::str::FromStr;
 
 // ============================================================================
@@ -889,7 +890,7 @@ enum JsonValue {
     Null,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Token {
     BraceOpen,
     BraceClose,
@@ -901,6 +902,24 @@ enum Token {
     Num(f64),
     Boolean(bool),
     Null,
+}
+
+// Parser diagnostics must never reflect string/numeric values from a private config.
+impl fmt::Debug for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::BraceOpen => "'{'",
+            Self::BraceClose => "'}'",
+            Self::BracketOpen => "'['",
+            Self::BracketClose => "']'",
+            Self::Colon => "':'",
+            Self::Comma => "','",
+            Self::Str(_) => "string",
+            Self::Num(_) => "number",
+            Self::Boolean(_) => "boolean",
+            Self::Null => "null",
+        })
+    }
 }
 
 /// Tokenize a JSON byte slice into a Vec<Token>.
@@ -1001,69 +1020,10 @@ fn tokenize(input: &[u8]) -> Result<Vec<Token>, ConfigErr> {
 /// Tokenize a JSON string literal starting at `pos` (pointing to the opening '"').
 /// Returns the decoded string and the position after the closing '"'.
 fn tokenize_string(input: &[u8], pos: usize) -> Result<(String, usize), ConfigErr> {
-    let mut result = String::new();
-    let mut i = pos + 1; // skip opening '"'
-    let len = input.len();
-
-    while i < len {
-        let ch = input[i] as char;
-        match ch {
-            '"' => {
-                return Ok((result, i + 1)); // skip closing '"'
-            }
-            '\\' => {
-                i += 1;
-                if i >= len {
-                    return Err(ConfigErr::JsonError(
-                        "unexpected end of input in string escape".to_string(),
-                    ));
-                }
-                match input[i] as char {
-                    '"' => result.push('"'),
-                    '\\' => result.push('\\'),
-                    '/' => result.push('/'),
-                    'b' => result.push('\x08'),
-                    'f' => result.push('\x0C'),
-                    'n' => result.push('\n'),
-                    'r' => result.push('\r'),
-                    't' => result.push('\t'),
-                    'u' => {
-                        // \uXXXX — 4 hex digits
-                        if i + 4 >= len {
-                            return Err(ConfigErr::JsonError(
-                                "unexpected end of input in \\u escape".to_string(),
-                            ));
-                        }
-                        let hex = std::str::from_utf8(&input[i + 1..i + 5]).map_err(|_| {
-                            ConfigErr::JsonError("invalid UTF-8 in \\u escape".to_string())
-                        })?;
-                        let codepoint = u32::from_str_radix(hex, 16).map_err(|_| {
-                            ConfigErr::JsonError(format!("invalid \\u escape: \\u{}", hex))
-                        })?;
-                        let c = char::from_u32(codepoint).ok_or_else(|| {
-                            ConfigErr::JsonError(format!("invalid unicode codepoint: \\u{}", hex))
-                        })?;
-                        result.push(c);
-                        i += 4;
-                    }
-                    other => {
-                        return Err(ConfigErr::JsonError(format!(
-                            "invalid escape sequence \\{}",
-                            other
-                        )));
-                    }
-                }
-            }
-            _ => {
-                result.push(ch);
-            }
-        }
-        i += 1;
-    }
-
-    Err(ConfigErr::JsonError(
-        "unterminated string literal".to_string(),
-    ))
+    let end = crate::json::skip_value(input, pos);
+    let value = crate::json::decode_json_string(&input[pos..end])
+        .ok_or_else(|| ConfigErr::JsonError("invalid JSON string".to_string()))?;
+    Ok((value, end))
 }
 
 /// Tokenize a JSON number starting at `pos`.
@@ -1187,17 +1147,9 @@ impl Parser {
                 Ok(JsonValue::Null)
             }
             Some(Token::BraceOpen) => {
-                let map = self.parse_object()?;
-                // Flatten a flat object into its string-keyed values (we don't
-                // support nested objects as config values, but parse them into
-                // the map properly so we can extract fields).
-                // Actually, for config purposes, return a special marker.
-                // We'll handle this in the caller — nested objects become Null
-                // for config extraction.
-                // For simplicity, collect keys into a Vec and return as JsonValue::Str
-                // with JSON representation (not ideal but configs are flat).
-                let keys: Vec<String> = map.keys().cloned().collect();
-                Ok(JsonValue::Str(format!("<object with keys: {:?}>", keys)))
+                // Configuration fields are flat; nested objects are not string values.
+                self.parse_object()?;
+                Ok(JsonValue::Null)
             }
             Some(Token::BracketOpen) => {
                 let arr = self.parse_array()?;
@@ -1295,13 +1247,34 @@ impl Parser {
 // load_json_config — read and apply a JSON config file
 // ============================================================================
 
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+
 pub fn load_json_config(config: &mut Config, path: &str) -> Result<(), ConfigErr> {
-    let bytes = fs::read(path).map_err(|e| ConfigErr::FileReadError {
+    let read_error = |e: std::io::Error| ConfigErr::FileReadError {
         path: path.to_string(),
         error: e.to_string(),
-    })?;
+    };
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(read_error)?
+        .take((MAX_CONFIG_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(read_error)?;
+    apply_json_bytes(config, &bytes)
+}
 
-    let tokens = tokenize(&bytes)?;
+fn apply_json_bytes(config: &mut Config, bytes: &[u8]) -> Result<(), ConfigErr> {
+    if bytes.len() > MAX_CONFIG_BYTES {
+        return Err(ConfigErr::JsonError("config exceeds 1 MiB".to_string()));
+    }
+    // Validate before recursive typed parsing: bounded nesting, no duplicate
+    // settings or trailing data, and no plaintext values in malformed errors.
+    if !crate::json::is_valid_object(bytes) {
+        return Err(ConfigErr::JsonError(
+            "invalid JSON configuration object".to_string(),
+        ));
+    }
+    let tokens = tokenize(bytes)?;
     let mut parser = Parser::new(tokens);
     let map = parser.parse_object()?;
 
@@ -1536,6 +1509,44 @@ pub fn validate(config: &Config) -> Result<(), ConfigErr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_json_rejects_ambiguous_or_unbounded_input_without_disclosure() {
+        let mut config = Config::default();
+        for data in [
+            r#"{"token" "synthetic-private-canary"}"#.to_string(),
+            r#"{"token":"synthetic-private-canary"} trailing"#.to_string(),
+            r#"{"token":"synthetic-private-canary","to\u006ben":"other"}"#.to_string(),
+            format!(
+                "{{\"token\":{}\"synthetic-private-canary\"{}}}",
+                "[".repeat(40),
+                "]".repeat(40)
+            ),
+            " ".repeat(MAX_CONFIG_BYTES + 1),
+        ] {
+            let error = apply_json_bytes(&mut config, data.as_bytes()).unwrap_err();
+            assert!(!error.to_string().contains("synthetic-private-canary"));
+            assert!(!format!("{error:?}").contains("synthetic-private-canary"));
+            assert!(config.token.is_empty());
+        }
+        let tokens = tokenize(br#"{"token" "synthetic-private-canary"}"#).unwrap();
+        let error = Parser::new(tokens).parse_object().unwrap_err();
+        assert!(!error.to_string().contains("synthetic-private-canary"));
+    }
+
+    #[test]
+    fn config_json_preserves_utf8_surrogates_and_flat_field_types() {
+        let mut config = Config::default();
+        apply_json_bytes(
+            &mut config,
+            r#"{"token":"合成\uD83D\uDE80","include_nics":["以太网?"]}"#.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(config.token, "合成🚀");
+        assert_eq!(config.include_nics, ["以太网?"]);
+        apply_json_bytes(&mut config, br#"{"token":{"not":"a token string"}}"#).unwrap();
+        assert_eq!(config.token, "合成🚀");
+    }
 
     fn args_vec(args: &[&str]) -> Vec<String> {
         std::iter::once("komari-agent-rs")
