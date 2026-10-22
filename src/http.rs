@@ -240,7 +240,7 @@ fn http_request(
     parse_http_response(&resp_buf)
 }
 
-fn host_header(host: &str, port: u16, tls: bool) -> String {
+pub(crate) fn host_header(host: &str, port: u16, tls: bool) -> String {
     let authority = if host.contains(':') {
         format!("[{host}]")
     } else {
@@ -282,8 +282,8 @@ fn read_response_with<R: Read>(
 // Parses "https://host[:port][/path][?query]" (port 443) or
 //         "http://host[:port][/path][?query]"  (port 80) into its components.
 
-fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
-    if url.bytes().any(|b| b <= 0x20 || b == 0x7f) {
+pub(crate) fn parse_url(url: &str) -> Result<(String, u16, String, String), HttpErr> {
+    if url.bytes().any(|b| b <= 0x20 || b == 0x7f) || url.contains('#') {
         return Err(HttpErr::Parse("control character in URL".into()));
     }
     let (rest, default_port) = if let Some(s) = url.strip_prefix("https://") {

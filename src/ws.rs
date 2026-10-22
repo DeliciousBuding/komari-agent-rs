@@ -338,6 +338,12 @@ impl WsConnection {
     ) -> Result<Self, WsErr> {
         // ── 1. Parse URL → host + port (path supplied by caller) ──
         let (host, port, _default_path) = parse_endpoint(endpoint)?;
+        if !ws_path.starts_with('/')
+            || ws_path.bytes().any(|b| b <= 0x20 || b == 0x7f)
+            || ws_path.contains('#')
+        {
+            return Err(WsErr::Protocol("invalid WebSocket request path".into()));
+        }
 
         // ── 2. Reach (host, port) via the unified Dialer ──
         //
@@ -383,7 +389,7 @@ impl WsConnection {
         })?;
 
         let upgrade_request = build_upgrade_request(
-            &host,
+            &crate::http::host_header(&host, port, true),
             ws_path,
             token,
             ws_key_str,
@@ -504,52 +510,28 @@ impl WsConnection {
 /// Accepts `https://host[:port][/path]` or `wss://host[:port][/path]`.
 /// Defaults: port = 443 if omitted, path = `/api/clients/v2/rpc` if root-only.
 fn parse_endpoint(endpoint: &str) -> Result<(String, u16, String), WsErr> {
-    // Strip scheme.
-    let rest = if let Some(idx) = endpoint.find("://") {
-        &endpoint[idx + 3..]
-    } else {
+    let normalized;
+    let url = if let Some(rest) = endpoint.strip_prefix("wss://") {
+        normalized = format!("https://{rest}");
+        normalized.as_str()
+    } else if endpoint.starts_with("https://") {
         endpoint
-    };
-
-    // Split host[:port] from path.
-    let (host_port, path) = match rest.find('/') {
-        Some(idx) => (&rest[..idx], &rest[idx..]),
-        None => (rest, "/api/clients/v2/rpc"),
-    };
-
-    // Split host from port.
-    let (host, port) = match host_port.rfind(':') {
-        Some(idx) => {
-            let cand_host = &host_port[..idx];
-            let cand_port = &host_port[idx + 1..];
-
-            // Skip if the colon is for an IPv6 address (e.g. "[::1]:port").
-            let is_ipv6_bracket = cand_host.starts_with('[') && !cand_host.contains(']');
-
-            if is_ipv6_bracket {
-                // The colon is part of the IPv6 address; keep looking for a port.
-                // For simplicity: if no closing bracket, treat the whole thing as
-                // host with default port (IPv6 without port is rare in configs).
-                (host_port.to_string(), 443)
-            } else {
-                match cand_port.parse::<u16>() {
-                    Ok(p) => {
-                        let h = cand_host.trim_start_matches('[').trim_end_matches(']');
-                        (h.to_string(), p)
-                    }
-                    Err(_) => (host_port.to_string(), 443),
-                }
-            }
-        }
-        None => (host_port.to_string(), 443),
-    };
-
-    let path = if path.starts_with('/') {
-        path.to_string()
     } else {
-        format!("/{}", path)
+        return Err(WsErr::Protocol(
+            "TLS WebSocket requires https:// or wss://".into(),
+        ));
     };
-
+    let (host, port, path, query) = crate::http::parse_url(url)
+        .map_err(|_| WsErr::Protocol("invalid WebSocket endpoint".into()))?;
+    let mut path = if path == "/" {
+        "/api/clients/v2/rpc".to_string()
+    } else {
+        path
+    };
+    if !query.is_empty() {
+        path.push('?');
+        path.push_str(&query);
+    }
     Ok((host, port, path))
 }
 
@@ -634,7 +616,11 @@ fn build_upgrade_request(
         // RFC 7692: offer permessage-deflate. Server echoes it back if accepted.
         req.push_str("Sec-WebSocket-Extensions: permessage-deflate\r\n");
     }
-    req.push_str("User-Agent: komari-agent-rs/0.1.0\r\n");
+    req.push_str(concat!(
+        "User-Agent: komari-agent-rs/",
+        env!("CARGO_PKG_VERSION"),
+        "\r\n"
+    ));
     req.push_str("Accept: */*\r\n");
     for (name, value) in extra_headers {
         req.push_str(name);
@@ -1221,6 +1207,40 @@ mod tests {
     }
 
     // ── parse_endpoint ──
+
+    #[test]
+    fn endpoint_authority_is_shared_and_rejects_injection() {
+        assert_eq!(
+            parse_endpoint("https://[::1]").unwrap(),
+            ("::1".into(), 443, "/api/clients/v2/rpc".into())
+        );
+        assert_eq!(
+            parse_endpoint("wss://[::1]:8443/rpc?x=1").unwrap(),
+            ("::1".into(), 8443, "/rpc?x=1".into())
+        );
+        for endpoint in [
+            "https://host:bad",
+            "https://host\r\nX:yes",
+            "https://user:synthetic@host", // # leak-guard-allow:LG-F4C6A155 synthetic rejected userinfo fixture
+            "https://host/#fragment",
+            "https://[::1",
+        ] {
+            assert!(parse_endpoint(endpoint).is_err());
+        }
+        let request = build_upgrade_request(
+            &crate::http::host_header("::1", 8443, true),
+            "/rpc",
+            "synthetic",
+            "key",
+            &[],
+            false,
+        );
+        assert!(request.contains("Host: [::1]:8443\r\n"));
+        assert!(request.contains(&format!(
+            "User-Agent: komari-agent-rs/{}\r\n",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
 
     #[test]
     fn parse_endpoint_https_defaults() {
