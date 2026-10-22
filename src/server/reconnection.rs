@@ -386,17 +386,27 @@ fn handle_startup_config_request(
     }
 }
 
-/// `agent.switchVersion` is permanently unsupported by fleet policy: remote
-/// version switching conflicts with `--disable-auto-update` plus the
-/// SHA-256-pinned manual rollout SOP. The event is fire-and-forget (the
-/// server has already answered `queued: true`), so we only log — loudly and
-/// specifically, not the generic unhandled-method line — and deliberately do
-/// not advertise the `switch_version` capability.
-fn log_switch_version_policy() {
-    eprintln!(
-        "[komari] policy: agent.switchVersion ignored (remote version switching is \
-         unsupported; fleet updates are manual and hash-pinned)"
-    );
+/// Handle an authenticated `agent.switchVersion` only when the self-update
+/// feature, remote control, and automatic updates are all enabled. The event
+/// is fire-and-forget (the server has already answered `queued: true`), so
+/// failures are logged without pretending the current binary changed.
+fn handle_switch_version(config: &Config, _version: &str) {
+    if config.disable_web_ssh || config.disable_auto_update {
+        eprintln!(
+            "[komari] policy: agent.switchVersion refused (remote control or auto-update is disabled)"
+        );
+        return;
+    }
+    #[cfg(feature = "self-update")]
+    match crate::update::check_and_update_target(env!("CARGO_PKG_VERSION"), config, _version) {
+        Ok(true) => {
+            eprintln!("[komari] requested version installed; supervisor restart may be required")
+        }
+        Ok(false) => eprintln!("[komari] requested version already active"),
+        Err(error) => eprintln!("[komari] WARN: requested version switch failed: {error}"),
+    }
+    #[cfg(not(feature = "self-update"))]
+    eprintln!("[komari] policy: agent.switchVersion refused (self-update is not compiled)");
 }
 /// Wrap a flat monitoring report in the v2 `agent.report` params envelope:
 /// `{"report": <report>, "ack_event_ids": [...]}`.
@@ -789,7 +799,13 @@ fn dispatch_server_message(
                 super::task::extract_json_string(data, "request_id").unwrap_or_default();
             handle_startup_config_request(config, dial, tls_cfg, &request_id);
         }
-        "agent.switchVersion" => log_switch_version_policy(),
+        "agent.file" => {
+            crate::file_control::spawn(config, dial, tls_cfg, data);
+        }
+        "agent.switchVersion" => {
+            let version = super::task::extract_json_string(data, "version").unwrap_or_default();
+            handle_switch_version(config, &version);
+        }
         "agent.message" | "agent.event" => {
             eprintln!("[komari] server message/event received (payload omitted)");
         }
@@ -1304,6 +1320,12 @@ pub(crate) fn agent_capabilities(config: &Config) -> Vec<&'static str> {
     if cfg!(feature = "terminal") && !config.disable_web_ssh && !config.http_only {
         caps.push("terminal");
     }
+    if !config.disable_web_ssh {
+        caps.push("file");
+    }
+    if cfg!(feature = "self-update") && !config.disable_web_ssh && !config.disable_auto_update {
+        caps.push("switch_version");
+    }
     caps
 }
 
@@ -1358,6 +1380,7 @@ mod p8_tests {
         let mut c = Config::default();
         c.http_only = true;
         c.disable_web_ssh = false;
+        assert!(agent_capabilities(&c).contains(&"file"));
         c.disable_exec = false;
         let caps = agent_capabilities(&c);
         assert!(caps.contains(&"message"));
@@ -1384,5 +1407,20 @@ mod p8_tests {
         } else {
             assert!(!caps.contains(&"terminal"));
         }
+    }
+
+    #[test]
+    fn remote_management_capabilities_require_runtime_and_build_gates() {
+        let mut c = Config::default();
+        assert!(!agent_capabilities(&c).contains(&"switch_version"));
+
+        c.disable_web_ssh = false;
+        assert!(!agent_capabilities(&c).contains(&"switch_version"));
+
+        c.disable_auto_update = false;
+        assert_eq!(
+            agent_capabilities(&c).contains(&"switch_version"),
+            cfg!(feature = "self-update")
+        );
     }
 }

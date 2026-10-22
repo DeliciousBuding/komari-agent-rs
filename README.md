@@ -5,7 +5,7 @@ Last updated: 2026-10-22
 
 A Rust monitoring agent for [Komari](https://github.com/komari-monitor/komari), using a synchronous collection loop and OS-native certificate roots. The default build includes metrics and ping probes; GPU collection, interactive terminals and self-update are optional features.
 
-Version 0.6 targets Komari's v2 JSON-RPC protocol, carried over WebSocket or HTTP POST. See the [support matrix](docs/COMPARISON.md) for supported features, platform coverage and deliberate differences from the official Go agent. This project does not claim complete feature equivalence or a fixed RSS on every host.
+Version 0.7 targets Komari's v2 JSON-RPC protocol, including the authenticated control surface released by Komari 1.6. See the [support matrix](docs/COMPARISON.md) for supported features, platform coverage and deliberate differences from the official Go agent. This project does not claim a fixed RSS or unverified native-hardware behavior on every host.
 
 ## Run
 
@@ -62,16 +62,17 @@ Load order follows the Go agent: CLI flags, then environment, then the JSON conf
 
 | Setting | Default | Meaning |
 |---|---|---|
-| endpoint / token | required | Server origin and node credential |
+| endpoint / token | required unless auto-discovery is used | Server origin and node credential |
 | interval | 3 seconds | Metrics reporting cadence; explicit existing values remain effective |
 | info_report_interval | 5 minutes | Static basic-info refresh |
 | reconnect_interval | 5 seconds | Initial exponential reconnect backoff |
 | max_retries | 10 | Warning threshold; reconnecting continues after it is exhausted |
-| protocol_version | 2 | Only 2 is accepted in 0.6; v1 settings produce a migration error |
+| protocol_version | 2 | Only 2 is accepted; v1 settings produce a migration error |
 | http_only | false | Use v2 HTTP report/pull only, with no WebSocket or terminal |
 | disable_exec | true | Independent one-shot command gate |
-| disable_web_ssh | true | Independent interactive terminal gate |
+| disable_web_ssh | true | Independent terminal and file-control gate |
 | disable_auto_update | true | Leave upgrades to the service supervisor/operator |
+| auto_discovery_key | empty | Register once and persist a node credential beside the executable |
 | ignore_unsafe_cert | false | Explicitly bypasses monitoring TLS authentication; keep false |
 | include_nics / exclude_nics | empty | NIC selection; use actual platform interface names |
 | include_mountpoints / exclude_mountpoints | empty | Filesystem selection |
@@ -102,7 +103,7 @@ such as `tun`/`vnet`/`utun` and inactive NIC cumulative counters are no longer
 implicitly removed beyond Go's built-in prefix rules; exclude them explicitly
 if they do not belong in your totals.
 
-No update enables remote execution, WebSSH or automatic upgrades in an existing installation. Startup config responses redact token and discovery credentials. Server-requested version switching and file management are unsupported and are not advertised.
+No update enables remote execution, WebSSH, file management or automatic upgrades in an existing installation. Startup config responses redact token and discovery credentials. File management is advertised only when `disable_web_ssh=false`. Server-requested version switching additionally requires a full/self-update build and `disable_auto_update=false`; downloaded assets still require normal TLS and exact release checksums.
 
 ## Development and documentation
 

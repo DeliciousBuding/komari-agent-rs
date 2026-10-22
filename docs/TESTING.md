@@ -23,6 +23,7 @@ CI checks individual feature builds, Linux and Windows tests, coverage, platform
 | Linux CPU | ARM IDs/heterogeneous names, topology, guest accounting and successful-read caching |
 | Linux disk/GPU | Synthetic mount/stat data and sysfs trees, no production mounts or GPU requirement |
 | Updates | API formatting, exact assets/checksums, HTTPS redirects, authentication stripping, framing/caps and rollback |
+| Authenticated control | Auto-discovery persistence, capability gates, stable version selectors, file metadata, atomic operations, cancellation and loopback streaming lengths |
 | Persistence | Atomic replacement, failed replacement/locked Windows target, strict month/u64, Unix symlink referent safety |
 | WS reads | Partial header/length/payload across real socket timeouts, compressed continuations/control interleaving, message caps, reset/EOF/truncation classification |
 | TLS | Normal chain, wrong name, expiry, unknown issuer and all eight distrusted public keys |
@@ -42,7 +43,8 @@ Use isolated fresh Komari servers with synthetic admin/node credentials and loca
 1. Register a node and verify basicInfo plus fresh ingested metrics, not merely HTTP 200.
 2. Check ping results, nested parameters, event acknowledgement and permitted/denied control behavior.
 3. Test WebSocket compression both ways and recovery after a server restart. For 1.5.1 use the normal 3-second cadence for sustained WS, and verify long intervals fall back to HTTP; its 11-second deadline is not Ping-aware. For 1.6.0 use a 120-second report interval and observe actual Ping/Pong maintaining WS beyond its 75-second idle deadline without a new report.
-4. Verify startup-config responses redact synthetic credentials and version-switch requests cannot change the binary.
-5. Stop only the processes/resources created by that run and keep a report naming exact server/agent digests.
+4. Verify startup-config responses redact synthetic credentials. With default gates, file and version-switch capabilities are absent and requests are rejected without changing the filesystem or binary.
+5. On Komari 1.6 only, run file list/stat/create/move/copy/search/chmod, streamed upload/download/range and cancel/commit against a synthetic run directory; then open both remote-control and auto-update gates and verify an already-active exact version is accepted without replacing the binary.
+6. Stop only the processes/resources created by that run and keep a report naming exact server/agent digests.
 
 Do not run production replacement recipes as tests or post raw config/tokens in CI logs. Compile success and unit tests alone are not a claim of complete Go-agent feature parity, native hardware coverage or deployment success.

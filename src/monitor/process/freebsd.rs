@@ -1,5 +1,6 @@
 // komari-agent-rs: FreeBSD process count — sysctlbyname kern.proc.all.
 #![cfg(target_os = "freebsd")]
+#![allow(dead_code)]
 
 use std::io;
 

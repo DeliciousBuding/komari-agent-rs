@@ -109,6 +109,72 @@ pub fn check_and_update(current_version: &str, config: &Config) -> Result<bool, 
     }
 }
 
+/// Install a stable release selected by an authenticated server request.
+/// Accepted selectors are `latest`, an exact semver, or a major/minor line
+/// such as `1`, `1.*`, `1.2`, or `1.2.*`.
+pub fn check_and_update_target(
+    current_version: &str,
+    config: &Config,
+    target: &str,
+) -> Result<bool, UpdateErr> {
+    let target = target.trim().trim_start_matches(['v', 'V']);
+    let current_version = current_version.trim().trim_start_matches(['v', 'V']);
+    if target.is_empty() {
+        return Err(UpdateErr::Other("empty requested version".into()));
+    }
+    if parse_semver(target).is_some() && target == current_version {
+        return Ok(false);
+    }
+    let mut secure_config = config.clone();
+    secure_config.ignore_unsafe_cert = false;
+    let tls = Arc::new(
+        crate::tls::make_tls_config(&secure_config).map_err(|e| UpdateErr::Other(e.to_string()))?,
+    );
+    let token = env::var("GITHUB_TOKEN").ok();
+    let json = String::from_utf8(https_download(
+        "https://api.github.com/repos/DeliciousBuding/komari-agent-rs/releases?per_page=100",
+        &tls,
+        token.as_deref(),
+        MAX_JSON,
+    )?)
+    .map_err(|_| UpdateErr::Http("release JSON is not UTF-8".into()))?;
+    let (version, asset_url, checksums_url) = select_release(&json, target)
+        .ok_or_else(|| UpdateErr::Other("no matching stable release".into()))?;
+    if version == current_version {
+        return Ok(false);
+    }
+    install_release_urls(&tls, token.as_deref(), &asset_url, &checksums_url)
+}
+
+fn install_release_urls(
+    tls: &Arc<rustls::ClientConfig>,
+    token: Option<&str>,
+    asset_url: &str,
+    checksums_url: &str,
+) -> Result<bool, UpdateErr> {
+    let name = platform_asset();
+    let sums = String::from_utf8(https_download(checksums_url, tls, token, MAX_MANIFEST)?)
+        .map_err(|_| UpdateErr::Other("checksums.txt is not UTF-8".into()))?;
+    let expected = find_checksum(&sums, name)
+        .ok_or_else(|| UpdateErr::Other(format!("missing or invalid checksum for {name}")))?;
+    let bin = https_download(asset_url, tls, token, MAX_BINARY)?;
+    let exe = env::current_exe()?;
+    let old = install_verified_binary(&exe, &bin, expected)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = std::process::Command::new(&exe)
+            .args(env::args_os().skip(1))
+            .exec();
+        Err(restore_after_failed_exec(&exe, &old, error))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = old;
+        Ok(true)
+    }
+}
+
 /// Verify before creating any files. A staging collision fails closed rather
 /// than following a stale file/symlink; the previous successful backup remains
 /// available until another fully verified update is ready to install.
@@ -550,25 +616,87 @@ fn json_asset_url(json: &str, name: &str) -> Option<String> {
     }
 }
 
-fn semver_gt(a: &str, b: &str) -> bool {
-    let parse = |v: &str| -> Option<[u64; 3]> {
-        let fields: Vec<_> = v.split('.').collect();
-        if fields.len() != 3 {
+fn select_release(json: &str, target: &str) -> Option<(String, String, String)> {
+    let array = json.as_bytes().trim_ascii();
+    let members = array.strip_prefix(b"[")?.strip_suffix(b"]")?;
+    let mut pos = 0;
+    let mut selected: Option<([u64; 3], String, String, String)> = None;
+    while pos < members.len() {
+        while members
+            .get(pos)
+            .is_some_and(|b| b.is_ascii_whitespace() || *b == b',')
+        {
+            pos += 1;
+        }
+        if pos == members.len() {
+            break;
+        }
+        let end = skip_value(members, pos);
+        if end <= pos {
             return None;
         }
-        let mut result = [0; 3];
-        for (out, field) in result.iter_mut().zip(fields) {
-            if field.is_empty()
-                || !field.bytes().all(|b| b.is_ascii_digit())
-                || (field.len() > 1 && field.starts_with('0'))
+        let release = std::str::from_utf8(members.get(pos..end)?).ok()?;
+        let prerelease = object_field(release.as_bytes(), "prerelease") == Some(b"true".as_slice());
+        let draft = object_field(release.as_bytes(), "draft") == Some(b"true".as_slice());
+        if !prerelease && !draft {
+            let tag = json_str(release, "tag_name")?;
+            let version = tag.strip_prefix(['v', 'V']).unwrap_or(&tag);
+            if let Some(key) = parse_semver(version)
+                && version_matches_target(version, key, target)
             {
-                return None;
+                let name = platform_asset();
+                if let (Some(asset), Some(sums)) = (
+                    json_asset_url(release, name),
+                    json_asset_url(release, CHECKSUMS_ASSET),
+                ) && selected.as_ref().is_none_or(|current| key > current.0)
+                {
+                    selected = Some((key, version.to_string(), asset, sums));
+                }
             }
-            *out = field.parse().ok()?;
         }
-        Some(result)
-    };
-    matches!((parse(a), parse(b)), (Some(a), Some(b)) if a > b)
+        pos = end;
+    }
+    selected.map(|(_, version, asset, sums)| (version, asset, sums))
+}
+
+fn parse_semver(value: &str) -> Option<[u64; 3]> {
+    let mut parts = value.split('.');
+    let mut parsed = [0; 3];
+    for out in &mut parsed {
+        let part = parts.next()?;
+        if part.is_empty()
+            || !part.bytes().all(|b| b.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return None;
+        }
+        *out = part.parse().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn version_matches_target(version: &str, parsed: [u64; 3], target: &str) -> bool {
+    if target.eq_ignore_ascii_case("latest") {
+        return true;
+    }
+    let prefix = target.strip_suffix(".*").unwrap_or(target);
+    let fields: Vec<_> = prefix.split('.').collect();
+    match fields.as_slice() {
+        [major] => major.parse::<u64>().ok() == Some(parsed[0]),
+        [major, minor] => {
+            major.parse::<u64>().ok() == Some(parsed[0])
+                && minor.parse::<u64>().ok() == Some(parsed[1])
+        }
+        [_, _, _] => version == target,
+        _ => false,
+    }
+}
+
+fn semver_gt(a: &str, b: &str) -> bool {
+    matches!((parse_semver(a), parse_semver(b)), (Some(a), Some(b)) if a > b)
 }
 
 // Release naming and exact checksum matching adapted from community PR #106
@@ -665,6 +793,38 @@ mod tests {
         ] {
             assert_eq!(json_asset_url(bad, "a"), None);
         }
+    }
+
+    #[test]
+    fn requested_release_selector_is_stable_and_exact() {
+        let hash = "a".repeat(64);
+        let json = format!(
+            r#"[
+              {{"tag_name":"v0.7.1","draft":false,"prerelease":false,"assets":[
+                {{"name":"{}","browser_download_url":"https://example.test/071"}},
+                {{"name":"checksums.txt","browser_download_url":"https://example.test/s071"}}]}},
+              {{"tag_name":"v0.7.2-rc1","draft":false,"prerelease":true,"assets":[]}},
+              {{"tag_name":"v0.6.9","draft":false,"prerelease":false,"assets":[
+                {{"name":"{}","browser_download_url":"https://example.test/069"}},
+                {{"name":"checksums.txt","browser_download_url":"https://example.test/s069"}}]}}
+            ]"#,
+            platform_asset(),
+            platform_asset()
+        );
+        let selected = select_release(&json, "0.7").unwrap();
+        assert_eq!(selected.0, "0.7.1");
+        assert_eq!(selected.1, "https://example.test/071");
+        assert!(select_release(&json, "0.7.2-rc1").is_none());
+        assert!(version_matches_target("0.7.1", [0, 7, 1], "0.*"));
+        assert!(!version_matches_target("0.7.1", [0, 7, 1], "0.6.*"));
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn current_exact_target_needs_no_network() {
+        let mut config = Config::default();
+        config.disable_auto_update = false;
+        assert!(!check_and_update_target("v0.7.0", &config, "v0.7.0").unwrap());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "komari-agent-rs"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 description = "Lightweight Komari v2 monitoring agent with a synchronous collection loop"
 license = "MIT"

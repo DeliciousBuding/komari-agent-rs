@@ -1,5 +1,6 @@
 // komari-agent-rs: FreeBSD CPU metrics — sysctlbyname kern.cp_times + hw.model + hw.ncpu.
 #![cfg(target_os = "freebsd")]
+#![allow(dead_code)]
 
 use super::usage_from_ticks;
 use crate::arena::ScratchArena;

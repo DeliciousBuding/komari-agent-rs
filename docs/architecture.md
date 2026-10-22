@@ -34,7 +34,7 @@ The monitor sends `agent.report` with a `report` wrapper, and periodically sends
 
 ## Permissions and TLS
 
-One-shot exec and interactive terminals have separate default-deny switches. A terminal additionally needs its compiled feature and a WebSocket-capable configuration. Server-requested version changes remain refused. Startup-config reporting includes build/features and effective settings but redacts token and discovery credentials.
+One-shot exec and interactive/file control have separate default-deny switches. A terminal additionally needs its compiled feature and a WebSocket-capable configuration. File control requires `disable_web_ssh=false`; version changes also require the self-update feature and enabled automatic updates. Startup-config reporting includes build/features and effective settings but redacts token and discovery credentials.
 
 OS roots are loaded at process startup. rustls-webpki validates paths, server names, validity times and explicit public-key distrust; removing a root from a file does not refresh an existing process. Monitoring's explicit unsafe-cert override defeats authentication and is not an acceptable deployment default. Executable downloads always use normal verification.
 
@@ -49,6 +49,7 @@ OS roots are loaded at process startup. rustls-webpki validates paths, server na
 | Exec | 30-second execution/input/output deadline |
 | Interactive terminals | At most 2 sessions; idle timeout |
 | Self-update | JSON 1 MiB, checksums 64 KiB, binary 8 MiB; 5 HTTPS redirects |
+| File control | 16 workers, 8 concurrent transfers, 128 MiB chunk, 10 MiB searched file, 500 search results |
 
 The subprocess runner uses nonblocking pipes and a process group on Unix, and a suspended launch followed by Job Object assignment on Windows. It creates no reader/writer threads. Ordinary descendants are terminated when the root exits or a limit is hit; truncated collector output is rejected. A Unix command that deliberately escapes its process group is outside this lifecycle boundary: this is not a sandbox.
 
@@ -59,6 +60,8 @@ The release profile uses panic-abort. Input validation and supervisor restart ar
 Installers stage and verify downloads before replacing an existing binary, preserve configuration, and keep a rollback binary. Credentials are not embedded in a scheduled task action. SHA-256 checksums detect corruption; a manifest from the same publisher is not an independent signature.
 
 Optional self-update is disabled by default. It follows bounded HTTPS redirects and strips authentication after an origin change. Unix installs atomically then re-execs with original arguments; failure restores the previous path. Windows installs for the next supervisor launch and explicitly reports restart pending.
+
+Auto-discovery is a bootstrap step before the main loop. It exchanges the shared enrollment key over the normal configured TLS/dialer path, persists only the returned node identity and token beside the executable, and never logs credentials. File metadata uses JSON-RPC; file bytes use the authenticated Komari 1.6 transfer endpoint. Upload chunks are staged and synced on the destination filesystem before an atomic commit.
 
 ## Compression
 

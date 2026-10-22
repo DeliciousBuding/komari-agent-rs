@@ -1,5 +1,6 @@
 // komari-agent-rs: GPU detection — platform dispatch via #[cfg] gates.
-// DD7 in spec.md: nvidia-smi CSV → rocm-smi key-scan → sysfs DRM → lspci → DXGI → system_profiler → pciconf.
+// Backend order: nvidia-smi CSV → rocm-smi key-scan → sysfs DRM → lspci → DXGI →
+// system_profiler → pciconf, with unsupported paths omitted by target.
 // Reference: upstream komari-agent-go/monitoring/unit/gpu_*.go
 //
 // The full backend enum (`GpuBackend` variants for every platform tool), the

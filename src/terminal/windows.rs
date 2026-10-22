@@ -2,7 +2,7 @@
 //
 // References:
 //   - komari-agent-go/terminal/terminal_windows.go (UserExistsError/conpty model)
-//   - docs/plan/spec.md DD11
+//   - docs/architecture.md (permissions and resource boundaries)
 //   - Microsoft ConPTY API (Windows 10 1809+)
 //
 // Builds only on `#[cfg(target_family = "windows")]` when `feature = "terminal"`.

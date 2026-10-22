@@ -1,7 +1,9 @@
 mod arena;
+mod autodiscovery;
 mod config;
 mod crypto;
 mod dns;
+mod file_control;
 mod gzip;
 mod http;
 mod inflate;
@@ -50,6 +52,17 @@ fn main() {
     if let Err(e) = config::validate(&config) {
         eprintln!("Configuration error: {:?}", e);
         process::exit(1);
+    }
+
+    if !config.auto_discovery_key.is_empty() {
+        if let Err(e) = autodiscovery::resolve_token(&mut config) {
+            eprintln!("Auto-discovery error: {e}");
+            process::exit(1);
+        }
+        if let Err(e) = config::validate(&config) {
+            eprintln!("Configuration error after auto-discovery: {:?}", e);
+            process::exit(1);
+        }
     }
 
     // http:// endpoint → auto --http-only. Plain HTTP has no TLS so WS upgrade

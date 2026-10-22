@@ -65,7 +65,7 @@ fn find_tool(canonical: &str, tool_name: &str) -> Result<String, String> {
 }
 
 // ── 1. NVIDIA: nvidia-smi CSV mode ─────────────────────────────────────────
-// Matches DD7 spec: --query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu --format=csv,noheader,nounits
+// Query the same bounded fields as the Go collector.
 
 fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {
     let tool_path =
@@ -137,7 +137,7 @@ fn detect_nvidia_smi_csv() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> 
 }
 
 // ── 2. AMD: rocm-smi --showallinfo --json (key scanning) ──────────────────
-// DD7 spec: scan for "GPU use (%)", "VRAM Total Memory (B)", "VRAM Total Used Memory (B)",
+// Scan the stable ROCm labels for utilization, total VRAM and used VRAM,
 // "Temperature" keys ONLY. No full JSON parse.
 
 fn detect_rocm_smi() -> Result<SmallVec<GpuInfo, MAX_GPUS>, GpuDetectErr> {

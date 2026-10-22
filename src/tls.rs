@@ -1,7 +1,6 @@
 // tls.rs — TLS configuration with OS native root certificates.
 //
-// DD5 (OS native roots) + DD6 (ring crypto) from docs/plan/spec.md.
-// Only dependency is rustls. All FFI is inline extern blocks.
+// Uses OS-native roots with rustls/ring. All platform FFI is local to this module.
 //
 // Platform-specific cert loading:
 //   Linux/FreeBSD → read PEM bundle from /etc/ssl/certs (or /usr/local on FreeBSD)

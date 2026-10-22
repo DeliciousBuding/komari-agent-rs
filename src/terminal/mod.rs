@@ -7,7 +7,7 @@
 //   - komari-agent-go/terminal/terminal.go (interface, WebSocket loop)
 //   - komari-agent-go/terminal/terminal_unix.go (PTY via posix_openpt/fork)
 //   - komari-agent-go/terminal/terminal_windows.go (ConPTY via CreatePseudoConsole)
-//   - docs/plan/spec.md DD11
+//   - docs/architecture.md (permissions and resource boundaries)
 
 use std::fmt;
 use std::time::Duration;

@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.7.0 (2026-10-22)
+
+### Upstream compatibility
+- Implement Komari 1.6 stable `agent.file` operations: list/stat/create,
+  directory creation, delete, move/copy, chmod/chown, bounded search, and raw
+  streaming upload/download with chunk commit/cancel. File control is advertised
+  and accepted only when `disable_web_ssh=false`; the default remains disabled.
+- Implement auto-discovery enrollment compatible with the official Go agent.
+  The node credential is atomically persisted beside the executable with
+  restrictive Unix permissions; credentials are never logged.
+- Accept authenticated `agent.switchVersion` only when the binary includes the
+  self-update feature and both remote control and automatic updates are enabled.
+  Stable exact/major/minor release selectors are checksum-verified; prereleases,
+  drafts, insecure downloads and the default fleet posture remain refused.
+
+### Reliability and boundaries
+- Stream file-transfer bodies through fixed-size I/O instead of buffering a
+  transfer chunk in memory. Bound file control to 16 workers and eight
+  concurrent raw transfers, chunks to 128 MiB, control responses to 1 MiB and
+  content search to 10 MiB per file.
+- Stage uploads beside the destination, sync chunks, validate commit metadata,
+  preserve existing file permissions and atomically replace completed files.
+  Cancellation is observed during active transfer and roots cannot be deleted.
+- Report monthly-traffic persistence failure once and report recovery instead
+  of silently losing counters across restart.
+- Reviewed current upstream Go agent main and Komari server 1.6/main. Server
+  commits after the reviewed agent-wire baseline affect the plugin runtime, not
+  the agent protocol. Pending upstream Btrfs quota scanning was not copied: its
+  resource/real-system validation is not sufficient for this release.
+
+### Verification
+- Local locked all-feature suites: Windows 354 passed, Linux 376 passed; both
+  have 2 subprocess fixtures ignored.
+- CI covers Linux/Windows tests, feature builds, native macOS/Windows builds,
+  Linux musl builds, size gates, installers and RustSec audit. Release and
+  isolated Komari 1.5.1/1.6.0 acceptance remain required before publication.
+
 ## v0.6.0 (2026-10-22)
 
 ### Compatibility changes
@@ -110,9 +147,10 @@ server upgrade.
   set/unset state remains auditable). The Go agent uploads the full config
   including credentials; a fleet audit surface must not expand credential
   exposure to the server process and admin panel responses.
-- **`agent.switchVersion` is permanently unsupported**: remote version
-  switching conflicts with `disable_auto_update` + SHA-256-pinned manual
-  rollout. The `switch_version` capability is not advertised.
+- **`agent.switchVersion` was unsupported in v0.5.0**: remote version switching
+  conflicted with the then-current `disable_auto_update` and SHA-256-pinned
+  manual rollout policy. The `switch_version` capability was not advertised.
+  v0.7.0 supersedes that limitation with the gated implementation above.
 
 ### Notes
 - Protocol spec source of truth is the server repo's

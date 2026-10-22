@@ -3,7 +3,8 @@
 // Mirrors Go dnsresolver package:
 //   upstream komari-agent-go/dnsresolver/resolver.go
 //
-// 100% feature parity: TTL cache (50 entries, 5 min), 10 built-in DNS servers,
+// Includes the Go resolver behaviors used by this agent: TTL cache (50 entries,
+// 5 min), 10 built-in DNS servers,
 // system DNS fallback, raw UDP DNS query (A + AAAA), IP version preference
 // sorting, Happy Eyeballs lite, and a dial-context factory for TCP connections.
 //
@@ -882,7 +883,6 @@ fn sort_by_preference(addrs: &mut [SocketAddr], prefer: &str) {
 /// Scans non-loopback, UP network interfaces for an IPv4 address.
 /// Result is cached (checked once) matching Go's `sync.Once` pattern.
 fn prefer_ipv4_first() -> bool {
-    use std::net::IpAddr;
     use std::sync::OnceLock;
 
     static HAS_IPV4: OnceLock<bool> = OnceLock::new();
@@ -890,6 +890,8 @@ fn prefer_ipv4_first() -> bool {
     *HAS_IPV4.get_or_init(|| {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
+            use std::net::IpAddr;
+
             if let Ok(ifaces) = get_if_addrs() {
                 for addr in ifaces {
                     if addr.is_loopback() {

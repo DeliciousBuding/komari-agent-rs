@@ -67,7 +67,7 @@ jobs:
             features: full
             use_cross: true
             artifact: komari-agent-rs-freebsd-x86_64
-            size_check: false
+            size_check: true
 
           - name: windows-x86_64
             target: x86_64-pc-windows-msvc
@@ -116,6 +116,10 @@ jobs:
       - name: Install cross
         if: ${{ matrix.use_cross }}
         uses: taiki-e/install-action@cross
+
+      - name: Check FreeBSD warnings
+        if: ${{ matrix.target == 'x86_64-unknown-freebsd' }}
+        run: RUSTFLAGS="-D warnings" cross check --locked --release --target ${{ matrix.target }} --features ${{ matrix.features }}
 
       - name: Build (native)
         if: ${{ !matrix.use_cross }}
