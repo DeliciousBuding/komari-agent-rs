@@ -1485,9 +1485,9 @@ pub fn validate(config: &Config) -> Result<(), ConfigErr> {
             "endpoint is required (set via --endpoint, AGENT_ENDPOINT, or JSON config)".to_string(),
         ));
     }
-    if config.token.is_empty() {
+    if config.token.is_empty() && config.auto_discovery_key.is_empty() {
         return Err(ConfigErr::Validation(
-            "token is required (set via --token, AGENT_TOKEN, or JSON config)".to_string(),
+            "token or auto_discovery_key is required".to_string(),
         ));
     }
     if !config.prefer_ip_version.is_empty()

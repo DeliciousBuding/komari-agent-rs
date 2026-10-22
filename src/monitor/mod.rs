@@ -99,6 +99,8 @@ pub struct Monitor {
     prev_total_down: u64,
     /// False until the first tick seeds [`prev_total_up`] / [`prev_total_down`].
     net_total_ready: bool,
+    /// Suppress repeated persistence errors until a save succeeds again.
+    netstatic_save_failed: bool,
 }
 
 impl Monitor {
@@ -112,6 +114,7 @@ impl Monitor {
             prev_total_up: 0,
             prev_total_down: 0,
             net_total_ready: false,
+            netstatic_save_failed: false,
         }
     }
 
@@ -307,7 +310,20 @@ fn encode_report(
 
         // Persist on every tick — the file is a single-line JSON (~100 B),
         // so the I/O cost is negligible relative to a 1 s monitoring cadence.
-        let _ = ns.save();
+        match ns.save() {
+            Ok(()) if monitor.netstatic_save_failed => {
+                eprintln!("[komari] monthly traffic persistence recovered");
+                monitor.netstatic_save_failed = false;
+            }
+            Ok(()) => {}
+            Err(error) if !monitor.netstatic_save_failed => {
+                eprintln!(
+                    "[komari] WARN: monthly traffic cannot be persisted; totals may reset after restart: {error}"
+                );
+                monitor.netstatic_save_failed = true;
+            }
+            Err(_) => {}
+        }
 
         // Replace the wire-format totals with the persisted month-to-date.
         net_total_up = ns.tx_bytes;
