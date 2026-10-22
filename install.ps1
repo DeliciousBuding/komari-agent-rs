@@ -125,8 +125,14 @@ function Install-KomariAgent {
         $escapedArgs = [Security.SecurityElement]::Escape('--config "' + $cfg + '"')
         if ($oldTaskXml) {
             [xml]$xml = $oldTaskXml
-            $xml.Task.Actions.Exec.Command = $bin
-            $xml.Task.Actions.Exec.Arguments = '--config "' + $cfg + '"'
+            # Use DOM nodes rather than the PS 5.1 XML property adapter, which
+            # can reject provider-decorated path strings from Join-Path.
+            $execPath = "/*[local-name()='Task']/*[local-name()='Actions']/*[local-name()='Exec']"
+            $commandNode = $xml.SelectSingleNode($execPath + "/*[local-name()='Command']")
+            $argumentsNode = $xml.SelectSingleNode($execPath + "/*[local-name()='Arguments']")
+            if (-not $commandNode -or -not $argumentsNode) { throw 'Existing task has no supported executable action.' }
+            $commandNode.InnerText = $bin.ToString()
+            $argumentsNode.InnerText = '--config "' + $cfg + '"'
             $taskXml = $xml.OuterXml
         } else {
             $taskXml = @"
