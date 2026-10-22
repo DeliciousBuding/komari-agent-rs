@@ -27,6 +27,7 @@ try {
     $script:mode='valid'; $script:stopped=0; $script:started=0; $script:registered=@(); $script:failRegister=$false
     function Test-AgentAdministrator { return $true }
     function Protect-AgentInstallDirectory([string]$Path) { }
+    function Wait-AgentStopped([string]$Task, [string]$Binary) { }
     function Get-ScheduledTask { return [pscustomobject]@{State='Running'} }
     function Export-ScheduledTask { return '<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Actions><Exec><Command>old</Command><Arguments>--config "old"</Arguments></Exec></Actions></Task>' }
     function Stop-ScheduledTask { $script:stopped++ }

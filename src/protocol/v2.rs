@@ -114,9 +114,9 @@ pub struct EventResult {
 #[inline]
 pub fn new_notification(method: &str, params: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(64 + method.len() + params.len());
-    v.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"");
-    v.extend_from_slice(method.as_bytes());
-    v.extend_from_slice(b"\",\"params\":");
+    v.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":");
+    crate::json::write_json_string(&mut v, method);
+    v.extend_from_slice(b",\"params\":");
     v.extend_from_slice(params);
     v.push(b'}');
     v
@@ -128,13 +128,13 @@ pub fn new_notification(method: &str, params: &[u8]) -> Vec<u8> {
 #[inline]
 pub fn new_request(id: &str, method: &str, params: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(80 + method.len() + params.len() + id.len());
-    v.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"");
-    v.extend_from_slice(method.as_bytes());
-    v.extend_from_slice(b"\",\"params\":");
+    v.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":");
+    crate::json::write_json_string(&mut v, method);
+    v.extend_from_slice(b",\"params\":");
     v.extend_from_slice(params);
-    v.extend_from_slice(b",\"id\":\"");
-    v.extend_from_slice(id.as_bytes());
-    v.extend_from_slice(b"\"}");
+    v.extend_from_slice(b",\"id\":");
+    crate::json::write_json_string(&mut v, id);
+    v.push(b'}');
     v
 }
 
@@ -163,8 +163,8 @@ pub fn validate_response(body: &[u8]) -> Result<(), &'static str> {
     if response_has_error(body) {
         return Err("server returned a JSON-RPC error");
     }
-    if top_level_field(body, b"jsonrpc") != Some(b"\"2.0\"".as_slice())
-        || top_level_field(body, b"result").is_none_or(|v| v == b"null")
+    if crate::json::object_field(body, "jsonrpc") != Some(b"\"2.0\"".as_slice())
+        || crate::json::object_field(body, "result").is_none_or(|v| v == b"null")
     {
         return Err("invalid JSON-RPC response envelope");
     }
@@ -173,74 +173,47 @@ pub fn validate_response(body: &[u8]) -> Result<(), &'static str> {
 
 /// Only the envelope's error field matters, not strings or nested event data.
 pub fn response_has_error(body: &[u8]) -> bool {
-    top_level_field(body, b"error").is_some_and(|v| v != b"null")
-}
-
-/// Borrow a top-level field without allocating a JSON tree. String-aware
-/// depth tracking keeps nested event payloads out of envelope validation.
-fn top_level_field<'a>(body: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
-    let body = body.trim_ascii();
-    if body.first() != Some(&b'{') || body.last() != Some(&b'}') {
-        return None;
-    }
-    let mut depth = 0usize;
-    let mut pos = 0;
-    while pos < body.len() {
-        match body[pos] {
-            b'{' | b'[' => depth += 1,
-            b'}' | b']' => depth = depth.checked_sub(1)?,
-            b'"' => {
-                let start = pos + 1;
-                pos = string_end(body, start)?;
-                if depth == 1 && &body[start..pos] == key {
-                    let mut value_start = pos + 1;
-                    while body.get(value_start).is_some_and(u8::is_ascii_whitespace) {
-                        value_start += 1;
-                    }
-                    if body.get(value_start) != Some(&b':') {
-                        pos += 1;
-                        continue;
-                    }
-                    value_start += 1;
-                    let mut end = value_start;
-                    let mut nested = 0usize;
-                    while end < body.len() {
-                        match body[end] {
-                            b'"' => end = string_end(body, end + 1)?,
-                            b'{' | b'[' => nested += 1,
-                            b'}' | b']' if nested > 0 => nested -= 1,
-                            b',' | b'}' if nested == 0 => {
-                                return Some(body[value_start..end].trim_ascii());
-                            }
-                            _ => {}
-                        }
-                        end += 1;
-                    }
-                    return None;
-                }
-            }
-            _ => {}
-        }
-        pos += 1;
-    }
-    None
-}
-
-fn string_end(body: &[u8], mut pos: usize) -> Option<usize> {
-    while pos < body.len() {
-        match body[pos] {
-            b'\\' => pos += 1,
-            b'"' => return Some(pos),
-            _ => {}
-        }
-        pos += 1;
-    }
-    None
+    crate::json::object_field(body, "error").is_some_and(|v| v != b"null")
 }
 
 #[cfg(test)]
 mod response_tests {
     use super::*;
+
+    #[test]
+    fn request_ids_and_methods_round_trip_without_json_injection() {
+        use crate::json::{decode_json_string, object_field};
+        let id = "quote\"slash\\\n世界";
+        let method = "method\"\\\n";
+        let request = new_request(id, method, b"{}");
+        assert_eq!(
+            decode_json_string(object_field(&request, "id").unwrap()).as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            decode_json_string(object_field(&request, "method").unwrap()).as_deref(),
+            Some(method)
+        );
+        let notification = new_notification(method, b"{}");
+        assert_eq!(
+            decode_json_string(object_field(&notification, "method").unwrap()).as_deref(),
+            Some(method)
+        );
+    }
+
+    #[test]
+    fn malformed_or_duplicate_envelopes_are_not_successes() {
+        for body in [
+            br#"{"jsonrpc":"2.0","result":{} garbage }"#.as_slice(),
+            br#"{"jsonrpc":"2.0","result":{},"result":null}"#,
+            br#"{"jsonrpc":"2.0","jsonrpc":"wrong","result":{}}"#,
+            br#"{"jsonrpc":"2.0","result":{},"error":null,"error":{"code":-1}}"#,
+            br#"{"jsonrpc":"2.0","result":{},"error":null,"\u0065rror":{"code":-1}}"#,
+            br#"{"jsonrpc":"2.0","result":{},"\u0065rror":{"code":-1}}"#,
+        ] {
+            assert!(validate_response(body).is_err());
+        }
+    }
 
     #[test]
     fn rejects_rpc_errors_even_when_http_succeeded() {

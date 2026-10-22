@@ -46,6 +46,7 @@ fn value_end(b: &[u8], i: usize, depth: usize) -> Option<usize> {
             Some(end)
         }
         open @ (b'{' | b'[') => {
+            let mut keys = std::collections::BTreeSet::new();
             let close = if open == b'{' { b'}' } else { b']' };
             let mut j = skip_ws(b, i + 1);
             if b.get(j) == Some(&close) {
@@ -56,7 +57,11 @@ fn value_end(b: &[u8], i: usize, depth: usize) -> Option<usize> {
                     if b.get(j) != Some(&b'"') {
                         return None;
                     }
-                    j = value_end(b, j, depth + 1)?;
+                    let key_end = value_end(b, j, depth + 1)?;
+                    if !keys.insert(decode_json_string(&b[j..key_end])?) {
+                        return None;
+                    }
+                    j = key_end;
                     j = skip_ws(b, j);
                     if b.get(j) != Some(&b':') {
                         return None;

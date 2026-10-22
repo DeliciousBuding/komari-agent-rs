@@ -47,6 +47,24 @@ function Protect-AgentInstallDirectory([string]$Path) {
     if ($LASTEXITCODE -ne 0) { throw 'Could not protect installation directory.' }
 }
 
+function Wait-AgentStopped([string]$Task, [string]$Binary) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $running = (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue).State -eq 'Running'
+        if (-not $running) {
+            try {
+                if (Test-Path -LiteralPath $Binary) {
+                    $handle = [IO.File]::Open($Binary, 'Open', 'ReadWrite', 'None')
+                    $handle.Dispose()
+                }
+                return
+            } catch [IO.IOException] { }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw 'Previous agent did not stop within 10 seconds; binary replacement refused.'
+}
+
 function Install-KomariAgent {
     if (-not (Test-AgentAdministrator)) {
         throw 'Run this installer as Administrator.'
@@ -96,8 +114,11 @@ function Install-KomariAgent {
             Copy-Item -LiteralPath $bin -Destination $backupBin
         }
         if (Test-Path -LiteralPath $cfg) { $backupConfig = [IO.File]::ReadAllBytes($cfg) }
-        if ($existing) { Stop-ScheduledTask -TaskName $taskName }
         $changed = $true
+        if ($existing) {
+            Stop-ScheduledTask -TaskName $taskName
+            Wait-AgentStopped $taskName $bin
+        }
         Copy-Item -LiteralPath $download -Destination $bin -Force
         $ready = Write-AgentConfig $cfg $Token $Endpoint
         $escapedBin = [Security.SecurityElement]::Escape($bin)
@@ -123,16 +144,29 @@ function Install-KomariAgent {
         Write-Host "Config: $cfg (existing fields preserved; credentials are not task arguments)"
         if (-not $ready) { Write-Host 'Set endpoint/token in the config before starting the task.' }
     } catch {
+        $installationError = $_
         if ($changed) {
             try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
-            if ($backupBin) { Copy-Item -LiteralPath $backupBin -Destination $bin -Force }
-            if ($backupConfig) { [IO.File]::WriteAllBytes($cfg, $backupConfig) }
+            # Restore each component independently: a locked file must not skip
+            # restoring the old task definition or restarting its supervisor.
+            if ($backupBin) {
+                try { Copy-Item -LiteralPath $backupBin -Destination $bin -Force }
+                catch { Write-Warning 'Could not restore binary; retained .pre-* backup requires recovery.' }
+            }
+            if ($backupConfig) {
+                try { [IO.File]::WriteAllBytes($cfg, $backupConfig) }
+                catch { Write-Warning 'Could not restore configuration; manual recovery required.' }
+            }
             if ($oldTaskXml) {
-                Register-ScheduledTask -TaskName $taskName -Xml $oldTaskXml -Force | Out-Null
-                if ($wasRunning) { Start-ScheduledTask -TaskName $taskName }
+                try { Register-ScheduledTask -TaskName $taskName -Xml $oldTaskXml -Force | Out-Null }
+                catch { Write-Warning 'Could not restore the previous task definition.' }
+                if ($wasRunning) {
+                    try { Start-ScheduledTask -TaskName $taskName }
+                    catch { Write-Warning 'Could not restart the previous task.' }
+                }
             }
         }
-        throw
+        throw $installationError
     } finally {
         # Only the unique staging directory created above; never the install directory.
         Remove-Item -LiteralPath $stage -Recurse -Force

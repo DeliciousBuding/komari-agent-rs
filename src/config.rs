@@ -9,11 +9,9 @@
 //   upstream komari-agent-go/cmd/root.go        (cobra init + env loader)
 //   komari-agent-rs/docs/plan/spec.md   (DD1 constraint)
 
-// The parser module carries a complete config surface: the live CLI/env parser
-// used by main(), plus a parallel JSON-config loader + hand-rolled JSON
-// tokenizer kept for parity and future wiring. The JSON-config path and several
-// ConfigErr variants are not exercised by the binary yet. Allow dead_code for
-// that surface rather than trimming the parity contract.
+// Main loads CLI, environment and JSON configuration in that order; JSON wins.
+// The config tokenizer owns typed configuration values. Cold-path RPC/release
+// field extraction uses the shared json module.
 #![allow(dead_code)]
 
 use std::env;
@@ -89,8 +87,7 @@ pub struct Config {
     // -- Feature toggles --
     pub disable_web_ssh: bool, // AGENT_DISABLE_WEB_SSH,    --disable-web-ssh,         default true
     /// Independent gate for one-shot remote exec (`agent.exec`).
-    /// Defaults to **true** (safer than Go). When unset in JSON, follows
-    /// `disable_web_ssh` for backward compatibility.
+    /// Defaults to true independently of disable_web_ssh in every config source.
     pub disable_exec: bool, // AGENT_DISABLE_EXEC,       --disable-exec,            default true
     pub disable_auto_update: bool, // AGENT_DISABLE_AUTO_UPDATE, --disable-auto-update,     default true
     pub disable_compression: bool, // AGENT_DISABLE_COMPRESSION, --disable-compression,     default false
@@ -278,9 +275,9 @@ pub fn help_text() -> &'static str {
      Connection & protocol:\n  \
      --config <file>                 JSON config file (highest priority; overrides flags + env)\n  \
      --interval <sec>                Report interval in seconds (default 3.0)\n  \
-     --info-report-interval <sec>    basicInfo upload interval (default 5)\n  \
+     --info-report-interval <min>    basicInfo upload interval (default 5 minutes)\n  \
      --reconnect-interval <sec>      Reconnect backoff (default 5)\n  \
-     --max-retries <n>               Max retries before downshift (default 5)\n  \
+     --max-retries <n>               Warning threshold; retrying continues (default 10)\n  \
      --protocol-version <2>          Wire protocol (only 2 is supported)\n  \
      --http-only                     DPI/middlebox escape hatch: report over HTTP POST only, never WS\n  \
      --ignore-unsafe-cert            Skip TLS certificate verification (insecure)\n\

@@ -410,9 +410,7 @@ fn wrap_report_params(report: &[u8], ack_ids: &[String]) -> Vec<u8> {
             if i > 0 {
                 v.push(b',');
             }
-            v.push(b'"');
-            v.extend_from_slice(id.as_bytes());
-            v.push(b'"');
+            crate::json::write_json_string(&mut v, id);
         }
         v.push(b']');
     }
@@ -428,9 +426,7 @@ fn build_pull_params(caps: &[&str], ack_ids: &[String]) -> Vec<u8> {
         if i > 0 {
             v.push(b',');
         }
-        v.push(b'"');
-        v.extend_from_slice(c.as_bytes());
-        v.push(b'"');
+        crate::json::write_json_string(&mut v, c);
     }
     v.push(b']');
     if !ack_ids.is_empty() {
@@ -439,9 +435,7 @@ fn build_pull_params(caps: &[&str], ack_ids: &[String]) -> Vec<u8> {
             if i > 0 {
                 v.push(b',');
             }
-            v.push(b'"');
-            v.extend_from_slice(id.as_bytes());
-            v.push(b'"');
+            crate::json::write_json_string(&mut v, id);
         }
         v.push(b']');
     }
@@ -449,53 +443,42 @@ fn build_pull_params(caps: &[&str], ack_ids: &[String]) -> Vec<u8> {
     v
 }
 
-/// Split the top-level objects of the `"events"` array in a v2 RPC response.
-/// Tolerates the absent/empty array; string-aware so braces inside string
-/// values do not break the split.
-fn extract_event_objects(body: &str) -> Vec<String> {
+/// Read only direct object members of result.events. Shared JSON validation
+/// rejects malformed envelopes; unrelated arrays are never task sources.
+fn extract_event_objects(body: &str) -> Result<Vec<String>, &'static str> {
+    use crate::json::{object_field, skip_value};
+    let Some(result) = object_field(body.as_bytes(), "result") else {
+        return Err("invalid event response envelope");
+    };
+    let Some(events) = object_field(result, "events") else {
+        return Ok(Vec::new());
+    };
+    let Some(mut members) = events.strip_prefix(b"[").and_then(|v| v.strip_suffix(b"]")) else {
+        return Err("result.events is not an array");
+    };
     let mut out = Vec::new();
-    let Some(pos) = body.find("\"events\"") else {
-        return out;
-    };
-    let Some(arr) = body[pos..].find('[').map(|i| pos + i) else {
-        return out;
-    };
-    let mut depth = 0i32;
-    let mut start = None;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (idx, ch) in body[arr..].char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
+    members = members.trim_ascii();
+    while !members.is_empty() {
+        let end = skip_value(members, 0);
+        let event = &members[..end];
+        // Fail the whole batch on non-object members, not a partially valid
+        // prefix. The outer object_field already validated array separators.
+        if !event.starts_with(b"{") || !event.ends_with(b"}") {
+            return Err("result.events contains a non-object member");
         }
-        match ch {
-            '"' => in_string = true,
-            '{' => {
-                if depth == 0 {
-                    start = Some(arr + idx);
-                }
-                depth += 1;
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0
-                    && let Some(s) = start.take()
-                {
-                    out.push(body[s..=arr + idx].to_string());
-                }
-            }
-            ']' if depth == 0 => break,
-            _ => {}
+        let Ok(event) = std::str::from_utf8(event) else {
+            return Err("result.events contains invalid UTF-8");
+        };
+        out.push(event.to_string());
+        members = members[end..].trim_ascii();
+        if !members.is_empty() {
+            let Some(tail) = members.strip_prefix(b",") else {
+                return Err("invalid event array separator");
+            };
+            members = tail.trim_ascii();
         }
     }
-    out
+    Ok(out)
 }
 
 /// Handle the events array of a v2 RPC response: ack bookkeeping + dedup,
@@ -511,7 +494,13 @@ fn process_v2_response_events(
         Ok(t) => t,
         Err(_) => return,
     };
-    let events = extract_event_objects(text);
+    let events = match extract_event_objects(text) {
+        Ok(events) => events,
+        Err(error) => {
+            eprintln!("[komari] WARN: invalid v2 event batch: {error}");
+            return;
+        }
+    };
     if events.is_empty() {
         return;
     }
@@ -768,13 +757,10 @@ fn dispatch_server_message(
     tls_cfg: &Arc<rustls::ClientConfig>,
     ws: Option<&mut WsConnection>,
 ) {
-    let text = match std::str::from_utf8(data) {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("[komari] WARN: non-UTF8 server message, ignoring");
-            return;
-        }
-    };
+    if std::str::from_utf8(data).is_err() {
+        eprintln!("[komari] WARN: non-UTF8 server message, ignoring");
+        return;
+    }
 
     // Only v2 methods are dispatched; legacy flat messages are ignored.
     let method = super::task::extract_json_method(data).unwrap_or_default();
@@ -805,10 +791,10 @@ fn dispatch_server_message(
         }
         "agent.switchVersion" => log_switch_version_policy(),
         "agent.message" | "agent.event" => {
-            eprintln!("[komari] server message/event: {}", abbreviate(text));
+            eprintln!("[komari] server message/event received (payload omitted)");
         }
         "" => {}
-        other => eprintln!("[komari] unhandled v2 method '{other}'"),
+        _ => eprintln!("[komari] unhandled v2 method (name omitted)"),
     }
 }
 
@@ -986,7 +972,9 @@ fn handle_exec_task(
         eprintln!("[komari] exec request without task_id, ignoring");
         return;
     }
-    eprintln!("[komari] exec task {task_id}: {}", abbreviate(command));
+    // Server commands can contain credentials even when execution is disabled.
+    // Neither their contents nor server-supplied identifiers belong in logs.
+    eprintln!("[komari] exec task received (payload omitted)");
     let result = super::task::execute_exec(command, config.disable_exec);
     let body = super::task::build_task_result_v2(task_id, &result.output, result.exit_code);
     if let Err(e) = upload_task_result(config, dial, tls_cfg, &body) {
@@ -1037,22 +1025,103 @@ fn gzip_if_enabled(body: &[u8], config: &Config) -> (Vec<u8>, Option<&'static st
     }
 }
 
-/// Truncate a string for logging, never splitting a UTF-8 codepoint.
-fn abbreviate(s: &str) -> String {
-    const MAX: usize = 200;
-    if s.len() <= MAX {
-        return s.to_string();
-    }
-    let mut end = MAX;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ack_ids_round_trip_quotes_backslashes_controls_and_unicode() {
+        use crate::json::{decode_json_string, object_field};
+        let id = "quoted\"\\\n世界";
+        for payload in [
+            wrap_report_params(b"{}", &[id.into()]),
+            build_pull_params(&["ping"], &[id.into()]),
+        ] {
+            let array = object_field(&payload, "ack_event_ids").unwrap();
+            assert_eq!(
+                decode_json_string(&array[1..array.len() - 1]).as_deref(),
+                Some(id)
+            );
+        }
+    }
+
+    #[test]
+    fn only_direct_result_events_objects_can_be_dispatched() {
+        for body in [
+            r#"{"jsonrpc":"2.0","result":{"events":null,"diagnostic":[{"id":"e","method":"agent.exec","params":{"command":"synthetic-secret"}}]}}"#,
+            r#"{"result":{"events":"wrong","diagnostic":[{"id":"e"}]}}"#,
+            r#"{"result":{"other":{"events":[{"id":"e"}]}}}"#,
+            r#"{"events":[{"id":"e"}],"result":{}}"#,
+            r#"{"result":{"events":[[{"id":"e"}]]}}"#,
+            r#"{"result":{"events":[{"id":"e"},null]}}"#,
+            r#"{"result":{"events":[{"id":"e"}],"events":[]}}"#,
+            r#"{"result":{"events":[{"id":"e"},]}}"#,
+        ] {
+            assert!(
+                extract_event_objects(body).map_or(true, |events| events.is_empty()),
+                "accepted {body}"
+            );
+        }
+        assert_eq!(
+            extract_event_objects(r#"{"result":{"\u0065vents":[{"id":"e"}]}}"#).unwrap(),
+            [r#"{"id":"e"}"#]
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for capturing real control-plane logs"]
+    fn private_payload_log_fixture() {
+        let config = Config {
+            endpoint: "http://127.0.0.1:invalid".into(),
+            token: "synthetic-secret-canary".into(),
+            disable_exec: true,
+            ..Config::default()
+        };
+        let tls = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let dial = crate::proxy::Dialer::from_config(&config);
+        for data in [
+            br#"{"method":"agent.exec","params":{"task_id":"synthetic-secret-canary","command":"echo synthetic-secret-canary"}}"#.as_slice(),
+            br#"{"method":"agent.message","params":{"content":"synthetic-secret-canary"}}"#,
+            br#"{"method":"agent.event","params":{"content":"synthetic-secret-canary"}}"#,
+            br#"{"method":"synthetic-secret-canary","params":{}}"#,
+        ] {
+            dispatch_server_message(data, &config, &dial, &tls, None);
+        }
+    }
+
+    #[test]
+    fn control_plane_logs_do_not_reflect_private_payloads() {
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--ignored",
+            "--exact",
+            "server::reconnection::tests::private_payload_log_fixture",
+            "--nocapture",
+        ]);
+        // A malformed proxy is checked separately; this test needs no proxy/network.
+        for key in [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            cmd.env_remove(key);
+        }
+        cmd.env("NO_PROXY", "*");
+        let captured = crate::subprocess::run(&mut cmd, None, Duration::from_secs(5)).unwrap();
+        assert_eq!(captured.reason, crate::subprocess::StopReason::Exited);
+        assert!(captured.output.status.success());
+        let log = String::from_utf8(captured.output.stderr).unwrap();
+        assert!(!log.contains("synthetic-secret-canary"), "{log}");
+        assert!(log.contains("exec task received"));
+        assert!(log.contains("server message/event received"));
+    }
 
     #[test]
     fn wrap_report_params_wraps_flat_report() {
@@ -1072,7 +1141,7 @@ mod tests {
     #[test]
     fn extract_event_objects_splits_array() {
         let body = r#"{"jsonrpc":"2.0","id":"report","result":{"status":"success","events":[{"id":"e1","method":"agent.ping","params":{"ping_task_id":1,"ping_type":"icmp","ping_target":"1.1.1.1"}},{"id":"e2","method":"agent.message","params":{"content":"hi } ] \"}"}}]}}"#;
-        let events = extract_event_objects(body);
+        let events = extract_event_objects(body).unwrap();
         assert_eq!(events.len(), 2);
         assert!(events[0].contains("\"e1\""));
         assert!(events[1].contains("\"e2\""));
@@ -1080,8 +1149,16 @@ mod tests {
 
     #[test]
     fn extract_event_objects_empty_or_missing() {
-        assert!(extract_event_objects(r#"{"result":{"events":[]}}"#).is_empty());
-        assert!(extract_event_objects(r#"{"result":{"status":"success"}}"#).is_empty());
+        assert!(
+            extract_event_objects(r#"{"result":{"events":[]}}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            extract_event_objects(r#"{"result":{"status":"success"}}"#)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
