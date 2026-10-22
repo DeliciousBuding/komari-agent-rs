@@ -23,6 +23,8 @@ CI checks individual feature builds, Linux and Windows tests, coverage, platform
 | Linux CPU | ARM IDs/heterogeneous names, topology, guest accounting and successful-read caching |
 | Linux disk/GPU | Synthetic mount/stat data and sysfs trees, no production mounts or GPU requirement |
 | Updates | API formatting, exact assets/checksums, HTTPS redirects, authentication stripping, framing/caps and rollback |
+| Persistence | Atomic replacement, failed replacement/locked Windows target, strict month/u64, Unix symlink referent safety |
+| WS reads | Partial header/length/payload across real socket timeouts, bounded frames, reset/EOF/truncation classification |
 | TLS | Normal chain, wrong name, expiry, unknown issuer and all eight distrusted public keys |
 
 The subprocess test executable contains an ignored child-process fixture invoked by the parent tests. Its ignored marker is intentional, not a skipped behavior assertion.

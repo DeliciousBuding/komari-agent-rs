@@ -25,6 +25,10 @@
   exec deadline and 256 KiB shared output cap prevent pipe/deadline deadlocks.
 - Bound HTTP, WebSocket and inflated control messages to 1 MiB. Check response
   framing, preserve IPv6/port authorities and avoid reflecting private payloads.
+- Preserve partially read WebSocket frames across socket timeouts, distinguish
+  clean EOF from reset/truncation, and use the actual package version in Upgrade.
+- Save monthly counters through a synced sibling file and atomic replacement;
+  failed saves preserve old state. Reject malformed persisted months/counters.
 - Bound JSON configuration to 1 MiB and 32 validation levels; reject duplicate
   settings/trailing data, preserve Unicode and redact values from parse errors.
 - Cache successful Linux CPU identification, identify ARM cores, count physical
