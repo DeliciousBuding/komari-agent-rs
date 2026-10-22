@@ -1,5 +1,6 @@
 // komari-agent-rs: FreeBSD connection counts — sysctlbyname net.inet.tcp.pcblist / net.inet.udp.pcblist.
 #![cfg(target_os = "freebsd")]
+#![allow(dead_code)]
 
 use std::io;
 

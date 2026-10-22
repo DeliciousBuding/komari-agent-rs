@@ -1,5 +1,6 @@
 // komari-agent-rs: FreeBSD disk metrics — getmntinfo + statfs FFI.
 #![cfg(target_os = "freebsd")]
+#![allow(dead_code)]
 
 use crate::arena::{MAX_DISKS, SmallVec};
 use crate::config::Config;

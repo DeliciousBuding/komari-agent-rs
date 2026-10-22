@@ -1,5 +1,6 @@
 // komari-agent-rs: FreeBSD IP detection — getifaddrs FFI + external HTTP APIs.
 #![cfg(target_os = "freebsd")]
+#![allow(dead_code)]
 
 use crate::config::Config;
 use core::fmt;
@@ -46,56 +47,20 @@ const IFF_UP: u32 = 1;
 const IFF_LOOPBACK: u32 = 8;
 
 #[repr(C)]
-struct InAddr {
-    s_addr: [u8; 4],
-}
-
-#[repr(C)]
-struct In6Addr {
-    s6_addr: [u8; 16],
-}
-
-#[repr(C)]
-struct SockAddr {
-    sa_len: u8,
-    sa_family: u8,
-    sa_data: [u8; 14],
-}
-
-#[repr(C)]
-struct SockAddrIn {
-    sin_len: u8,
-    sin_family: u8,
-    sin_port: u16,
-    sin_addr: InAddr,
-    sin_zero: [u8; 8],
-}
-
-#[repr(C)]
-struct SockAddrIn6 {
-    sin6_len: u8,
-    sin6_family: u8,
-    sin6_port: u16,
-    sin6_flowinfo: u32,
-    sin6_addr: In6Addr,
-    sin6_scope_id: u32,
-}
-
-#[repr(C)]
-struct IfAddrs {
-    ifa_next: *mut IfAddrs,
-    ifa_name: *mut core::ffi::c_char,
-    ifa_flags: u32,
+pub(crate) struct IfAddrs {
+    pub(crate) ifa_next: *mut IfAddrs,
+    pub(crate) ifa_name: *mut core::ffi::c_char,
+    pub(crate) ifa_flags: u32,
     _pad: u32,
-    ifa_addr: *mut SockAddr,
-    ifa_netmask: *mut SockAddr,
-    ifa_dstaddr: *mut SockAddr,
-    ifa_data: *mut u8,
+    pub(crate) ifa_addr: *mut u8,
+    ifa_netmask: *mut u8,
+    ifa_dstaddr: *mut u8,
+    pub(crate) ifa_data: *mut u8,
 }
 
 unsafe extern "C" {
-    fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
-    fn freeifaddrs(ifa: *mut IfAddrs);
+    pub(crate) fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
+    pub(crate) fn freeifaddrs(ifa: *mut IfAddrs);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -229,13 +194,13 @@ fn ip_from_interfaces(nic_names: &[String]) -> (Option<String>, Option<String>) 
         match family {
             AF_INET if ipv4.is_none() => {
                 // sin_addr starts at offset 4 in struct sockaddr_in (BSD layout: len=1, family=1, port=2)
-                let addr_ptr = unsafe { ifa.ifa_addr as *const u8 };
+                let addr_ptr = ifa.ifa_addr as *const u8;
                 let a = unsafe { std::slice::from_raw_parts(addr_ptr.add(4), 4) };
                 ipv4 = Some(format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]));
             }
             AF_INET6 if ipv6.is_none() => {
                 // sin6_addr starts at offset 8 in struct sockaddr_in6 (BSD layout)
-                let addr_ptr = unsafe { ifa.ifa_addr as *const u8 };
+                let addr_ptr = ifa.ifa_addr as *const u8;
                 let a = unsafe { std::slice::from_raw_parts(addr_ptr.add(8), 16) };
                 // Skip link-local (fe80::/10)
                 if a[0] == 0xfe && (a[1] & 0xc0) == 0x80 {

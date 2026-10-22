@@ -1,5 +1,6 @@
 // komari-agent-rs: FreeBSD network metrics — getifaddrs AF_LINK + delta.
 #![cfg(target_os = "freebsd")]
+#![allow(dead_code)]
 
 use std::ffi::CStr;
 use std::time::Instant;
@@ -62,19 +63,6 @@ impl PrevNetSnapshot {
 
 const AF_LINK: u16 = 18; // AF_LINK on FreeBSD
 
-// struct sockaddr_dl — FreeBSD layout (same as Darwin/macOS for these fields)
-#[repr(C)]
-struct SockAddrDl {
-    sdl_len: u8,
-    sdl_family: u8,
-    sdl_index: u16,
-    sdl_type: u8,
-    sdl_nlen: u8,
-    sdl_alen: u8,
-    sdl_slen: u8,
-    sdl_data: [u8; 12],
-}
-
 // struct if_data — 64-bit FreeBSD layout (from net/if_var.h)
 #[repr(C)]
 struct IfData {
@@ -104,23 +92,7 @@ struct IfData {
                          // __ifi_epoch and __ifi_lastchange follow (16 bytes each)
 }
 
-// Minimal ifaddrs — only the fields we actually read
-#[repr(C)]
-struct IfAddrs {
-    ifa_next: *mut IfAddrs,
-    ifa_name: *mut core::ffi::c_char,
-    ifa_flags: u32,
-    _pad: u32,
-    ifa_addr: *mut u8,
-    ifa_netmask: *mut u8,
-    ifa_dstaddr: *mut u8,
-    ifa_data: *mut IfData,
-}
-
-unsafe extern "C" {
-    fn getifaddrs(ifap: *mut *mut IfAddrs) -> i32;
-    fn freeifaddrs(ifa: *mut IfAddrs);
-}
+use crate::monitor::ip::freebsd::{IfAddrs, freeifaddrs, getifaddrs};
 
 // ── Interface filtering ─────────────────────────────────────────────────────
 
@@ -189,7 +161,7 @@ pub fn collect(config: &Config, prev: &mut PrevNetSnapshot) -> SmallVec<NetInfo,
             cur = ifa.ifa_next;
             continue;
         }
-        let ifd = unsafe { &*ifa.ifa_data };
+        let ifd = unsafe { &*(ifa.ifa_data as *const IfData) };
         let rx = ifd.ifi_ibytes;
         let tx = ifd.ifi_obytes;
 
