@@ -3,6 +3,11 @@
 ## v0.5.1 (2026-10-22)
 
 ### Fixed
+- Update locked `rustls` to 0.23.46 for RUSTSEC-2026-0346 through
+  RUSTSEC-2026-0349 (session-secret Debug redaction, ECH rejection ordering,
+  Brotli decompression bounds and unauthenticated key-share prediction).
+  Advisory applicability depends on enabled features and client configuration;
+  this release does not enable ECH, Brotli or post-quantum providers.
 - Correct Unix terminal FFI signatures for current Rust compilers (community
   contribution by [IShinji](https://github.com/IShinji),
   [#107](https://github.com/DeliciousBuding/komari-agent-rs/pull/107)).
